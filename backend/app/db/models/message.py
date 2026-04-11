@@ -1,63 +1,29 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import String, Text, DateTime, ForeignKey, Index, func
+from sqlalchemy import Column, String, Text, ForeignKey, DateTime
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import relationship
 
 from app.db.base import Base
 
 
 class Message(Base):
     __tablename__ = "messages"
-    __table_args__ = (
-        Index("idx_messages_chat_created", "chat_id", "created_at"),
-    )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    chat_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), nullable=False
-    )
-    sender_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    message_type: Mapped[str] = mapped_column(String(20), nullable=False, default="text")
-    idempotency_key: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), unique=True, nullable=True
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
-    )
-
-    chat: Mapped["Chat"] = relationship("Chat", back_populates="messages")
-    sender: Mapped["User"] = relationship("User")
-    reads: Mapped[list["MessageRead"]] = relationship("MessageRead", back_populates="message")
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    chat_id = Column(UUID(as_uuid=True), ForeignKey("chats.id"), nullable=False, index=True)
+    sender_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    content = Column(Text, nullable=False)
+    message_type = Column(String(20), default="text")
+    idempotency_key = Column(String(255), unique=True, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class MessageRead(Base):
     __tablename__ = "message_reads"
-    __table_args__ = (
-        Index("idx_message_reads_user", "user_id", "message_id"),
-    )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    message_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
-    read_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-    message: Mapped["Message"] = relationship("Message", back_populates="reads")
-    user: Mapped["User"] = relationship("User")
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    message_id = Column(UUID(as_uuid=True), ForeignKey("messages.id"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    read_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

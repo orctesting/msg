@@ -14,5 +14,4 @@ async def test_health(client: AsyncClient):
 async def test_ping(client: AsyncClient):
     response = await client.get("/api/v1/ping")
     assert response.status_code == 200
-    data = response.json()
-    assert data["message"] == "pong"
+    assert response.json()["message"] == "pong"

@@ -1,9 +1,8 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import String, DateTime, func
+from sqlalchemy import Column, String, DateTime
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
@@ -11,14 +10,7 @@ from app.db.base import Base
 class Chat(Base):
     __tablename__ = "chats"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    type: Mapped[str] = mapped_column(String(20), nullable=False, default="group")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-    members: Mapped[list["ChatMember"]] = relationship("ChatMember", back_populates="chat")
-    messages: Mapped[list["Message"]] = relationship("Message", back_populates="chat")
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+    type = Column(String(20), default="group")
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

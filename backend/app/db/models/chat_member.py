@@ -1,30 +1,21 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import String, DateTime, ForeignKey, UniqueConstraint, func
+from sqlalchemy import Column, String, ForeignKey, DateTime
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import relationship
 
 from app.db.base import Base
 
 
 class ChatMember(Base):
     __tablename__ = "chat_members"
-    __table_args__ = (UniqueConstraint("chat_id", "user_id"),)
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    chat_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), nullable=False
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
-    role: Mapped[str] = mapped_column(String(20), nullable=False, default="member")
-    joined_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    chat_id = Column(UUID(as_uuid=True), ForeignKey("chats.id"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    role = Column(String(20), default="member")
+    joined_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    chat: Mapped["Chat"] = relationship("Chat", back_populates="members")
-    user: Mapped["User"] = relationship("User", back_populates="chat_memberships")
+    user = relationship("User", back_populates="chat_memberships")
+    chat = relationship("Chat")

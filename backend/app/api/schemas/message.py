@@ -1,23 +1,23 @@
 import uuid
 from datetime import datetime
-from pydantic import BaseModel, Field
-
-from app.api.schemas.base import BaseSchema
+from pydantic import BaseModel
 
 
 class MessageSendIn(BaseModel):
-    content: str = Field(..., min_length=1, max_length=10000)
-    message_type: str = Field(default="text", pattern=r"^(text|system)$")
-    idempotency_key: uuid.UUID | None = None
+    content: str
+    message_type: str = "text"
+    idempotency_key: str | None = None
 
 
-class MessageOut(BaseSchema):
+class MessageOut(BaseModel):
     id: uuid.UUID
     chat_id: uuid.UUID
-    sender_id: uuid.UUID | None
+    sender_id: uuid.UUID
     content: str
     message_type: str
     created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class MessageListOut(BaseModel):

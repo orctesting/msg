@@ -4,13 +4,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.api.v1.router import api_v1_router
+from app.middleware import RequestIdMiddleware
 from app.utils.logging import setup_logging
+from app.services.ws_manager import ws_manager
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
     yield
+    await ws_manager.shutdown()
 
 
 app = FastAPI(
@@ -21,6 +24,7 @@ app = FastAPI(
     redoc_url="/redoc" if settings.debug else None,
 )
 
+app.add_middleware(RequestIdMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if settings.debug else [],

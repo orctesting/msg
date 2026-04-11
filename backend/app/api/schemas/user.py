@@ -1,11 +1,9 @@
 import uuid
 from datetime import datetime
-from pydantic import BaseModel, Field
-
-from app.api.schemas.base import BaseSchema
+from pydantic import BaseModel
 
 
-class UserOut(BaseSchema):
+class UserOut(BaseModel):
     id: uuid.UUID
     phone: str
     display_name: str
@@ -13,11 +11,8 @@ class UserOut(BaseSchema):
     is_active: bool
     created_at: datetime
 
+    model_config = {"from_attributes": True}
+
 
 class UserUpdateIn(BaseModel):
-    display_name: str | None = Field(None, max_length=255)
-
-
-class UserSearchOut(BaseModel):
-    id: uuid.UUID
-    display_name: str
+    display_name: str | None = None
