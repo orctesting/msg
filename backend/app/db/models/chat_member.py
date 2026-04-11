@@ -26,5 +26,5 @@ class ChatMember(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    chat: Mapped["Chat"] = relationship(back_populates="members")
-    user: Mapped["User"] = relationship(back_populates="chat_memberships")
+    chat: Mapped["Chat"] = relationship("Chat", back_populates="members")
+    user: Mapped["User"] = relationship("User", back_populates="chat_memberships")

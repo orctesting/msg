@@ -30,5 +30,5 @@ class Device(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    user: Mapped["User"] = relationship(back_populates="devices")
-    push_tokens: Mapped[list["PushToken"]] = relationship(back_populates="device")
+    user: Mapped["User"] = relationship("User", back_populates="devices")
+    push_tokens: Mapped[list["PushToken"]] = relationship("PushToken", back_populates="device")

@@ -35,9 +35,9 @@ class Message(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    chat: Mapped["Chat"] = relationship(back_populates="messages")
-    sender: Mapped["User"] = relationship()
-    reads: Mapped[list["MessageRead"]] = relationship(back_populates="message")
+    chat: Mapped["Chat"] = relationship("Chat", back_populates="messages")
+    sender: Mapped["User"] = relationship("User")
+    reads: Mapped[list["MessageRead"]] = relationship("MessageRead", back_populates="message")
 
 
 class MessageRead(Base):
@@ -59,5 +59,5 @@ class MessageRead(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    message: Mapped["Message"] = relationship(back_populates="reads")
-    user: Mapped["User"] = relationship()
+    message: Mapped["Message"] = relationship("Message", back_populates="reads")
+    user: Mapped["User"] = relationship("User")

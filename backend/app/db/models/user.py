@@ -25,5 +25,5 @@ class User(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    devices: Mapped[list["Device"]] = relationship(back_populates="user")
-    chat_memberships: Mapped[list["ChatMember"]] = relationship(back_populates="user")
+    devices: Mapped[list["Device"]] = relationship("Device", back_populates="user")
+    chat_memberships: Mapped[list["ChatMember"]] = relationship("ChatMember", back_populates="user")

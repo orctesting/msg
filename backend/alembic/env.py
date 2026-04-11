@@ -9,7 +9,7 @@ from app.config import settings
 from app.db.base import Base
 
 # Import all models so Alembic can detect them
-from app.db.models import user, device, message, chat, chat_member, push_token, push_log, otp_session, refresh_token  # noqa
+import app.db.models
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)

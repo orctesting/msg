@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.db.session import async_session_factory
+import app.db.models  # noqa — загружаем все модели
 from app.db.models.user import User
 
 logger = structlog.get_logger()

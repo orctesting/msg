@@ -22,7 +22,7 @@ class PushToken(Base):
         UUID(as_uuid=True), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False
     )
     token: Mapped[str] = mapped_column(Text, nullable=False)
-    token_type: Mapped[str] = mapped_column(String(20), nullable=False)  # fcm, apns, huawei
+    token_type: Mapped[str] = mapped_column(String(20), nullable=False)
     is_valid: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -31,4 +31,4 @@ class PushToken(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    device: Mapped["Device"] = relationship(back_populates="push_tokens")
+    device: Mapped["Device"] = relationship("Device", back_populates="push_tokens")
