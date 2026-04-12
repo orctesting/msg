@@ -128,7 +128,14 @@ async def create_chat(
     await session.commit()
     await session.refresh(chat)
     logger.info("admin_created_chat", admin_id=str(admin.id), chat_id=str(chat.id))
-    return ChatOut.model_validate(chat)
+    return ChatOut(
+        id=chat.id,
+        name=chat.name,
+        type=chat.type,
+        created_at=chat.created_at,
+        unread_count=0,
+        last_message=None,
+    )
 
 
 @router.get("/chats", response_model=list[ChatOut])
@@ -140,7 +147,18 @@ async def list_chats(
 ):
     query = select(Chat).order_by(Chat.created_at.desc()).offset(offset).limit(limit)
     result = await session.execute(query)
-    return [ChatOut.model_validate(c) for c in result.scalars().all()]
+    chats = result.scalars().all()
+    return [
+        ChatOut(
+            id=chat.id,
+            name=chat.name,
+            type=chat.type,
+            created_at=chat.created_at,
+            unread_count=0,
+            last_message=None,
+        )
+        for chat in chats
+    ]
 
 
 @router.post("/chats/{chat_id}/members", response_model=OkResponse, status_code=201)

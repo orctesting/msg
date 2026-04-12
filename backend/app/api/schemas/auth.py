@@ -13,13 +13,12 @@ class OTPRequestOut(BaseModel):
 
 
 class OTPVerifyIn(BaseModel):
-    otp_session_id: uuid.UUID
+    phone: str = Field(..., pattern=r"^\+\d{10,15}$")
     code: str = Field(..., min_length=4, max_length=8)
     device_id: str = Field(..., min_length=1, max_length=255)
-    platform: str = Field(..., pattern=r"^(android|ios|web)$")
+    platform: str = Field(..., pattern=r"^(android|ios|desktop|web)$")
     app_version: str | None = None
     os_version: str | None = None
-    display_name: str | None = Field(None, max_length=255)
 
 
 class OTPVerifyOut(BaseModel):
@@ -27,7 +26,7 @@ class OTPVerifyOut(BaseModel):
     access_token: str
     refresh_token: str
     user_id: uuid.UUID
-    is_new_user: bool
+    device_id: uuid.UUID
 
 
 class TokenRefreshIn(BaseModel):

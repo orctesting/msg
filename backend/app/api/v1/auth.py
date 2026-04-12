@@ -1,4 +1,3 @@
-import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
@@ -9,15 +8,10 @@ import structlog
 from app.db.session import get_async_session
 from app.db.models.user import User
 from app.db.models.device import Device
-from app.db.models.otp_session import OTPSession
 from app.db.models.refresh_token import RefreshToken
 from app.core.security import create_access_token, create_refresh_token, decode_token, hash_token
 from app.core.dependencies import get_current_user
-from app.core.exceptions import (
-    UnauthorizedException,
-    NotFoundException,
-    RateLimitException,
-)
+from app.core.exceptions import UnauthorizedException, NotFoundException
 from app.api.schemas.auth import (
     OTPRequestIn,
     OTPRequestOut,
@@ -33,7 +27,7 @@ logger = structlog.get_logger()
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/otp/request", response_model=OTPRequestOut)
+@router.post("/request-otp", response_model=OTPRequestOut)
 async def request_otp(
     body: OTPRequestIn,
     session: AsyncSession = Depends(get_async_session),
@@ -43,27 +37,20 @@ async def request_otp(
     return OTPRequestOut(otp_session_id=otp_session.id)
 
 
-@router.post("/otp/verify", response_model=OTPVerifyOut)
+@router.post("/verify-otp", response_model=OTPVerifyOut)
 async def verify_otp(
     body: OTPVerifyIn,
     session: AsyncSession = Depends(get_async_session),
 ):
     otp_service = OTPService(session)
-    verified_phone = await otp_service.verify_otp(body.otp_session_id, body.code)
+    verified_phone = await otp_service.verify_otp(body.phone, body.code)
 
-    result = await session.execute(select(User).where(User.phone == verified_phone))
+    result = await session.execute(
+        select(User).where(User.phone == verified_phone, User.is_active == True)
+    )
     user = result.scalar_one_or_none()
-    is_new_user = False
-
     if user is None:
-        is_new_user = True
-        user = User(
-            phone=verified_phone,
-            display_name=body.display_name or f"User {verified_phone[-4:]}",
-            role="user",
-        )
-        session.add(user)
-        await session.flush()
+        raise NotFoundException("User not found or inactive")
 
     result = await session.execute(
         select(Device).where(
@@ -80,39 +67,41 @@ async def verify_otp(
             platform=body.platform,
             app_version=body.app_version,
             os_version=body.os_version,
+            is_active=True,
         )
         session.add(device)
+        await session.flush()
     else:
         device.platform = body.platform
         device.app_version = body.app_version
         device.os_version = body.os_version
         device.is_active = True
+        await session.flush()
 
-    await session.flush()
-
-    access_token = create_access_token(user.id, user.role)
+    access_token = create_access_token(user.id, user.role, device.id)
     raw_refresh, token_hash = create_refresh_token(user.id)
 
-    refresh_token_record = RefreshToken(
-        user_id=user.id,
-        device_id=device.id,
-        token_hash=token_hash,
-        expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+    session.add(
+        RefreshToken(
+            user_id=user.id,
+            device_id=device.id,
+            token_hash=token_hash,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+        )
     )
-    session.add(refresh_token_record)
     await session.commit()
 
-    logger.info("user_authenticated", user_id=str(user.id), is_new=is_new_user)
+    logger.info("user_authenticated", user_id=str(user.id), device_id=str(device.id))
 
     return OTPVerifyOut(
         access_token=access_token,
         refresh_token=raw_refresh,
         user_id=user.id,
-        is_new_user=is_new_user,
+        device_id=device.id,
     )
 
 
-@router.post("/token/refresh", response_model=TokenRefreshOut)
+@router.post("/refresh", response_model=TokenRefreshOut)
 async def refresh_tokens(
     body: TokenRefreshIn,
     session: AsyncSession = Depends(get_async_session),
@@ -145,16 +134,20 @@ async def refresh_tokens(
     if user is None:
         raise UnauthorizedException("User not found or inactive")
 
-    access_token = create_access_token(user.id, user.role)
+    if stored_token.device_id is None:
+        raise UnauthorizedException("Device not found")
+
+    access_token = create_access_token(user.id, user.role, stored_token.device_id)
     raw_refresh, new_token_hash = create_refresh_token(user.id)
 
-    new_refresh_record = RefreshToken(
-        user_id=user.id,
-        device_id=stored_token.device_id,
-        token_hash=new_token_hash,
-        expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+    session.add(
+        RefreshToken(
+            user_id=user.id,
+            device_id=stored_token.device_id,
+            token_hash=new_token_hash,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+        )
     )
-    session.add(new_refresh_record)
     await session.commit()
 
     return TokenRefreshOut(access_token=access_token, refresh_token=raw_refresh)
@@ -178,12 +171,9 @@ async def logout(
 
     if stored_token is not None:
         stored_token.is_revoked = True
-        # Deactivate device linked to this refresh token
         if stored_token.device_id:
             await session.execute(
-                update(Device)
-                .where(Device.id == stored_token.device_id)
-                .values(is_active=False)
+                update(Device).where(Device.id == stored_token.device_id).values(is_active=False)
             )
         await session.commit()
         logger.info("user_logged_out", user_id=str(current_user.id))

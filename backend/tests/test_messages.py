@@ -76,6 +76,6 @@ async def test_mark_read(client: AsyncClient, user_token: str, test_chat: Chat):
     resp = await client.post(
         f"/api/v1/chats/{test_chat.id}/read",
         headers=headers,
-        json={"message_ids": [msg_id]},
+        json={"last_read_message_id": str(msg_id)},
     )
     assert resp.status_code == 204

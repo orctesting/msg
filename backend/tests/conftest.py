@@ -80,13 +80,39 @@ async def test_admin(db_session: AsyncSession) -> User:
 
 
 @pytest_asyncio.fixture
-async def user_token(test_user: User) -> str:
-    return create_access_token(test_user.id, test_user.role)
+async def test_device(db_session: AsyncSession, test_user: User) -> Device:
+    device = Device(
+        user_id=test_user.id,
+        device_id="test-device-001",
+        platform="android",
+        is_active=True,
+    )
+    db_session.add(device)
+    await db_session.flush()
+    return device
 
 
 @pytest_asyncio.fixture
-async def admin_token(test_admin: User) -> str:
-    return create_access_token(test_admin.id, test_admin.role)
+async def admin_device(db_session: AsyncSession, test_admin: User) -> Device:
+    device = Device(
+        user_id=test_admin.id,
+        device_id="admin-device-001",
+        platform="web",
+        is_active=True,
+    )
+    db_session.add(device)
+    await db_session.flush()
+    return device
+
+
+@pytest_asyncio.fixture
+async def user_token(test_user: User, test_device: Device) -> str:
+    return create_access_token(test_user.id, test_user.role, test_device.id)
+
+
+@pytest_asyncio.fixture
+async def admin_token(test_admin: User, admin_device: Device) -> str:
+    return create_access_token(test_admin.id, test_admin.role, admin_device.id)
 
 
 @pytest_asyncio.fixture
@@ -99,15 +125,3 @@ async def test_chat(db_session: AsyncSession, test_user: User) -> Chat:
     db_session.add(member)
     await db_session.flush()
     return chat
-
-
-@pytest_asyncio.fixture
-async def test_device(db_session: AsyncSession, test_user: User) -> Device:
-    device = Device(
-        user_id=test_user.id,
-        device_id="test-device-001",
-        platform="android",
-    )
-    db_session.add(device)
-    await db_session.flush()
-    return device

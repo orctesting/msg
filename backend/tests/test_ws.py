@@ -11,7 +11,6 @@ from app.db.models.user import User
 
 
 def _make_fake_user(**kwargs):
-    """Create a detached User instance via normal constructor."""
     defaults = {
         "id": uuid.uuid4(),
         "phone": "+70001112233",
@@ -26,7 +25,6 @@ def _make_fake_user(**kwargs):
         role=defaults["role"],
         is_active=defaults["is_active"],
     )
-    # Set id without going through SA session
     object.__setattr__(user, "id", defaults["id"])
     return user
 
@@ -41,7 +39,8 @@ def test_ws_rejects_bad_token():
 
 def test_ws_ping_pong():
     fake_user = _make_fake_user()
-    token = create_access_token(fake_user.id, fake_user.role)
+    fake_device_id = uuid.uuid4()
+    token = create_access_token(fake_user.id, fake_user.role, fake_device_id)
 
     with (
         patch(
@@ -64,7 +63,8 @@ def test_ws_ping_pong():
 
 def test_ws_typing_event():
     fake_user = _make_fake_user(phone="+70001112234", display_name="Typer")
-    token = create_access_token(fake_user.id, fake_user.role)
+    fake_device_id = uuid.uuid4()
+    token = create_access_token(fake_user.id, fake_user.role, fake_device_id)
     chat_id = str(uuid.uuid4())
 
     with (

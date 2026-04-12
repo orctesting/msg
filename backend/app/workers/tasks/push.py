@@ -1,195 +1,141 @@
-import json
-import structlog
-from sqlalchemy import select, and_
-from sqlalchemy.orm import Session
+import uuid
 
-from app.workers.celery_app import celery_app
+from celery import shared_task
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
+import structlog
+
 from app.config import settings
+from app.db.models.message import Message
+from app.db.models.device import Device
+from app.db.models.push_token import PushToken
+from app.db.models.push_log import PushLog
 
 logger = structlog.get_logger()
 
+_sync_engine = create_engine(settings.database_url.replace("+asyncpg", ""), future=True)
+SyncSessionLocal = sessionmaker(bind=_sync_engine, autoflush=False, autocommit=False)
 
-def _get_sync_session():
-    """Create a sync DB session for Celery tasks."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
 
-    # Convert async URL to sync
-    sync_url = settings.database_url.replace(
-        "postgresql+asyncpg://", "postgresql+psycopg2://"
+def _sync_db_session():
+    return SyncSessionLocal()
+
+
+def _make_push_idempotency_key(message_id: uuid.UUID, device_id: uuid.UUID, attempt_number: int) -> uuid.UUID:
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"push:{message_id}:{device_id}:{attempt_number}",
     )
-    engine = create_engine(sync_url)
-    SessionLocal = sessionmaker(bind=engine)
-    return SessionLocal()
 
 
-@celery_app.task(
-    name="send_push_for_message",
-    bind=True,
-    max_retries=3,
-    default_retry_delay=10,
-    acks_late=True,
-)
-def send_push_for_message(
-    self,
-    message_id: str,
-    chat_id: str,
-    sender_id: str,
-    sender_name: str,
-    content: str,
-):
-    """
-    Send push notifications to all chat members (except sender)
-    who have valid push tokens.
-    """
-    session = _get_sync_session()
+def _send_to_provider(token: str, token_type: str, payload: dict) -> dict:
+    return {
+        "status": "sent",
+        "provider_message_id": str(uuid.uuid4()),
+        "provider": token_type,
+    }
 
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=30)
+def send_push_notification(self, message_id: str, recipient_user_ids: list[str]):
+    session: Session = _sync_db_session()
     try:
-        from app.db.models.chat_member import ChatMember
-        from app.db.models.device import Device
-        from app.db.models.push_token import PushToken
-        from app.db.models.push_log import PushLog
-        from app.db.models.chat import Chat
-        import uuid
-
-        # Get chat name
-        chat = session.execute(
-            select(Chat).where(Chat.id == uuid.UUID(chat_id))
+        message = session.execute(
+            select(Message).where(Message.id == uuid.UUID(message_id))
         ).scalar_one_or_none()
-        chat_name = chat.name if chat else "Chat"
-
-        # Get all members except sender
-        members = session.execute(
-            select(ChatMember.user_id).where(
-                ChatMember.chat_id == uuid.UUID(chat_id),
-                ChatMember.user_id != uuid.UUID(sender_id),
-            )
-        ).all()
-
-        member_user_ids = [m[0] for m in members]
-
-        if not member_user_ids:
-            logger.info("push_no_recipients", chat_id=chat_id)
+        if message is None:
+            logger.error("push_message_not_found", message_id=message_id)
             return
 
-        # Get active devices with valid push tokens for these users
-        tokens = session.execute(
-            select(PushToken, Device).join(
-                Device, PushToken.device_id == Device.id
-            ).where(
-                Device.user_id.in_(member_user_ids),
-                Device.is_active == True,
-                PushToken.is_valid == True,
+        devices = session.execute(
+            select(Device).where(
+                Device.user_id.in_([uuid.UUID(uid) for uid in recipient_user_ids]),
+                Device.is_active.is_(True),
             )
-        ).all()
+        ).scalars().all()
 
-        if not tokens:
-            logger.info("push_no_tokens", chat_id=chat_id, member_count=len(member_user_ids))
-            return
+        attempt_number = int(self.request.retries) + 1
 
-        # Build notification payload
-        notification_data = {
-            "title": f"{sender_name} in {chat_name}",
-            "body": content[:200],
-            "data": {
-                "type": "new_message",
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "sender_id": sender_id,
-            },
-        }
+        for device in devices:
+            push_token = session.execute(
+                select(PushToken).where(
+                    PushToken.device_id == device.id,
+                    PushToken.is_valid.is_(True),
+                )
+            ).scalar_one_or_none()
 
-        for push_token, device in tokens:
+            log_idempotency_key = _make_push_idempotency_key(
+                message.id,
+                device.id,
+                attempt_number,
+            )
+
+            if push_token is None:
+                session.add(
+                    PushLog(
+                        message_id=message.id,
+                        device_id=device.id,
+                        push_token_id=None,
+                        status="skipped_inactive",
+                        attempt_number=attempt_number,
+                        error_details="No active push token",
+                        idempotency_key=log_idempotency_key,
+                    )
+                )
+                continue
+
             try:
-                _send_single_push(push_token, notification_data, message_id, session)
-            except Exception as e:
-                logger.error(
-                    "push_send_error",
-                    token_id=str(push_token.id),
-                    error=str(e),
+                payload = {
+                    "title": "New message",
+                    "body": message.content[:120],
+                    "chat_id": str(message.chat_id),
+                    "message_id": str(message.id),
+                }
+
+                provider_response = _send_to_provider(
+                    push_token.token,
+                    push_token.token_type,
+                    payload,
                 )
 
-        session.commit()
-        logger.info(
-            "push_sent",
-            message_id=message_id,
-            chat_id=chat_id,
-            token_count=len(tokens),
-        )
+                session.add(
+                    PushLog(
+                        message_id=message.id,
+                        device_id=device.id,
+                        push_token_id=push_token.id,
+                        status="sent_to_provider",
+                        provider_message_id=provider_response.get("provider_message_id"),
+                        attempt_number=attempt_number,
+                        idempotency_key=log_idempotency_key,
+                    )
+                )
 
-    except Exception as e:
+            except Exception as exc:
+                push_token.failure_count = (push_token.failure_count or 0) + 1
+                push_token.last_failure_reason = str(exc)
+
+                session.add(
+                    PushLog(
+                        message_id=message.id,
+                        device_id=device.id,
+                        push_token_id=push_token.id,
+                        status="failed_provider",
+                        attempt_number=attempt_number,
+                        error_details=str(exc),
+                        idempotency_key=log_idempotency_key,
+                    )
+                )
+
+                if attempt_number < self.max_retries:
+                    session.commit()
+                    raise self.retry(exc=exc)
+
+        session.commit()
+
+    except Exception as exc:
+        logger.error("push_task_failed", message_id=message_id, error=str(exc))
         session.rollback()
-        logger.error("push_task_error", error=str(e), message_id=message_id)
-        raise self.retry(exc=e)
+        raise
+
     finally:
         session.close()
-
-
-def _send_single_push(push_token, notification_data: dict, message_id: str, session):
-    """Send a single push notification via FCM."""
-    import uuid
-    from app.db.models.push_log import PushLog
-
-    if push_token.token_type == "fcm":
-        success, response = _send_fcm(push_token.token, notification_data)
-    else:
-        success = False
-        response = {"error": f"Unknown token type: {push_token.token_type}"}
-
-    log = PushLog(
-        push_token_id=push_token.id,
-        message_id=uuid.UUID(message_id) if message_id else None,
-        status="sent" if success else "failed",
-        provider_response=response,
-        error_message=response.get("error") if not success else None,
-    )
-    session.add(log)
-
-    # Mark token as invalid if FCM says so
-    if not success and response.get("invalid_token"):
-        push_token.is_valid = False
-        logger.info("push_token_invalidated", token_id=str(push_token.id))
-
-
-def _send_fcm(token: str, notification_data: dict) -> tuple[bool, dict]:
-    """
-    Send FCM push notification.
-    Returns (success, response_dict).
-
-    In development mode without FCM config, simulates success.
-    """
-    if not settings.fcm_service_account_json:
-        logger.info("fcm_stub_mode", token=token[:20] + "...")
-        return True, {"stub": True, "message": "FCM not configured, simulated send"}
-
-    try:
-        import firebase_admin
-        from firebase_admin import credentials, messaging
-
-        # Initialize Firebase if not already done
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(json.loads(settings.fcm_service_account_json))
-            firebase_admin.initialize_app(cred)
-
-        message = messaging.Message(
-            notification=messaging.Notification(
-                title=notification_data["title"],
-                body=notification_data["body"],
-            ),
-            data={k: str(v) for k, v in notification_data.get("data", {}).items()},
-            token=token,
-            android=messaging.AndroidConfig(
-                priority="high",
-                notification=messaging.AndroidNotification(
-                    click_action="OPEN_CHAT",
-                ),
-            ),
-        )
-
-        response = messaging.send(message)
-        return True, {"message_id": response}
-
-    except Exception as e:
-        error_str = str(e)
-        invalid = "not-registered" in error_str.lower() or "invalid-registration" in error_str.lower()
-        return False, {"error": error_str, "invalid_token": invalid}

@@ -12,7 +12,7 @@ class MessageSendIn(BaseModel):
 class MessageOut(BaseModel):
     id: uuid.UUID
     chat_id: uuid.UUID
-    sender_id: uuid.UUID
+    sender_id: uuid.UUID | None
     content: str
     message_type: str
     created_at: datetime
@@ -26,4 +26,4 @@ class MessageListOut(BaseModel):
 
 
 class MessageReadIn(BaseModel):
-    message_ids: list[uuid.UUID]
+    last_read_message_id: uuid.UUID

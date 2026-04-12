@@ -7,11 +7,12 @@ from jose import jwt, JWTError
 from app.config import settings
 
 
-def create_access_token(user_id: uuid.UUID, role: str) -> str:
+def create_access_token(user_id: uuid.UUID, role: str, device_id: uuid.UUID) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user_id),
         "role": role,
+        "device_id": str(device_id),
         "type": "access",
         "iat": now,
         "exp": now + timedelta(minutes=settings.jwt_access_token_expire_minutes),
@@ -21,7 +22,6 @@ def create_access_token(user_id: uuid.UUID, role: str) -> str:
 
 
 def create_refresh_token(user_id: uuid.UUID) -> tuple[str, str]:
-    """Returns (raw_token, token_hash)."""
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user_id),
@@ -37,8 +37,7 @@ def create_refresh_token(user_id: uuid.UUID) -> tuple[str, str]:
 
 def decode_token(token: str) -> dict | None:
     try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
-        return payload
+        return jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
     except JWTError:
         return None
 

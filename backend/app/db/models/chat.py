@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import Column, String, DateTime
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
 
 from app.db.base import Base
 
@@ -14,3 +15,5 @@ class Chat(Base):
     name = Column(String(255), nullable=False)
     type = Column(String(20), default="group")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    messages = relationship("Message", back_populates="chat")
