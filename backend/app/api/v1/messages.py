@@ -165,6 +165,7 @@ async def mark_messages_read(
 ):
     await _check_membership(session, chat_id, current_user.id)
 
+    # Verify target message exists in this chat
     target_result = await session.execute(
         select(Message).where(
             Message.id == body.last_read_message_id,
@@ -175,28 +176,38 @@ async def mark_messages_read(
     if target_message is None:
         raise NotFoundException("Message not found in this chat")
 
-    messages_result = await session.execute(
-        select(Message).where(
+    # Get all unread message IDs in one query (messages up to target that have no read record)
+    from sqlalchemy import and_, exists as sa_exists
+
+    already_read_subq = (
+        select(MessageRead.message_id)
+        .where(
+            MessageRead.user_id == current_user.id,
+        )
+        .correlate(Message)
+    )
+
+    unread_messages_result = await session.execute(
+        select(Message.id).where(
             Message.chat_id == chat_id,
             Message.created_at <= target_message.created_at,
+            ~Message.id.in_(
+                select(MessageRead.message_id).where(
+                    MessageRead.user_id == current_user.id,
+                )
+            ),
         )
     )
-    messages = messages_result.scalars().all()
+    unread_message_ids = [row[0] for row in unread_messages_result.all()]
 
-    for message in messages:
-        existing_result = await session.execute(
-            select(MessageRead).where(
-                MessageRead.message_id == message.id,
-                MessageRead.user_id == current_user.id,
+    # Bulk insert read records
+    for msg_id in unread_message_ids:
+        session.add(
+            MessageRead(
+                message_id=msg_id,
+                user_id=current_user.id,
             )
         )
-        if existing_result.scalar_one_or_none() is None:
-            session.add(
-                MessageRead(
-                    message_id=message.id,
-                    user_id=current_user.id,
-                )
-            )
 
     await session.commit()
 

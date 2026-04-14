@@ -6,6 +6,7 @@ celery_app = Celery(
     "messenger",
     broker=settings.redis_url,
     backend=settings.redis_url,
+    include=["app.workers.tasks.push"],
 )
 
 celery_app.conf.update(
@@ -18,5 +19,3 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
 )
-
-celery_app.autodiscover_tasks(["app.workers.tasks"])

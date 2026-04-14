@@ -27,3 +27,13 @@ logs/
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Firebase
+composeApp/google-services.json
+**/google-services.json
+oreshnik-f1d0c-f587277f3574.json
+
+# Firebase Admin SDK (бэкенд)
+**/firebase-adminsdk*.json
+**/service-account*.json
+firebase-service-account.json

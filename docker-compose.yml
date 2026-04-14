@@ -41,12 +41,14 @@ services:
     volumes:
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic
+      - ./backend/firebase-service-account.json:/app/firebase-service-account.json:ro
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-messenger}:${POSTGRES_PASSWORD:-messenger_secret}@postgres:5432/${POSTGRES_DB:-messenger_db}
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=development
       - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-in-production}
       - LOG_LEVEL=${LOG_LEVEL:-DEBUG}
+      - FCM_SERVICE_ACCOUNT_JSON=/app/firebase-service-account.json
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,11 +68,13 @@ services:
     command: celery -A app.workers.celery_app worker --loglevel=info --pool=solo
     volumes:
       - ./backend/app:/app/app
+      - ./backend/firebase-service-account.json:/app/firebase-service-account.json:ro
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-messenger}:${POSTGRES_PASSWORD:-messenger_secret}@postgres:5432/${POSTGRES_DB:-messenger_db}
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=development
       - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-in-production}
+      - FCM_SERVICE_ACCOUNT_JSON=/app/firebase-service-account.json
     depends_on:
       postgres:
         condition: service_healthy

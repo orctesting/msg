@@ -1,6 +1,6 @@
 import uuid
 
-from celery import shared_task
+from app.workers.celery_app import celery_app
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 import structlog
@@ -29,6 +29,23 @@ def _make_push_idempotency_key(message_id: uuid.UUID, device_id: uuid.UUID, atte
 
 
 def _send_to_provider(token: str, token_type: str, payload: dict) -> dict:
+    if token_type == "fcm":
+        from app.services.fcm_service import send_fcm_push
+        msg_id = send_fcm_push(
+            token=token,
+            title=payload.get("title", "New message"),
+            body=payload.get("body", ""),
+            data={
+                "chat_id": payload.get("chat_id", ""),
+                "message_id": payload.get("message_id", ""),
+            },
+        )
+        return {
+            "status": "sent",
+            "provider_message_id": msg_id or "",
+            "provider": "fcm",
+        }
+
     return {
         "status": "sent",
         "provider_message_id": str(uuid.uuid4()),
@@ -36,7 +53,7 @@ def _send_to_provider(token: str, token_type: str, payload: dict) -> dict:
     }
 
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=30)
+@celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
 def send_push_notification(self, message_id: str, recipient_user_ids: list[str]):
     session: Session = _sync_db_session()
     try:
@@ -55,6 +72,7 @@ def send_push_notification(self, message_id: str, recipient_user_ids: list[str])
         ).scalars().all()
 
         attempt_number = int(self.request.retries) + 1
+        failed_exc = None
 
         for device in devices:
             push_token = session.execute(
@@ -65,23 +83,31 @@ def send_push_notification(self, message_id: str, recipient_user_ids: list[str])
             ).scalar_one_or_none()
 
             log_idempotency_key = _make_push_idempotency_key(
-                message.id,
-                device.id,
-                attempt_number,
+                message.id, device.id, attempt_number,
             )
 
-            if push_token is None:
-                session.add(
-                    PushLog(
-                        message_id=message.id,
-                        device_id=device.id,
-                        push_token_id=None,
-                        status="skipped_inactive",
-                        attempt_number=attempt_number,
-                        error_details="No active push token",
-                        idempotency_key=log_idempotency_key,
-                    )
+            # Check for existing log (idempotency)
+            existing_log = session.execute(
+                select(PushLog).where(
+                    PushLog.idempotency_key == log_idempotency_key,
                 )
+            ).scalar_one_or_none()
+            if existing_log is not None:
+                continue
+
+            if push_token is None:
+                log = PushLog(
+                    message_id=message.id,
+                    device_id=device.id,
+                    push_token_id=None,
+                    status="skipped_inactive",
+                    attempt_number=attempt_number,
+                    error_details="No active push token",
+                    idempotency_key=log_idempotency_key,
+                )
+                session.add(log)
+                session.commit()
+                logger.info("push_skipped", device_id=str(device.id), reason="no_token")
                 continue
 
             try:
@@ -93,49 +119,52 @@ def send_push_notification(self, message_id: str, recipient_user_ids: list[str])
                 }
 
                 provider_response = _send_to_provider(
-                    push_token.token,
-                    push_token.token_type,
-                    payload,
+                    push_token.token, push_token.token_type, payload,
                 )
 
-                session.add(
-                    PushLog(
-                        message_id=message.id,
-                        device_id=device.id,
-                        push_token_id=push_token.id,
-                        status="sent_to_provider",
-                        provider_message_id=provider_response.get("provider_message_id"),
-                        attempt_number=attempt_number,
-                        idempotency_key=log_idempotency_key,
-                    )
+                log = PushLog(
+                    message_id=message.id,
+                    device_id=device.id,
+                    push_token_id=push_token.id,
+                    status="sent_to_provider",
+                    provider_message_id=provider_response.get("provider_message_id"),
+                    attempt_number=attempt_number,
+                    idempotency_key=log_idempotency_key,
+                )
+                session.add(log)
+                session.commit()
+                logger.info(
+                    "push_sent",
+                    device_id=str(device.id),
+                    provider=provider_response.get("provider"),
                 )
 
             except Exception as exc:
+                session.rollback()
                 push_token.failure_count = (push_token.failure_count or 0) + 1
-                push_token.last_failure_reason = str(exc)
+                push_token.last_failure_reason = str(exc)[:255]
 
-                session.add(
-                    PushLog(
-                        message_id=message.id,
-                        device_id=device.id,
-                        push_token_id=push_token.id,
-                        status="failed_provider",
-                        attempt_number=attempt_number,
-                        error_details=str(exc),
-                        idempotency_key=log_idempotency_key,
-                    )
+                log = PushLog(
+                    message_id=message.id,
+                    device_id=device.id,
+                    push_token_id=push_token.id,
+                    status="failed_provider",
+                    attempt_number=attempt_number,
+                    error_details=str(exc)[:500],
+                    idempotency_key=log_idempotency_key,
                 )
+                session.add(log)
+                session.commit()
+                failed_exc = exc
+                logger.error("push_failed", device_id=str(device.id), error=str(exc))
 
-                if attempt_number < self.max_retries:
-                    session.commit()
-                    raise self.retry(exc=exc)
-
-        session.commit()
+        if failed_exc and attempt_number <= self.max_retries:
+            raise self.retry(exc=failed_exc)
 
     except Exception as exc:
-        logger.error("push_task_failed", message_id=message_id, error=str(exc))
+        if not isinstance(exc, self.MaxRetriesExceededError):
+            logger.error("push_task_error", message_id=message_id, error=str(exc))
         session.rollback()
         raise
-
     finally:
         session.close()

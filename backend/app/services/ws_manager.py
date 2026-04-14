@@ -15,29 +15,25 @@ CHANNEL_PREFIX = "chat:"
 
 
 class WSManager:
-    """
-    Manages WebSocket connections and Redis Pub/Sub for real-time messaging.
-
-    Each backend instance holds its own set of connections.
-    Redis Pub/Sub ensures messages are delivered across all instances.
-    """
-
     def __init__(self):
-        # user_id -> set of WebSocket connections (one user can have multiple devices)
         self._connections: dict[uuid.UUID, set[WebSocket]] = defaultdict(set)
-        # chat_id -> set of user_ids currently connected
         self._chat_users: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
-        # user_id -> set of chat_ids
         self._user_chats: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
-        # Redis pubsub listener task
-        self._redis: aioredis.Redis | None = None
-        self._pubsub_task: asyncio.Task | None = None
+        self._sub_redis: aioredis.Redis | None = None
+        self._pub_redis: aioredis.Redis | None = None
         self._pubsub = None
+        self._pubsub_task: asyncio.Task | None = None
+        self._subscribed_channels: set[str] = set()
 
-    async def _get_redis(self) -> aioredis.Redis:
-        if self._redis is None:
-            self._redis = aioredis.from_url(settings.redis_url, decode_responses=True)
-        return self._redis
+    async def _get_sub_redis(self) -> aioredis.Redis:
+        if self._sub_redis is None:
+            self._sub_redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+        return self._sub_redis
+
+    async def _get_pub_redis(self) -> aioredis.Redis:
+        if self._pub_redis is None:
+            self._pub_redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+        return self._pub_redis
 
     async def connect(
         self,
@@ -51,7 +47,6 @@ class WSManager:
         for chat_id in chat_ids:
             self._chat_users[chat_id].add(user_id)
 
-        # Subscribe to new channels if needed
         await self._ensure_subscriptions(chat_ids)
 
         logger.info(
@@ -66,7 +61,6 @@ class WSManager:
             self._connections[user_id].discard(websocket)
             if not self._connections[user_id]:
                 del self._connections[user_id]
-                # Remove user from chat_users
                 for chat_id in self._user_chats.get(user_id, set()):
                     self._chat_users[chat_id].discard(user_id)
                     if not self._chat_users[chat_id]:
@@ -74,37 +68,55 @@ class WSManager:
                 self._user_chats.pop(user_id, None)
 
     async def _ensure_subscriptions(self, chat_ids: list[uuid.UUID]):
-        """Ensure Redis pubsub is listening on all needed channels."""
-        redis = await self._get_redis()
+        redis = await self._get_sub_redis()
 
         if self._pubsub is None:
             self._pubsub = redis.pubsub()
-            self._pubsub_task = asyncio.create_task(self._listen())
 
-        channels = [f"{CHANNEL_PREFIX}{chat_id}" for chat_id in chat_ids]
-        if channels:
-            await self._pubsub.subscribe(*channels)
+        # Subscribe to new channels FIRST, before starting listener
+        new_channels = []
+        for chat_id in chat_ids:
+            ch = f"{CHANNEL_PREFIX}{chat_id}"
+            if ch not in self._subscribed_channels:
+                new_channels.append(ch)
+                self._subscribed_channels.add(ch)
+
+        if new_channels:
+            await self._pubsub.subscribe(*new_channels)
+            print(f"=== SUBSCRIBED to {new_channels} ===", flush=True)
+
+        # Start listener AFTER first subscribe
+        if self._pubsub_task is None or self._pubsub_task.done():
+            self._pubsub_task = asyncio.create_task(self._listen())
+            print("=== PUBSUB LISTENER TASK STARTED ===", flush=True)
 
     async def _listen(self):
-        """Background task that listens to Redis pubsub and dispatches to local WS connections."""
+        print("=== WS PUBSUB LISTENER RUNNING ===", flush=True)
+        logger.info("ws_pubsub_listener_started")
         try:
             while True:
                 if self._pubsub is None:
                     await asyncio.sleep(0.1)
                     continue
 
-                message = await self._pubsub.get_message(
-                    ignore_subscribe_messages=True, timeout=0.1
-                )
+                try:
+                    message = await self._pubsub.get_message(
+                        ignore_subscribe_messages=True, timeout=0.1
+                    )
+                except Exception as e:
+                    logger.error("ws_pubsub_get_message_error", error=str(e))
+                    await asyncio.sleep(1)
+                    continue
+
                 if message is None:
                     await asyncio.sleep(0.05)
                     continue
 
                 if message["type"] == "message":
+                    print(f"=== PUBSUB GOT: {message['channel']} ===", flush=True)
                     try:
                         data = json.loads(message["data"])
                         channel = message["channel"]
-                        # Extract chat_id from channel name "chat:<uuid>"
                         chat_id_str = channel.replace(CHANNEL_PREFIX, "")
                         chat_id = uuid.UUID(chat_id_str)
                         exclude_user_id = None
@@ -116,7 +128,7 @@ class WSManager:
                         logger.error("ws_pubsub_dispatch_error", error=str(e))
 
         except asyncio.CancelledError:
-            pass
+            logger.info("ws_pubsub_listener_cancelled")
         except Exception as e:
             logger.error("ws_pubsub_listener_error", error=str(e))
 
@@ -126,7 +138,6 @@ class WSManager:
         data: dict,
         exclude_user_id: uuid.UUID | None = None,
     ):
-        """Send data to all local WS connections in a chat."""
         user_ids = self._chat_users.get(chat_id, set())
         dead_connections = []
 
@@ -140,7 +151,6 @@ class WSManager:
                 except Exception:
                     dead_connections.append((user_id, ws))
 
-        # Clean up dead connections
         for user_id, ws in dead_connections:
             await self.disconnect(user_id, ws)
 
@@ -150,8 +160,7 @@ class WSManager:
         event: dict,
         exclude_user_id: uuid.UUID | None = None,
     ):
-        """Publish an event to Redis so all instances receive it."""
-        redis = await self._get_redis()
+        redis = await self._get_pub_redis()
         if exclude_user_id:
             event["_exclude_user_id"] = str(exclude_user_id)
         channel = f"{CHANNEL_PREFIX}{chat_id}"
@@ -163,10 +172,12 @@ class WSManager:
         message_data: dict,
         sender_id: uuid.UUID,
     ):
-        """Publish a new_message event."""
         event = {
             "type": "new_message",
-            **message_data,
+            "data": {
+                "chat_id": str(chat_id),
+                "message": message_data,
+            },
         }
         await self.publish_event(
             chat_id=chat_id,
@@ -180,9 +191,10 @@ class WSManager:
         if self._pubsub:
             await self._pubsub.unsubscribe()
             await self._pubsub.close()
-        if self._redis:
-            await self._redis.close()
+        if self._sub_redis:
+            await self._sub_redis.close()
+        if self._pub_redis:
+            await self._pub_redis.close()
 
 
-# Singleton
 ws_manager = WSManager()
