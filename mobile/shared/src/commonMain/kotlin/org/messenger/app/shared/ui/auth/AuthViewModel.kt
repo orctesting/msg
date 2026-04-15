@@ -15,6 +15,7 @@ data class AuthUiState(
     val step: AuthStep = AuthStep.PHONE,
     val phone: String = "",
     val code: String = "",
+    val serverAddress: String = "",
     val isLoading: Boolean = false,
     val error: String? = null,
     val isAuthenticated: Boolean = false
@@ -24,12 +25,14 @@ enum class AuthStep { PHONE, CODE }
 
 class AuthViewModel(
     private val authRepository: AuthRepository,
-    private val deviceInfo: DeviceInfo
+    private val deviceInfo: DeviceInfo,
+    initialServerAddress: String = ""
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private val _state = MutableStateFlow(AuthUiState(
-        isAuthenticated = authRepository.isLoggedIn()
+        isAuthenticated = authRepository.isLoggedIn(),
+        serverAddress = initialServerAddress
     ))
     val state: StateFlow<AuthUiState> = _state.asStateFlow()
 
@@ -41,10 +44,18 @@ class AuthViewModel(
         _state.value = _state.value.copy(code = code, error = null)
     }
 
+    fun onServerAddressChanged(address: String) {
+        _state.value = _state.value.copy(serverAddress = address, error = null)
+    }
+
     fun requestOtp() {
         val phone = _state.value.phone.trim()
         if (phone.isBlank()) {
             _state.value = _state.value.copy(error = "Введите номер телефона")
+            return
+        }
+        if (_state.value.serverAddress.isBlank()) {
+            _state.value = _state.value.copy(error = "Введите адрес сервера")
             return
         }
         scope.launch {

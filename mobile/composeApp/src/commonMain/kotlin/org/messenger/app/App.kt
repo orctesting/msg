@@ -25,6 +25,11 @@ fun App(
     deepLinkChatName: String? = null
 ) {
     val isLoggedIn = appModule.tokenStorage.isLoggedIn()
+    val savedServer = remember { appModule.tokenStorage.getServerUrl() ?: "" }
+
+    // Mutable appModule key: when server changes, we bump this to recreate
+    var appModuleRevision by remember { mutableStateOf(0) }
+    var currentAppModule by remember { mutableStateOf(appModule) }
 
     var currentScreen by remember {
         mutableStateOf<Screen>(
@@ -43,36 +48,56 @@ fun App(
         ) {
             when (val screen = currentScreen) {
                 is Screen.Auth -> {
-                    val viewModel = remember {
+                    val viewModel = remember(appModuleRevision) {
                         AuthViewModel(
-                            authRepository = appModule.authRepository,
+                            authRepository = currentAppModule.authRepository,
                             deviceInfo = DeviceInfo(
                                 deviceId = "device-${getPlatformName()}",
                                 platform = getPlatformName()
-                            )
+                            ),
+                            initialServerAddress = currentAppModule.tokenStorage.getServerUrl() ?: ""
                         )
                     }
                     val state by viewModel.state.collectAsState()
 
                     LaunchedEffect(state.isAuthenticated) {
                         if (state.isAuthenticated) {
+                            val addr = state.serverAddress.trim()
+                            if (addr.isNotBlank()) {
+                                currentAppModule.tokenStorage.saveServerUrl(addr)
+                            }
                             currentScreen = Screen.ChatList
-                            onLoginSuccessCallback(appModule)
+                            onLoginSuccessCallback(currentAppModule)
                         }
                     }
 
-                    AuthScreen(viewModel = viewModel)
+                    AuthScreen(
+                        viewModel = viewModel,
+                        onServerConfirmed = { addr ->
+                            val newBase = AppModule.buildBaseUrl(addr)
+                            if (newBase != currentAppModule.baseUrl) {
+                                val newModule = AppModule(
+                                    baseUrl = newBase,
+                                    wsBaseUrl = AppModule.buildWsUrl(addr)
+                                )
+                                // preserve server url in new storage
+                                newModule.tokenStorage.saveServerUrl(addr)
+                                currentAppModule = newModule
+                                appModuleRevision++
+                            }
+                        }
+                    )
                 }
 
                 is Screen.ChatList -> {
                     ChatListScreen(
-                        appModule = appModule,
+                        appModule = currentAppModule,
                         onChatClick = { chatId, chatName ->
                             currentScreen = Screen.Chat(chatId, chatName)
                         },
                         onLogout = {
-                            appModule.tokenStorage.clear()
-                            appModule.wsService.disconnect()
+                            currentAppModule.tokenStorage.clear()
+                            currentAppModule.wsService.disconnect()
                             currentScreen = Screen.Auth
                         }
                     )
@@ -83,7 +108,7 @@ fun App(
                     ChatScreen(
                         chatId = screen.chatId,
                         chatName = screen.chatName,
-                        appModule = appModule,
+                        appModule = currentAppModule,
                         onBack = {
                             updateCurrentChatId(null)
                             currentScreen = Screen.ChatList

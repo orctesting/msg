@@ -10,7 +10,7 @@ import org.messenger.app.shared.domain.repository.ChatRepository
 class AppModule(
     val baseUrl: String = "http://10.0.2.2:8000/",
     val wsBaseUrl: String = "ws://10.0.2.2:8000/",
-    context: Any? = null  // Android context, ignored on other platforms
+    context: Any? = null
 ) {
     val tokenStorage by lazy { TokenStorage() }
 
@@ -23,4 +23,20 @@ class AppModule(
     val authRepository by lazy { AuthRepository(apiService, tokenStorage) }
 
     val chatRepository by lazy { ChatRepository(apiService) }
+
+    companion object {
+        fun buildBaseUrl(serverAddress: String): String {
+            var addr = serverAddress.trim()
+            if (!addr.startsWith("http://") && !addr.startsWith("https://")) {
+                addr = "http://$addr"
+            }
+            if (!addr.endsWith("/")) addr += "/"
+            return addr
+        }
+
+        fun buildWsUrl(serverAddress: String): String {
+            val base = buildBaseUrl(serverAddress)
+            return base.replaceFirst("http://", "ws://").replaceFirst("https://", "wss://")
+        }
+    }
 }

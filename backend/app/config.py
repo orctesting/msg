@@ -22,9 +22,9 @@ class Settings(BaseSettings):
     fcm_service_account_json: str = ""
     internal_api_key: str | None = None
 
-    otp_request_cooldown_seconds: int = 60
-    otp_max_requests_per_hour: int = 5
-    otp_max_verify_attempts: int = 5
+    otp_request_cooldown_seconds: int = 10
+    otp_max_requests_per_hour: int = 20
+    otp_max_verify_attempts: int = 20
     otp_session_ttl_seconds: int = 300
 
     admin_phone: str = "+70000000000"

@@ -12,7 +12,10 @@ import org.messenger.app.shared.ui.auth.AuthStep
 import org.messenger.app.shared.ui.auth.AuthViewModel
 
 @Composable
-fun AuthScreen(viewModel: AuthViewModel) {
+fun AuthScreen(
+    viewModel: AuthViewModel,
+    onServerConfirmed: (String) -> Unit = {}
+) {
     val state by viewModel.state.collectAsState()
 
     Surface(modifier = Modifier.fillMaxSize()) {
@@ -33,8 +36,13 @@ fun AuthScreen(viewModel: AuthViewModel) {
             when (state.step) {
                 AuthStep.PHONE -> PhoneStep(
                     phone = state.phone,
+                    serverAddress = state.serverAddress,
                     onPhoneChanged = viewModel::onPhoneChanged,
-                    onSubmit = viewModel::requestOtp,
+                    onServerAddressChanged = viewModel::onServerAddressChanged,
+                    onSubmit = {
+                        onServerConfirmed(state.serverAddress.trim())
+                        viewModel.requestOtp()
+                    },
                     isLoading = state.isLoading
                 )
                 AuthStep.CODE -> CodeStep(
@@ -62,10 +70,23 @@ fun AuthScreen(viewModel: AuthViewModel) {
 @Composable
 private fun PhoneStep(
     phone: String,
+    serverAddress: String,
     onPhoneChanged: (String) -> Unit,
+    onServerAddressChanged: (String) -> Unit,
     onSubmit: () -> Unit,
     isLoading: Boolean
 ) {
+    OutlinedTextField(
+        value = serverAddress,
+        onValueChange = onServerAddressChanged,
+        label = { Text("Адрес сервера") },
+        placeholder = { Text("192.168.1.100:8000") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+
+    Spacer(modifier = Modifier.height(12.dp))
+
     OutlinedTextField(
         value = phone,
         onValueChange = onPhoneChanged,

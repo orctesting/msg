@@ -10,6 +10,7 @@ class TokenStorage(private val settings: Settings = Settings()) {
         private const val KEY_USER_ID = "user_id"
         private const val KEY_USER_PHONE = "user_phone"
         private const val KEY_USER_NAME = "user_display_name"
+        private const val KEY_SERVER_URL = "server_url"
     }
 
     fun saveTokens(accessToken: String, refreshToken: String) {
@@ -31,6 +32,12 @@ class TokenStorage(private val settings: Settings = Settings()) {
     fun getUserPhone(): String? = settings.getStringOrNull(KEY_USER_PHONE)
     fun getUserDisplayName(): String? = settings.getStringOrNull(KEY_USER_NAME)
 
+    fun saveServerUrl(url: String) {
+        settings.putString(KEY_SERVER_URL, url)
+    }
+
+    fun getServerUrl(): String? = settings.getStringOrNull(KEY_SERVER_URL)
+
     fun isLoggedIn(): Boolean = getAccessToken() != null
 
     fun clear() {
@@ -39,5 +46,6 @@ class TokenStorage(private val settings: Settings = Settings()) {
         settings.remove(KEY_USER_ID)
         settings.remove(KEY_USER_PHONE)
         settings.remove(KEY_USER_NAME)
+        // НЕ удаляем server_url — пусть остаётся после логаута
     }
 }
