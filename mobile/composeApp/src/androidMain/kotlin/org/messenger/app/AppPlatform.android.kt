@@ -20,3 +20,7 @@ actual fun onLoginSuccessCallback(appModule: AppModule) {
         } catch (_: Exception) {}
     }
 }
+
+actual fun syncAppModule(appModule: AppModule) {
+    MessengerApplication.instance.updateAppModule(appModule)
+}

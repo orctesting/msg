@@ -10,11 +10,13 @@ import org.messenger.app.shared.ui.auth.AuthViewModel
 import org.messenger.app.ui.auth.AuthScreen
 import org.messenger.app.ui.chat.ChatScreen
 import org.messenger.app.ui.chatlist.ChatListScreen
+import org.messenger.app.ui.settings.SettingsScreen
 import org.messenger.app.ui.theme.AppTheme
 
 sealed class Screen {
     data object Auth : Screen()
     data object ChatList : Screen()
+    data object Settings : Screen()
     data class Chat(val chatId: String, val chatName: String) : Screen()
 }
 
@@ -25,9 +27,7 @@ fun App(
     deepLinkChatName: String? = null
 ) {
     val isLoggedIn = appModule.tokenStorage.isLoggedIn()
-    val savedServer = remember { appModule.tokenStorage.getServerUrl() ?: "" }
 
-    // Mutable appModule key: when server changes, we bump this to recreate
     var appModuleRevision by remember { mutableStateOf(0) }
     var currentAppModule by remember { mutableStateOf(appModule) }
 
@@ -48,6 +48,7 @@ fun App(
         ) {
             when (val screen = currentScreen) {
                 is Screen.Auth -> {
+                    // Пересоздаём ViewModel при смене модуля, чтобы requestOtp шёл на правильный baseUrl
                     val viewModel = remember(appModuleRevision) {
                         AuthViewModel(
                             authRepository = currentAppModule.authRepository,
@@ -73,20 +74,41 @@ fun App(
 
                     AuthScreen(
                         viewModel = viewModel,
-                        onServerConfirmed = { addr ->
+                        onRequestOtp = { addr ->
                             val newBase = AppModule.buildBaseUrl(addr)
                             if (newBase != currentAppModule.baseUrl) {
+                                // Пересоздаём модуль, сохраняем набранный телефон
+                                val keptPhone = viewModel.state.value.phone
                                 val newModule = AppModule(
                                     baseUrl = newBase,
                                     wsBaseUrl = AppModule.buildWsUrl(addr)
                                 )
-                                // preserve server url in new storage
                                 newModule.tokenStorage.saveServerUrl(addr)
                                 currentAppModule = newModule
                                 appModuleRevision++
+                                syncAppModule(newModule)
+                                // Запросить OTP будет уже новая ViewModel через LaunchedEffect ниже
+                                pendingPhoneForOtp = keptPhone
+                                pendingServerAddress = addr
+                            } else {
+                                // Адрес не менялся — сразу запрашиваем
+                                viewModel.requestOtp()
                             }
                         }
                     )
+
+                    // Если было пересоздание модуля — запросить OTP на новой VM
+                    LaunchedEffect(appModuleRevision) {
+                        val phone = pendingPhoneForOtp
+                        val addr = pendingServerAddress
+                        if (phone != null && addr != null && appModuleRevision > 0) {
+                            viewModel.onServerAddressChanged(addr)
+                            viewModel.onPhoneChanged(phone)
+                            viewModel.requestOtp()
+                            pendingPhoneForOtp = null
+                            pendingServerAddress = null
+                        }
+                    }
                 }
 
                 is Screen.ChatList -> {
@@ -95,6 +117,14 @@ fun App(
                         onChatClick = { chatId, chatName ->
                             currentScreen = Screen.Chat(chatId, chatName)
                         },
+                        onOpenSettings = { currentScreen = Screen.Settings }
+                    )
+                }
+
+                is Screen.Settings -> {
+                    SettingsScreen(
+                        appModule = currentAppModule,
+                        onBack = { currentScreen = Screen.ChatList },
                         onLogout = {
                             currentAppModule.tokenStorage.clear()
                             currentAppModule.wsService.disconnect()
@@ -120,5 +150,10 @@ fun App(
     }
 }
 
+// Временное хранилище данных между пересозданием AppModule/ViewModel
+private var pendingPhoneForOtp: String? = null
+private var pendingServerAddress: String? = null
+
 expect fun updateCurrentChatId(chatId: String?)
 expect fun onLoginSuccessCallback(appModule: AppModule)
+expect fun syncAppModule(appModule: AppModule)

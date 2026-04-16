@@ -12,17 +12,35 @@ class MessengerApplication : Application() {
     lateinit var appModule: AppModule
         private set
 
+    private lateinit var lifecycleObserver: AppLifecycleObserver
+
     override fun onCreate() {
         super.onCreate()
         instance = this
 
+        // AppModule will auto-resolve URLs from saved TokenStorage
         appModule = AppModule(context = this)
 
         createNotificationChannels()
 
-        ProcessLifecycleOwner.get().lifecycle.addObserver(
-            AppLifecycleObserver(appModule)
-        )
+        lifecycleObserver = AppLifecycleObserver(appModule)
+        ProcessLifecycleOwner.get().lifecycle.addObserver(lifecycleObserver)
+    }
+
+    /**
+     * Called from App.kt when server address changes (login flow creates new AppModule).
+     * Updates the lifecycle observer to use the new module's WS service.
+     */
+    fun updateAppModule(newModule: AppModule) {
+        // Disconnect old WS
+        appModule.wsService.disconnect()
+
+        appModule = newModule
+
+        // Re-register lifecycle observer with new module
+        ProcessLifecycleOwner.get().lifecycle.removeObserver(lifecycleObserver)
+        lifecycleObserver = AppLifecycleObserver(newModule)
+        ProcessLifecycleOwner.get().lifecycle.addObserver(lifecycleObserver)
     }
 
     private fun createNotificationChannels() {

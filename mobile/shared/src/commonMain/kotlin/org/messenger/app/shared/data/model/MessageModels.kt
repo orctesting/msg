@@ -10,15 +10,16 @@ data class MessageDto(
     val chatId: String,
     @SerialName("sender_id")
     val senderId: String? = null,
+    @SerialName("sender_name")
+    val senderName: String? = null,
+    @SerialName("sender_role")
+    val senderRole: String? = null,
     val content: String,
     @SerialName("message_type")
     val messageType: String = "text",
     @SerialName("created_at")
     val createdAt: String = ""
-) {
-    // Для совместимости с UI
-    val senderName: String? get() = null
-}
+)
 
 @Serializable
 data class SendMessageBody(
@@ -33,7 +34,9 @@ data class SendMessageBody(
 data class MessagePage(
     val messages: List<MessageDto>,
     @SerialName("has_more")
-    val hasMore: Boolean
+    val hasMore: Boolean,
+    @SerialName("read_by_others_up_to")
+    val readByOthersUpTo: String? = null
 )
 
 @Serializable

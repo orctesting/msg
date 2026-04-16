@@ -13,6 +13,8 @@ class MessageOut(BaseModel):
     id: uuid.UUID
     chat_id: uuid.UUID
     sender_id: uuid.UUID | None
+    sender_name: str | None = None
+    sender_role: str | None = None
     content: str
     message_type: str
     created_at: datetime
@@ -23,6 +25,7 @@ class MessageOut(BaseModel):
 class MessageListOut(BaseModel):
     messages: list[MessageOut]
     has_more: bool
+    read_by_others_up_to: uuid.UUID | None = None
 
 
 class MessageReadIn(BaseModel):

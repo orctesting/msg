@@ -1,6 +1,6 @@
 ﻿======================================================================
 MOBILE PROJECT DUMP
-Generated: 2026-04-15 22:49:32
+Generated: 2026-04-16 23:04:11
 Root: D:\messenger_proj\source\mobile
 ======================================================================
 
@@ -435,7 +435,7 @@ class AppLifecycleObserver(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\AppPlatform.android.kt
-SIZE: 0.6 KB
+SIZE: 0.8 KB
 ----------------------------------------------------------------------
 package org.messenger.app
 
@@ -458,6 +458,10 @@ actual fun onLoginSuccessCallback(appModule: AppModule) {
             )
         } catch (_: Exception) {}
     }
+}
+
+actual fun syncAppModule(appModule: AppModule) {
+    MessengerApplication.instance.updateAppModule(appModule)
 }
 
 ----------------------------------------------------------------------
@@ -562,7 +566,7 @@ class MainActivity : ComponentActivity() {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\MessengerApplication.kt
-SIZE: 1.9 KB
+SIZE: 2.6 KB
 ----------------------------------------------------------------------
 package org.messenger.app
 
@@ -578,17 +582,35 @@ class MessengerApplication : Application() {
     lateinit var appModule: AppModule
         private set
 
+    private lateinit var lifecycleObserver: AppLifecycleObserver
+
     override fun onCreate() {
         super.onCreate()
         instance = this
 
+        // AppModule will auto-resolve URLs from saved TokenStorage
         appModule = AppModule(context = this)
 
         createNotificationChannels()
 
-        ProcessLifecycleOwner.get().lifecycle.addObserver(
-            AppLifecycleObserver(appModule)
-        )
+        lifecycleObserver = AppLifecycleObserver(appModule)
+        ProcessLifecycleOwner.get().lifecycle.addObserver(lifecycleObserver)
+    }
+
+    /**
+     * Called from App.kt when server address changes (login flow creates new AppModule).
+     * Updates the lifecycle observer to use the new module's WS service.
+     */
+    fun updateAppModule(newModule: AppModule) {
+        // Disconnect old WS
+        appModule.wsService.disconnect()
+
+        appModule = newModule
+
+        // Re-register lifecycle observer with new module
+        ProcessLifecycleOwner.get().lifecycle.removeObserver(lifecycleObserver)
+        lifecycleObserver = AppLifecycleObserver(newModule)
+        ProcessLifecycleOwner.get().lifecycle.addObserver(lifecycleObserver)
     }
 
     private fun createNotificationChannels() {
@@ -1061,13 +1083,15 @@ SIZE: 0.1 KB
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\res\xml\network_security_config.xml
-SIZE: 0.3 KB
+SIZE: 0.4 KB
 ----------------------------------------------------------------------
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">10.0.2.2</domain>
         <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">192.168.1.188</domain>
+        <domain includeSubdomains="true">46.146.86.206</domain>
     </domain-config>
 </network-security-config>
 
@@ -1122,7 +1146,7 @@ SIZE: 1.5 KB
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\App.kt
-SIZE: 3.3 KB
+SIZE: 4.7 KB
 ----------------------------------------------------------------------
 package org.messenger.app
 
@@ -1152,6 +1176,9 @@ fun App(
 ) {
     val isLoggedIn = appModule.tokenStorage.isLoggedIn()
 
+    var appModuleRevision by remember { mutableStateOf(0) }
+    var currentAppModule by remember { mutableStateOf(appModule) }
+
     var currentScreen by remember {
         mutableStateOf<Screen>(
             when {
@@ -1169,36 +1196,57 @@ fun App(
         ) {
             when (val screen = currentScreen) {
                 is Screen.Auth -> {
-                    val viewModel = remember {
+                    val viewModel = remember(appModuleRevision) {
                         AuthViewModel(
-                            authRepository = appModule.authRepository,
+                            authRepository = currentAppModule.authRepository,
                             deviceInfo = DeviceInfo(
                                 deviceId = "device-${getPlatformName()}",
                                 platform = getPlatformName()
-                            )
+                            ),
+                            initialServerAddress = currentAppModule.tokenStorage.getServerUrl() ?: ""
                         )
                     }
                     val state by viewModel.state.collectAsState()
 
                     LaunchedEffect(state.isAuthenticated) {
                         if (state.isAuthenticated) {
+                            val addr = state.serverAddress.trim()
+                            if (addr.isNotBlank()) {
+                                currentAppModule.tokenStorage.saveServerUrl(addr)
+                            }
                             currentScreen = Screen.ChatList
-                            onLoginSuccessCallback(appModule)
+                            onLoginSuccessCallback(currentAppModule)
                         }
                     }
 
-                    AuthScreen(viewModel = viewModel)
+                    AuthScreen(
+                        viewModel = viewModel,
+                        onServerConfirmed = { addr ->
+                            val newBase = AppModule.buildBaseUrl(addr)
+                            if (newBase != currentAppModule.baseUrl) {
+                                val newModule = AppModule(
+                                    baseUrl = newBase,
+                                    wsBaseUrl = AppModule.buildWsUrl(addr)
+                                )
+                                newModule.tokenStorage.saveServerUrl(addr)
+                                currentAppModule = newModule
+                                appModuleRevision++
+                                // Sync with Android Application
+                                syncAppModule(newModule)
+                            }
+                        }
+                    )
                 }
 
                 is Screen.ChatList -> {
                     ChatListScreen(
-                        appModule = appModule,
+                        appModule = currentAppModule,
                         onChatClick = { chatId, chatName ->
                             currentScreen = Screen.Chat(chatId, chatName)
                         },
                         onLogout = {
-                            appModule.tokenStorage.clear()
-                            appModule.wsService.disconnect()
+                            currentAppModule.tokenStorage.clear()
+                            currentAppModule.wsService.disconnect()
                             currentScreen = Screen.Auth
                         }
                     )
@@ -1209,7 +1257,7 @@ fun App(
                     ChatScreen(
                         chatId = screen.chatId,
                         chatName = screen.chatName,
-                        appModule = appModule,
+                        appModule = currentAppModule,
                         onBack = {
                             updateCurrentChatId(null)
                             currentScreen = Screen.ChatList
@@ -1223,6 +1271,7 @@ fun App(
 
 expect fun updateCurrentChatId(chatId: String?)
 expect fun onLoginSuccessCallback(appModule: AppModule)
+expect fun syncAppModule(appModule: AppModule)
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\navigation\AppNavHost.kt
@@ -1286,7 +1335,7 @@ expect fun getPlatformName(): String
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\auth\AuthScreen.kt
-SIZE: 4.2 KB
+SIZE: 4.9 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.auth
 
@@ -1302,7 +1351,10 @@ import org.messenger.app.shared.ui.auth.AuthStep
 import org.messenger.app.shared.ui.auth.AuthViewModel
 
 @Composable
-fun AuthScreen(viewModel: AuthViewModel) {
+fun AuthScreen(
+    viewModel: AuthViewModel,
+    onServerConfirmed: (String) -> Unit = {}
+) {
     val state by viewModel.state.collectAsState()
 
     Surface(modifier = Modifier.fillMaxSize()) {
@@ -1323,8 +1375,13 @@ fun AuthScreen(viewModel: AuthViewModel) {
             when (state.step) {
                 AuthStep.PHONE -> PhoneStep(
                     phone = state.phone,
+                    serverAddress = state.serverAddress,
                     onPhoneChanged = viewModel::onPhoneChanged,
-                    onSubmit = viewModel::requestOtp,
+                    onServerAddressChanged = viewModel::onServerAddressChanged,
+                    onSubmit = {
+                        onServerConfirmed(state.serverAddress.trim())
+                        viewModel.requestOtp()
+                    },
                     isLoading = state.isLoading
                 )
                 AuthStep.CODE -> CodeStep(
@@ -1352,10 +1409,23 @@ fun AuthScreen(viewModel: AuthViewModel) {
 @Composable
 private fun PhoneStep(
     phone: String,
+    serverAddress: String,
     onPhoneChanged: (String) -> Unit,
+    onServerAddressChanged: (String) -> Unit,
     onSubmit: () -> Unit,
     isLoading: Boolean
 ) {
+    OutlinedTextField(
+        value = serverAddress,
+        onValueChange = onServerAddressChanged,
+        label = { Text("РђРґСЂРµСЃ СЃРµСЂРІРµСЂР°") },
+        placeholder = { Text("192.168.1.100:8000") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+
+    Spacer(modifier = Modifier.height(12.dp))
+
     OutlinedTextField(
         value = phone,
         onValueChange = onPhoneChanged,
@@ -1435,7 +1505,7 @@ private fun CodeStep(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chat\ChatScreen.kt
-SIZE: 5.9 KB
+SIZE: 9.8 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chat
 
@@ -1444,13 +1514,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import org.messenger.app.shared.data.model.MessageDto
 import org.messenger.app.shared.di.AppModule
 import org.messenger.app.shared.ui.chat.ChatViewModel
@@ -1480,7 +1552,7 @@ fun ChatScreen(
                 title = { Text(chatName) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "РќР°Р·Р°Рґ")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "РќР°Р·Р°Рґ")
                     }
                 }
             )
@@ -1510,9 +1582,13 @@ fun ChatScreen(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     items(state.messages, key = { it.id }) { message ->
+                        val isOwn = message.senderId == currentUserId
+                        val isRead = isOwn && state.readByOthersUpTo != null &&
+                                isMessageReadByOthers(message, state.messages, state.readByOthersUpTo)
                         MessageBubble(
                             message = message,
-                            isOwnMessage = message.senderId == currentUserId
+                            isOwnMessage = isOwn,
+                            isReadByOthers = isRead
                         )
                     }
 
@@ -1534,6 +1610,31 @@ fun ChatScreen(
                 }
             }
         }
+    }
+}
+
+private fun isMessageReadByOthers(
+    message: MessageDto,
+    messages: List<MessageDto>,
+    readUpToId: String?
+): Boolean {
+    if (readUpToId == null) return false
+    if (message.id == readUpToId) return true
+    val readIdx = messages.indexOfFirst { it.id == readUpToId }
+    val msgIdx = messages.indexOfFirst { it.id == message.id }
+    if (readIdx == -1 || msgIdx == -1) return false
+    return msgIdx >= readIdx
+}
+
+private fun formatTime(createdAt: String): String {
+    return try {
+        val timePart = if (createdAt.contains("T")) {
+            createdAt.substringAfter("T").substringBefore(".")
+                .substringBefore("+").substringBefore("Z")
+        } else createdAt
+        timePart.take(5)
+    } catch (_: Exception) {
+        ""
     }
 }
 
@@ -1579,31 +1680,102 @@ private fun MessageInput(
 }
 
 @Composable
-private fun MessageBubble(message: MessageDto, isOwnMessage: Boolean) {
+private fun MessageBubble(
+    message: MessageDto,
+    isOwnMessage: Boolean,
+    isReadByOthers: Boolean = false
+) {
+    val isSystem = message.messageType == "system"
+    val isAdmin = message.senderRole == "admin"
+
+    // System messages centered
+    if (isSystem) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = Color(0xFFFFF3E0), // light orange for system
+                modifier = Modifier.widthIn(max = 300.dp)
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    Text(
+                        text = message.content,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF795548)
+                    )
+                    Text(
+                        text = formatTime(message.createdAt),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        color = Color(0xFF795548).copy(alpha = 0.6f),
+                        modifier = Modifier.align(Alignment.End)
+                    )
+                }
+            }
+        }
+        return
+    }
+
+    // Determine bubble color
+    val bubbleColor = when {
+        isOwnMessage -> MaterialTheme.colorScheme.primaryContainer
+        isAdmin -> Color(0xFFFFCDD2) // light red for admin messages
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+
+    val nameColor = when {
+        isAdmin -> Color(0xFFD32F2F) // red for admin name
+        else -> MaterialTheme.colorScheme.primary
+    }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isOwnMessage) Arrangement.End else Arrangement.Start
     ) {
         Surface(
             shape = MaterialTheme.shapes.medium,
-            color = if (isOwnMessage)
-                MaterialTheme.colorScheme.primaryContainer
-            else
-                MaterialTheme.colorScheme.surfaceVariant,
+            color = bubbleColor,
             modifier = Modifier.widthIn(max = 280.dp)
         ) {
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                 if (!isOwnMessage) {
                     Text(
-                        text = message.senderName ?: "РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ",
+                        text = when {
+                            isAdmin -> "Admin"
+                            !message.senderName.isNullOrBlank() -> message.senderName!!
+                            else -> "РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ"
+                        },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
+                        color = nameColor
                     )
                 }
                 Text(
                     text = message.content,
                     style = MaterialTheme.typography.bodyMedium
                 )
+                Row(
+                    modifier = Modifier.align(Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    Text(
+                        text = formatTime(message.createdAt),
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    )
+                    if (isOwnMessage) {
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text(
+                            text = "вњ“вњ“",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                            color = if (isReadByOthers)
+                                Color(0xFF2196F3)
+                            else
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        )
+                    }
+                }
             }
         }
     }
@@ -1802,19 +1974,15 @@ actual fun getPlatformName(): String = "desktop"
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\AppPlatform.ios.kt
-SIZE: 0.3 KB
+SIZE: 0.2 KB
 ----------------------------------------------------------------------
 package org.messenger.app
 
 import org.messenger.app.shared.di.AppModule
 
-actual fun updateCurrentChatId(chatId: String?) {
-    // No-op on iOS for now
-}
-
-actual fun onLoginSuccessCallback(appModule: AppModule) {
-    // iOS: APNS registration will be handled separately
-}
+actual fun updateCurrentChatId(chatId: String?) {}
+actual fun onLoginSuccessCallback(appModule: AppModule) {}
+actual fun syncAppModule(appModule: AppModule) {}
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\PlatformName.ios.kt
@@ -1832,13 +2000,9 @@ package org.messenger.app
 
 import org.messenger.app.shared.di.AppModule
 
-actual fun updateCurrentChatId(chatId: String?) {
-    // No-op on desktop
-}
-
-actual fun onLoginSuccessCallback(appModule: AppModule) {
-    // No-op on desktop вЂ” no FCM
-}
+actual fun updateCurrentChatId(chatId: String?) {}
+actual fun onLoginSuccessCallback(appModule: AppModule) {}
+actual fun syncAppModule(appModule: AppModule) {}
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\main.kt
@@ -1871,13 +2035,9 @@ package org.messenger.app
 
 import org.messenger.app.shared.di.AppModule
 
-actual fun updateCurrentChatId(chatId: String?) {
-    // No-op on web
-}
-
-actual fun onLoginSuccessCallback(appModule: AppModule) {
-    // No-op on web
-}
+actual fun updateCurrentChatId(chatId: String?) {}
+actual fun onLoginSuccessCallback(appModule: AppModule) {}
+actual fun syncAppModule(appModule: AppModule) {}
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\wasmJsMain\kotlin\org\messenger\app\PlatformName.wasmJs.kt
@@ -2743,7 +2903,7 @@ expect fun getPlatform(): Platform
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\local\TokenStorage.kt
-SIZE: 1.6 KB
+SIZE: 1.9 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.local
 
@@ -2757,6 +2917,7 @@ class TokenStorage(private val settings: Settings = Settings()) {
         private const val KEY_USER_ID = "user_id"
         private const val KEY_USER_PHONE = "user_phone"
         private const val KEY_USER_NAME = "user_display_name"
+        private const val KEY_SERVER_URL = "server_url"
     }
 
     fun saveTokens(accessToken: String, refreshToken: String) {
@@ -2778,6 +2939,12 @@ class TokenStorage(private val settings: Settings = Settings()) {
     fun getUserPhone(): String? = settings.getStringOrNull(KEY_USER_PHONE)
     fun getUserDisplayName(): String? = settings.getStringOrNull(KEY_USER_NAME)
 
+    fun saveServerUrl(url: String) {
+        settings.putString(KEY_SERVER_URL, url)
+    }
+
+    fun getServerUrl(): String? = settings.getStringOrNull(KEY_SERVER_URL)
+
     fun isLoggedIn(): Boolean = getAccessToken() != null
 
     fun clear() {
@@ -2786,6 +2953,7 @@ class TokenStorage(private val settings: Settings = Settings()) {
         settings.remove(KEY_USER_ID)
         settings.remove(KEY_USER_PHONE)
         settings.remove(KEY_USER_NAME)
+        // РќР• СѓРґР°Р»СЏРµРј server_url вЂ” РїСѓСЃС‚СЊ РѕСЃС‚Р°С‘С‚СЃСЏ РїРѕСЃР»Рµ Р»РѕРіР°СѓС‚Р°
     }
 }
 
@@ -2939,7 +3107,7 @@ data class PushTokenResponse(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\model\MessageModels.kt
-SIZE: 1 KB
+SIZE: 1.1 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.model
 
@@ -2953,15 +3121,16 @@ data class MessageDto(
     val chatId: String,
     @SerialName("sender_id")
     val senderId: String? = null,
+    @SerialName("sender_name")
+    val senderName: String? = null,
+    @SerialName("sender_role")
+    val senderRole: String? = null,
     val content: String,
     @SerialName("message_type")
     val messageType: String = "text",
     @SerialName("created_at")
     val createdAt: String = ""
-) {
-    // Р”Р»СЏ СЃРѕРІРјРµСЃС‚РёРјРѕСЃС‚Рё СЃ UI
-    val senderName: String? get() = null
-}
+)
 
 @Serializable
 data class SendMessageBody(
@@ -2976,7 +3145,9 @@ data class SendMessageBody(
 data class MessagePage(
     val messages: List<MessageDto>,
     @SerialName("has_more")
-    val hasMore: Boolean
+    val hasMore: Boolean,
+    @SerialName("read_by_others_up_to")
+    val readByOthersUpTo: String? = null
 )
 
 @Serializable
@@ -3244,17 +3415,22 @@ fun createHttpClient(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\remote\WsService.kt
-SIZE: 3.4 KB
+SIZE: 5.4 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.remote
 
 import io.ktor.client.*
+import io.ktor.client.call.*
 import io.ktor.client.plugins.websocket.*
+import io.ktor.client.request.*
+import io.ktor.http.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlin.math.pow
 import org.messenger.app.shared.data.local.TokenStorage
+import org.messenger.app.shared.data.model.RefreshTokenBody
+import org.messenger.app.shared.data.model.RefreshTokenResponse
 import org.messenger.app.shared.data.model.WsEvent
 
 class WsService(
@@ -3309,46 +3485,94 @@ class WsService(
         return delay.coerceAtMost(MAX_DELAY_MS)
     }
 
+    /**
+     * Ensures we have a valid access token before connecting WS.
+     * If current token is missing, tries to refresh.
+     * Returns a valid token or null if impossible.
+     */
+    private suspend fun getValidToken(): String? {
+        val current = tokenStorage.getAccessToken()
+        if (current != null) return current
+
+        // Token is null вЂ” try refresh
+        return tryRefreshToken()
+    }
+
+    /**
+     * Called when WS connection is rejected (e.g. 403).
+     * Refreshes the token so next reconnect attempt uses a fresh one.
+     */
+    private suspend fun tryRefreshToken(): String? {
+        val refresh = tokenStorage.getRefreshToken() ?: return null
+        return try {
+            val response = client.post("api/v1/auth/refresh") {
+                contentType(ContentType.Application.Json)
+                setBody(RefreshTokenBody(refresh))
+            }
+            if (response.status == HttpStatusCode.OK) {
+                val tokens: RefreshTokenResponse = response.body()
+                tokenStorage.saveTokens(tokens.accessToken, tokens.refreshToken)
+                tokens.accessToken
+            } else {
+                tokenStorage.clear()
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private suspend fun openSession() {
-        val token = tokenStorage.getAccessToken() ?: run {
+        val token = getValidToken() ?: run {
             delay(5000)
             return
         }
         val urlString = "${wsBaseUrl}api/v1/ws?token=$token"
 
-        client.webSocket(urlString) {
-            _connected.value = true
-            reconnectAttempt = 0
+        try {
+            client.webSocket(urlString) {
+                _connected.value = true
+                reconnectAttempt = 0
 
-            val pingJob = launch {
-                while (isActive) {
-                    delay(PING_INTERVAL_MS)
-                    try {
-                        send(Frame.Ping(byteArrayOf()))
-                    } catch (_: Exception) {
-                        break
-                    }
-                }
-            }
-
-            try {
-                for (frame in incoming) {
-                    when (frame) {
-                        is Frame.Text -> {
-                            val text = frame.readText()
-                            try {
-                                val event = appJson.decodeFromString<WsEvent>(text)
-                                _events.emit(event)
-                            } catch (_: Exception) {}
+                val pingJob = launch {
+                    while (isActive) {
+                        delay(PING_INTERVAL_MS)
+                        try {
+                            send(Frame.Ping(byteArrayOf()))
+                        } catch (_: Exception) {
+                            break
                         }
-                        is Frame.Pong -> { /* alive */ }
-                        else -> {}
                     }
                 }
-            } finally {
-                pingJob.cancel()
-                _connected.value = false
+
+                try {
+                    for (frame in incoming) {
+                        when (frame) {
+                            is Frame.Text -> {
+                                val text = frame.readText()
+                                try {
+                                    val event = appJson.decodeFromString<WsEvent>(text)
+                                    _events.emit(event)
+                                } catch (_: Exception) {}
+                            }
+                            is Frame.Pong -> { /* alive */ }
+                            else -> {}
+                        }
+                    }
+                } finally {
+                    pingJob.cancel()
+                    _connected.value = false
+                }
             }
+        } catch (e: Exception) {
+            _connected.value = false
+            // If connection was rejected (likely 403 due to expired token),
+            // try refreshing so next attempt has a fresh token
+            val message = e.message ?: ""
+            if (message.contains("403") || message.contains("401")) {
+                tryRefreshToken()
+            }
+            throw e
         }
     }
 
@@ -3359,7 +3583,7 @@ class WsService(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\di\AppModule.kt
-SIZE: 1 KB
+SIZE: 2.1 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.di
 
@@ -3371,21 +3595,55 @@ import org.messenger.app.shared.domain.repository.AuthRepository
 import org.messenger.app.shared.domain.repository.ChatRepository
 
 class AppModule(
-    val baseUrl: String = "http://10.0.2.2:8000/",
-    val wsBaseUrl: String = "ws://10.0.2.2:8000/",
-    context: Any? = null  // Android context, ignored on other platforms
+    baseUrl: String? = null,
+    wsBaseUrl: String? = null,
+    context: Any? = null
 ) {
     val tokenStorage by lazy { TokenStorage() }
 
-    val httpClient by lazy { createHttpClient(tokenStorage, baseUrl) }
+    // Resolve URLs: explicit param > saved in storage > fallback
+    val baseUrl: String by lazy {
+        baseUrl ?: run {
+            val saved = tokenStorage.getServerUrl()
+            if (!saved.isNullOrBlank()) buildBaseUrl(saved) else DEFAULT_BASE_URL
+        }
+    }
+
+    val wsBaseUrl: String by lazy {
+        wsBaseUrl ?: run {
+            val saved = tokenStorage.getServerUrl()
+            if (!saved.isNullOrBlank()) buildWsUrl(saved) else DEFAULT_WS_URL
+        }
+    }
+
+    val httpClient by lazy { createHttpClient(tokenStorage, this.baseUrl) }
 
     val apiService by lazy { ApiService(httpClient) }
 
-    val wsService by lazy { WsService(httpClient, tokenStorage, wsBaseUrl) }
+    val wsService by lazy { WsService(httpClient, tokenStorage, this.wsBaseUrl) }
 
     val authRepository by lazy { AuthRepository(apiService, tokenStorage) }
 
     val chatRepository by lazy { ChatRepository(apiService) }
+
+    companion object {
+        private const val DEFAULT_BASE_URL = "http://10.0.2.2:8000/"
+        private const val DEFAULT_WS_URL = "ws://10.0.2.2:8000/"
+
+        fun buildBaseUrl(serverAddress: String): String {
+            var addr = serverAddress.trim()
+            if (!addr.startsWith("http://") && !addr.startsWith("https://")) {
+                addr = "http://$addr"
+            }
+            if (!addr.endsWith("/")) addr += "/"
+            return addr
+        }
+
+        fun buildWsUrl(serverAddress: String): String {
+            val base = buildBaseUrl(serverAddress)
+            return base.replaceFirst("http://", "ws://").replaceFirst("https://", "wss://")
+        }
+    }
 }
 
 ----------------------------------------------------------------------
@@ -3474,7 +3732,7 @@ class ChatRepository(private val api: ApiService) {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\auth\AuthViewModel.kt
-SIZE: 3.7 KB
+SIZE: 4.2 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.ui.auth
 
@@ -3493,6 +3751,7 @@ data class AuthUiState(
     val step: AuthStep = AuthStep.PHONE,
     val phone: String = "",
     val code: String = "",
+    val serverAddress: String = "",
     val isLoading: Boolean = false,
     val error: String? = null,
     val isAuthenticated: Boolean = false
@@ -3502,12 +3761,14 @@ enum class AuthStep { PHONE, CODE }
 
 class AuthViewModel(
     private val authRepository: AuthRepository,
-    private val deviceInfo: DeviceInfo
+    private val deviceInfo: DeviceInfo,
+    initialServerAddress: String = ""
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private val _state = MutableStateFlow(AuthUiState(
-        isAuthenticated = authRepository.isLoggedIn()
+        isAuthenticated = authRepository.isLoggedIn(),
+        serverAddress = initialServerAddress
     ))
     val state: StateFlow<AuthUiState> = _state.asStateFlow()
 
@@ -3519,10 +3780,18 @@ class AuthViewModel(
         _state.value = _state.value.copy(code = code, error = null)
     }
 
+    fun onServerAddressChanged(address: String) {
+        _state.value = _state.value.copy(serverAddress = address, error = null)
+    }
+
     fun requestOtp() {
         val phone = _state.value.phone.trim()
         if (phone.isBlank()) {
             _state.value = _state.value.copy(error = "Р’РІРµРґРёС‚Рµ РЅРѕРјРµСЂ С‚РµР»РµС„РѕРЅР°")
+            return
+        }
+        if (_state.value.serverAddress.isBlank()) {
+            _state.value = _state.value.copy(error = "Р’РІРµРґРёС‚Рµ Р°РґСЂРµСЃ СЃРµСЂРІРµСЂР°")
             return
         }
         scope.launch {
@@ -3593,7 +3862,7 @@ class AuthViewModel(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\chat\ChatViewModel.kt
-SIZE: 4.3 KB
+SIZE: 6.9 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.ui.chat
 
@@ -3603,10 +3872,13 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.decodeFromJsonElement
 import org.messenger.app.shared.data.model.MessageDto
 import org.messenger.app.shared.data.model.WsNewMessage
+import org.messenger.app.shared.data.model.WsMessageRead
+import org.messenger.app.shared.data.remote.ApiException
 import org.messenger.app.shared.data.remote.WsService
 import org.messenger.app.shared.data.remote.appJson
 import org.messenger.app.shared.domain.repository.ChatRepository
@@ -3615,11 +3887,13 @@ data class ChatUiState(
     val chatId: String = "",
     val chatName: String = "",
     val messages: List<MessageDto> = emptyList(),
+    val readByOthersUpTo: String? = null,
     val draft: String = "",
     val isLoading: Boolean = false,
     val isSending: Boolean = false,
     val hasMore: Boolean = true,
-    val error: String? = null
+    val error: String? = null,
+    val authError: Boolean = false
 )
 
 class ChatViewModel(
@@ -3632,6 +3906,9 @@ class ChatViewModel(
     private val _state = MutableStateFlow(ChatUiState(chatId = chatId))
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
+    private var loadRetryCount = 0
+    private val maxLoadRetries = 3
+
     init {
         loadChatInfo()
         loadMessages()
@@ -3642,56 +3919,101 @@ class ChatViewModel(
         scope.launch {
             try {
                 val chat = chatRepository.getChat(chatId)
-                _state.value = _state.value.copy(chatName = chat.name ?: "Р§Р°С‚")
+                _state.update { it.copy(chatName = chat.name ?: "Р§Р°С‚") }
             } catch (_: Exception) {}
         }
     }
 
     fun loadMessages() {
-        if (_state.value.isLoading || !_state.value.hasMore) return
+        val current = _state.value
+        if (current.isLoading || !current.hasMore || current.authError) return
+
         scope.launch {
-            _state.value = _state.value.copy(isLoading = true, error = null)
+            _state.update { it.copy(isLoading = true, error = null) }
             try {
-                val before = _state.value.messages.lastOrNull()?.id
-                val page = chatRepository.getMessages(chatId, before)
-                _state.value = _state.value.copy(
-                    messages = _state.value.messages + page.messages,
-                    hasMore = page.hasMore,
-                    isLoading = false
-                )
-                page.messages.firstOrNull()?.let { msg ->
-                    chatRepository.markRead(chatId, msg.id)
+                val oldestId = _state.value.messages.lastOrNull()?.id
+                val page = chatRepository.getMessages(chatId, oldestId)
+                val reversed = page.messages.reversed()
+
+                val newReadUpTo = page.readByOthersUpTo ?: _state.value.readByOthersUpTo
+
+                _state.update {
+                    it.copy(
+                        messages = it.messages + reversed,
+                        hasMore = page.hasMore,
+                        isLoading = false,
+                        readByOthersUpTo = newReadUpTo
+                    )
+                }
+                loadRetryCount = 0
+
+                page.messages.lastOrNull()?.let { msg ->
+                    try {
+                        chatRepository.markRead(chatId, msg.id)
+                    } catch (_: Exception) {}
+                }
+            } catch (e: ApiException) {
+                if (e.statusCode == 401 || e.statusCode == 403) {
+                    // Auth failed even after Ktor's auto-refresh вЂ” stop retrying
+                    _state.update {
+                        it.copy(
+                            isLoading = false,
+                            hasMore = false,
+                            authError = true,
+                            error = "РЎРµСЃСЃРёСЏ РёСЃС‚РµРєР»Р°. РџРµСЂРµР·Р°Р№РґРёС‚Рµ РІ РїСЂРёР»РѕР¶РµРЅРёРµ."
+                        )
+                    }
+                } else {
+                    handleLoadError(e)
                 }
             } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    isLoading = false,
-                    error = e.message ?: "РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё"
-                )
+                handleLoadError(e)
             }
         }
     }
 
+    private fun handleLoadError(e: Exception) {
+        loadRetryCount++
+        _state.update {
+            it.copy(
+                isLoading = false,
+                // After max retries, stop trying to load more
+                hasMore = loadRetryCount < maxLoadRetries,
+                error = e.message ?: "РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё"
+            )
+        }
+    }
+
     fun onDraftChanged(text: String) {
-        _state.value = _state.value.copy(draft = text)
+        _state.update { it.copy(draft = text) }
     }
 
     fun send() {
         val text = _state.value.draft.trim()
         if (text.isBlank()) return
         scope.launch {
-            _state.value = _state.value.copy(isSending = true)
+            _state.update { it.copy(isSending = true) }
             try {
                 val msg = chatRepository.sendMessage(chatId, text)
-                _state.value = _state.value.copy(
-                    messages = listOf(msg) + _state.value.messages,
-                    draft = "",
-                    isSending = false
-                )
+                val current = _state.value.messages
+                if (current.none { it.id == msg.id }) {
+                    _state.update {
+                        it.copy(
+                            messages = listOf(msg) + it.messages,
+                            draft = "",
+                            isSending = false
+                        )
+                    }
+                } else {
+                    _state.update { it.copy(draft = "", isSending = false) }
+                }
             } catch (e: Exception) {
-                _state.value = _state.value.copy(
-                    isSending = false,
-                    error = e.message ?: "РћС€РёР±РєР° РѕС‚РїСЂР°РІРєРё"
-                )
+                _state.update {
+                    it.copy(
+                        isSending = false,
+                        error = e.message ?: "РћС€РёР±РєР° РѕС‚РїСЂР°РІРєРё"
+                    )
+                }
             }
         }
     }
@@ -3699,19 +4021,33 @@ class ChatViewModel(
     private fun observeWs() {
         scope.launch {
             wsService.events.collect { event ->
-                if (event.type == "new_message") {
-                    try {
-                        val data = appJson.decodeFromJsonElement<WsNewMessage>(event.data)
-                        if (data.chatId == chatId) {
-                            val current = _state.value.messages
-                            if (current.none { it.id == data.message.id }) {
-                                _state.value = _state.value.copy(
-                                    messages = listOf(data.message) + current
-                                )
-                                chatRepository.markRead(chatId, data.message.id)
+                when (event.type) {
+                    "new_message" -> {
+                        try {
+                            val data = appJson.decodeFromJsonElement<WsNewMessage>(event.data)
+                            if (data.chatId == chatId) {
+                                val current = _state.value.messages
+                                if (current.none { it.id == data.message.id }) {
+                                    _state.update {
+                                        it.copy(messages = listOf(data.message) + it.messages)
+                                    }
+                                    try {
+                                        chatRepository.markRead(chatId, data.message.id)
+                                    } catch (_: Exception) {}
+                                }
                             }
-                        }
-                    } catch (_: Exception) {}
+                        } catch (_: Exception) {}
+                    }
+                    "message_read" -> {
+                        try {
+                            val data = appJson.decodeFromJsonElement<WsMessageRead>(event.data)
+                            if (data.chatId == chatId) {
+                                _state.update {
+                                    it.copy(readByOthersUpTo = data.lastReadMessageId)
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
                 }
             }
         }

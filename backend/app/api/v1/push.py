@@ -81,6 +81,7 @@ async def broadcast_push(
     await session.commit()
     await session.refresh(message)
 
+    # message.sender_id = None, значит это системное
     try:
         await ws_manager.publish_event(
             chat_id=body.chat_id,
@@ -92,6 +93,8 @@ async def broadcast_push(
                         "id": str(message.id),
                         "chat_id": str(message.chat_id),
                         "sender_id": None,
+                        "sender_name": "Admin",
+                        "sender_role": "admin",
                         "content": message.content,
                         "message_type": message.message_type,
                         "created_at": message.created_at.isoformat(),

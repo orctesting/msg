@@ -6,7 +6,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ExitToApp
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,7 +24,7 @@ import org.messenger.app.shared.ui.chatlist.ChatListViewModel
 fun ChatListScreen(
     appModule: AppModule,
     onChatClick: (chatId: String, chatName: String) -> Unit,
-    onLogout: () -> Unit
+    onOpenSettings: () -> Unit
 ) {
     val viewModel = remember {
         ChatListViewModel(
@@ -39,11 +39,8 @@ fun ChatListScreen(
             TopAppBar(
                 title = { Text("Чаты") },
                 actions = {
-                    IconButton(onClick = onLogout) {
-                        Icon(
-                            Icons.Default.ExitToApp,
-                            contentDescription = "Выйти"
-                        )
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Настройки")
                     }
                 }
             )

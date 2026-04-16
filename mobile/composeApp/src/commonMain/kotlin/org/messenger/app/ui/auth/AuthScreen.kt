@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
@@ -14,7 +15,7 @@ import org.messenger.app.shared.ui.auth.AuthViewModel
 @Composable
 fun AuthScreen(
     viewModel: AuthViewModel,
-    onServerConfirmed: (String) -> Unit = {}
+    onRequestOtp: (serverAddress: String) -> Unit = {}
 ) {
     val state by viewModel.state.collectAsState()
 
@@ -39,10 +40,7 @@ fun AuthScreen(
                     serverAddress = state.serverAddress,
                     onPhoneChanged = viewModel::onPhoneChanged,
                     onServerAddressChanged = viewModel::onServerAddressChanged,
-                    onSubmit = {
-                        onServerConfirmed(state.serverAddress.trim())
-                        viewModel.requestOtp()
-                    },
+                    onSubmit = { onRequestOtp(state.serverAddress.trim()) },
                     isLoading = state.isLoading
                 )
                 AuthStep.CODE -> CodeStep(
@@ -76,6 +74,13 @@ private fun PhoneStep(
     onSubmit: () -> Unit,
     isLoading: Boolean
 ) {
+    // Инициализация "+7" если поле пустое
+    LaunchedEffect(Unit) {
+        if (phone.isBlank()) {
+            onPhoneChanged("+7")
+        }
+    }
+
     OutlinedTextField(
         value = serverAddress,
         onValueChange = onServerAddressChanged,
@@ -89,7 +94,15 @@ private fun PhoneStep(
 
     OutlinedTextField(
         value = phone,
-        onValueChange = onPhoneChanged,
+        onValueChange = { newValue ->
+            // Гарантируем, что "+" всегда в начале
+            val sanitized = when {
+                newValue.isEmpty() -> "+"
+                !newValue.startsWith("+") -> "+$newValue"
+                else -> newValue
+            }
+            onPhoneChanged(sanitized)
+        },
         label = { Text("Номер телефона") },
         placeholder = { Text("+7 999 123 45 67") },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),

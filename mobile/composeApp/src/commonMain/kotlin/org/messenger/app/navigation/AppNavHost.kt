@@ -13,7 +13,7 @@ enum class NavScreen {
 @Composable
 fun AppNavHost(
     appModule: AppModule,
-    onLogout: () -> Unit
+    onOpenSettings: () -> Unit
 ) {
     var currentScreen by remember { mutableStateOf(NavScreen.CHAT_LIST) }
     var selectedChatId by remember { mutableStateOf("") }
@@ -32,7 +32,7 @@ fun AppNavHost(
                     selectedChatName = chatName
                     currentScreen = NavScreen.CHAT
                 },
-                onLogout = onLogout
+                onOpenSettings = onOpenSettings
             )
         }
         NavScreen.CHAT -> {
