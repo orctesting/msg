@@ -1,11 +1,10 @@
 package org.messenger.app.ui.chat
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Send
@@ -67,6 +66,8 @@ fun ChatScreen(
             if (state.isLoading && state.messages.isEmpty()) {
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
             } else {
+                val messages = state.messages
+
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
@@ -74,15 +75,30 @@ fun ChatScreen(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    items(state.messages, key = { it.id }) { message ->
+                    itemsIndexed(
+                        items = messages,
+                        key = { _, msg -> msg.id }
+                    ) { index, message ->
                         val isOwn = message.senderId == currentUserId
                         val isRead = isOwn && state.readByOthersUpTo != null &&
-                                isMessageReadByOthers(message, state.messages, state.readByOthersUpTo)
-                        MessageBubble(
-                            message = message,
-                            isOwnMessage = isOwn,
-                            isReadByOthers = isRead
-                        )
+                                isMessageReadByOthers(message, messages, state.readByOthersUpTo)
+
+                        val currentDay = dayKeyFromIso(message.createdAt)
+                        val olderMsg = if (index < messages.size - 1) messages[index + 1] else null
+                        val olderDay = olderMsg?.let { dayKeyFromIso(it.createdAt) }
+                        val showDateHeader = olderDay != currentDay &&
+                                (olderMsg != null || !state.hasMore)
+
+                        Column {
+                            if (showDateHeader) {
+                                DateSeparator(label = formatDateLabel(currentDay))
+                            }
+                            MessageBubble(
+                                message = message,
+                                isOwnMessage = isOwn,
+                                isReadByOthers = isRead
+                            )
+                        }
                     }
 
                     if (state.hasMore) {
@@ -101,7 +117,58 @@ fun ChatScreen(
                         }
                     }
                 }
+
+                // Sticky header — день самого верхнего видимого сообщения
+                val topVisibleDay by remember {
+                    derivedStateOf {
+                        val visibleItems = listState.layoutInfo.visibleItemsInfo
+                        if (visibleItems.isEmpty() || messages.isEmpty()) return@derivedStateOf null
+
+                        // visibleItemsInfo всегда отсортирован по возрастанию index.
+                        // В reverseLayout=true больший index = выше визуально,
+                        // значит последний элемент в списке — самый верхний на экране.
+                        val topItem = visibleItems.last()
+                        val msg = messages.getOrNull(topItem.index) ?: return@derivedStateOf null
+                        dayKeyFromIso(msg.createdAt)
+                    }
+                }
+
+                // Показываем sticky только когда список прокручен (есть скрытые сверху дни)
+                // и реально есть что залипать. Когда пользователь в самом верху списка —
+                // верхний sticky визуально совпадёт с обычным разделителем, это ок.
+                topVisibleDay?.let { day ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        contentAlignment = Alignment.TopCenter
+                    ) {
+                        DateSeparator(label = formatDateLabel(day))
+                    }
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun DateSeparator(label: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.Center
+    ) {
+        Surface(
+            shape = MaterialTheme.shapes.small,
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
+        ) {
+            Text(
+                text = label,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -187,7 +254,6 @@ private fun MessageBubble(
     val isSystem = message.messageType == "system"
     val isAdmin = message.senderRole == "admin"
 
-    // System messages centered
     if (isSystem) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -195,7 +261,7 @@ private fun MessageBubble(
         ) {
             Surface(
                 shape = MaterialTheme.shapes.medium,
-                color = Color(0xFFFFF3E0), // light orange for system
+                color = Color(0xFFFFF3E0),
                 modifier = Modifier.widthIn(max = 300.dp)
             ) {
                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
@@ -216,15 +282,14 @@ private fun MessageBubble(
         return
     }
 
-    // Determine bubble color
     val bubbleColor = when {
         isOwnMessage -> MaterialTheme.colorScheme.primaryContainer
-        isAdmin -> Color(0xFFFFCDD2) // light red for admin messages
+        isAdmin -> Color(0xFFFFCDD2)
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
 
     val nameColor = when {
-        isAdmin -> Color(0xFFD32F2F) // red for admin name
+        isAdmin -> Color(0xFFD32F2F)
         else -> MaterialTheme.colorScheme.primary
     }
 

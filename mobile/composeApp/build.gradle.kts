@@ -36,6 +36,7 @@ kotlin {
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.androidx.lifecycle.viewmodelCompose)
             implementation(libs.androidx.lifecycle.runtimeCompose)
+            implementation(libs.kotlinx.datetime)
             implementation("org.jetbrains.compose.material:material-icons-extended:1.7.3")
             implementation(projects.shared)
         }
