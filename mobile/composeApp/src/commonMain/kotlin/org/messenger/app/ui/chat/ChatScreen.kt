@@ -1,20 +1,29 @@
+// mobile/composeApp/src/commonMain/kotlin/org/messenger/app/ui/chat/ChatScreen.kt
 package org.messenger.app.ui.chat
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 import org.messenger.app.shared.data.model.MessageDto
 import org.messenger.app.shared.di.AppModule
 import org.messenger.app.shared.ui.chat.ChatViewModel
@@ -37,6 +46,52 @@ fun ChatScreen(
     val state by viewModel.state.collectAsState()
     val listState = rememberLazyListState()
     val currentUserId = remember { appModule.tokenStorage.getUserId() }
+    val coroutineScope = rememberCoroutineScope()
+
+    // Счётчик непрочитанных: сообщения, пришедшие когда список был прокручен вверх
+    var unreadCount by remember { mutableStateOf(0) }
+    // id первого непрочитанного (самого старого из новоприбывших, показан как якорь)
+    var firstUnreadMessageId by remember { mutableStateOf<String?>(null) }
+    var lastKnownTopMessageId by remember { mutableStateOf<String?>(null) }
+
+    // Определяем, виден ли последний (самый новый) элемент — в reverseLayout это index 0
+    val isAtBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val firstVisible = info.visibleItemsInfo.firstOrNull()
+            firstVisible == null || firstVisible.index == 0
+        }
+    }
+
+    // Автоскролл вниз + обработка непрочитанных при появлении новых сообщений
+    LaunchedEffect(state.messages.firstOrNull()?.id) {
+        val topMsg = state.messages.firstOrNull() ?: return@LaunchedEffect
+        if (topMsg.id == lastKnownTopMessageId) return@LaunchedEffect
+        val isOwn = topMsg.senderId != null && topMsg.senderId == currentUserId
+
+        if (isAtBottom || isOwn) {
+            // Автоскролл к низу
+            coroutineScope.launch {
+                listState.animateScrollToItem(0)
+            }
+            unreadCount = 0
+            firstUnreadMessageId = null
+        } else {
+            unreadCount += 1
+            if (firstUnreadMessageId == null) {
+                firstUnreadMessageId = topMsg.id
+            }
+        }
+        lastKnownTopMessageId = topMsg.id
+    }
+
+    // Когда пользователь сам доскроллил вниз — сбрасываем счётчик
+    LaunchedEffect(isAtBottom) {
+        if (isAtBottom) {
+            unreadCount = 0
+            firstUnreadMessageId = null
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -53,7 +108,12 @@ fun ChatScreen(
             MessageInput(
                 draft = state.draft,
                 onDraftChanged = viewModel::onDraftChanged,
-                onSend = viewModel::send,
+                onSend = {
+                    viewModel.send()
+                    coroutineScope.launch {
+                        listState.animateScrollToItem(0)
+                    }
+                },
                 isSending = state.isSending
             )
         }
@@ -123,19 +183,12 @@ fun ChatScreen(
                     derivedStateOf {
                         val visibleItems = listState.layoutInfo.visibleItemsInfo
                         if (visibleItems.isEmpty() || messages.isEmpty()) return@derivedStateOf null
-
-                        // visibleItemsInfo всегда отсортирован по возрастанию index.
-                        // В reverseLayout=true больший index = выше визуально,
-                        // значит последний элемент в списке — самый верхний на экране.
                         val topItem = visibleItems.last()
                         val msg = messages.getOrNull(topItem.index) ?: return@derivedStateOf null
                         dayKeyFromIso(msg.createdAt)
                     }
                 }
 
-                // Показываем sticky только когда список прокручен (есть скрытые сверху дни)
-                // и реально есть что залипать. Когда пользователь в самом верху списка —
-                // верхний sticky визуально совпадёт с обычным разделителем, это ок.
                 topVisibleDay?.let { day ->
                     Box(
                         modifier = Modifier
@@ -144,6 +197,66 @@ fun ChatScreen(
                         contentAlignment = Alignment.TopCenter
                     ) {
                         DateSeparator(label = formatDateLabel(day))
+                    }
+                }
+
+                // Кнопка «вниз» с индикатором непрочитанных
+                AnimatedVisibility(
+                    visible = !isAtBottom,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp)
+                ) {
+                    Box {
+                        FloatingActionButton(
+                            onClick = {
+                                coroutineScope.launch {
+                                    val targetId = firstUnreadMessageId
+                                    if (targetId != null && unreadCount > 0) {
+                                        val idx = messages.indexOfFirst { it.id == targetId }
+                                        if (idx >= 0) {
+                                            listState.animateScrollToItem(idx)
+                                        } else {
+                                            listState.animateScrollToItem(0)
+                                        }
+                                        firstUnreadMessageId = null
+                                        unreadCount = 0
+                                    } else {
+                                        listState.animateScrollToItem(0)
+                                        unreadCount = 0
+                                        firstUnreadMessageId = null
+                                    }
+                                }
+                            },
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Вниз")
+                        }
+                        if (unreadCount > 0) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .offset(x = 4.dp, y = (-4).dp)
+                                    .defaultMinSize(minWidth = 20.dp, minHeight = 20.dp)
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = if (unreadCount > 99) "99+" else unreadCount.toString(),
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -251,9 +364,37 @@ private fun MessageBubble(
     isOwnMessage: Boolean,
     isReadByOthers: Boolean = false
 ) {
-    val isSystem = message.messageType == "system"
-    val isAdmin = message.senderRole == "admin"
+    val type = message.messageType?.lowercase() ?: "text"
+    val isNotification = type == "notification"
+    val isSystem = type == "system"
+    val isAdmin = message.senderRole?.lowercase() == "admin"
 
+    // Системные уведомления — по центру, красное выделение, без имени/иконки/времени
+    if (isNotification) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = Color(0xFFFFEBEE), // светло-красный фон
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEF5350)),
+                modifier = Modifier.widthIn(max = 320.dp)
+            ) {
+                Text(
+                    text = message.content,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFC62828),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                )
+            }
+        }
+        return
+    }
+
+    // Старый "system" стиль — оставляем как был
     if (isSystem) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -282,6 +423,7 @@ private fun MessageBubble(
         return
     }
 
+    // Обычные text-сообщения (в т.ч. от админа — светло-красные, как раньше)
     val bubbleColor = when {
         isOwnMessage -> MaterialTheme.colorScheme.primaryContainer
         isAdmin -> Color(0xFFFFCDD2)
