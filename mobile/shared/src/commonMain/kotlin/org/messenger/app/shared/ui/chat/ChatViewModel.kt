@@ -9,9 +9,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.decodeFromJsonElement
-import org.messenger.app.shared.data.model.MessageDto
-import org.messenger.app.shared.data.model.WsNewMessage
-import org.messenger.app.shared.data.model.WsMessageRead
+import org.messenger.app.shared.data.model.*
 import org.messenger.app.shared.data.remote.ApiException
 import org.messenger.app.shared.data.remote.WsService
 import org.messenger.app.shared.data.remote.appJson
@@ -21,8 +19,13 @@ data class ChatUiState(
     val chatId: String = "",
     val chatName: String = "",
     val messages: List<MessageDto> = emptyList(),
+    val pinnedMessage: PinnedMessageDto? = null,
     val readByOthersUpTo: String? = null,
     val draft: String = "",
+    val replyTo: MessageDto? = null,
+    val editingMessage: MessageDto? = null,
+    val selectionMode: Boolean = false,
+    val selectedIds: Set<String> = emptySet(),
     val isLoading: Boolean = false,
     val isSending: Boolean = false,
     val hasMore: Boolean = true,
@@ -33,7 +36,9 @@ data class ChatUiState(
 class ChatViewModel(
     private val chatId: String,
     private val chatRepository: ChatRepository,
-    private val wsService: WsService
+    private val wsService: WsService,
+    private val currentUserId: String? = null,
+    private val currentUserRole: String? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -53,7 +58,12 @@ class ChatViewModel(
         scope.launch {
             try {
                 val chat = chatRepository.getChat(chatId)
-                _state.update { it.copy(chatName = chat.name ?: "Чат") }
+                _state.update {
+                    it.copy(
+                        chatName = chat.name ?: "Чат",
+                        pinnedMessage = chat.pinnedMessage,
+                    )
+                }
             } catch (_: Exception) {}
         }
     }
@@ -68,7 +78,6 @@ class ChatViewModel(
                 val oldestId = _state.value.messages.lastOrNull()?.id
                 val page = chatRepository.getMessages(chatId, oldestId)
                 val reversed = page.messages.reversed()
-
                 val newReadUpTo = page.readByOthersUpTo ?: _state.value.readByOthersUpTo
 
                 _state.update {
@@ -82,13 +91,10 @@ class ChatViewModel(
                 loadRetryCount = 0
 
                 page.messages.lastOrNull()?.let { msg ->
-                    try {
-                        chatRepository.markRead(chatId, msg.id)
-                    } catch (_: Exception) {}
+                    try { chatRepository.markRead(chatId, msg.id) } catch (_: Exception) {}
                 }
             } catch (e: ApiException) {
                 if (e.statusCode == 401 || e.statusCode == 403) {
-                    // Auth failed even after Ktor's auto-refresh — stop retrying
                     _state.update {
                         it.copy(
                             isLoading = false,
@@ -97,9 +103,7 @@ class ChatViewModel(
                             error = "Сессия истекла. Перезайдите в приложение."
                         )
                     }
-                } else {
-                    handleLoadError(e)
-                }
+                } else handleLoadError(e)
             } catch (e: Exception) {
                 handleLoadError(e)
             }
@@ -111,7 +115,6 @@ class ChatViewModel(
         _state.update {
             it.copy(
                 isLoading = false,
-                // After max retries, stop trying to load more
                 hasMore = loadRetryCount < maxLoadRetries,
                 error = e.message ?: "Ошибка загрузки"
             )
@@ -122,68 +125,297 @@ class ChatViewModel(
         _state.update { it.copy(draft = text) }
     }
 
+    // ── Reply ──
+    fun setReplyTo(message: MessageDto?) {
+        _state.update { it.copy(replyTo = message, editingMessage = null) }
+    }
+
+    // ── Edit ──
+    fun startEdit(message: MessageDto) {
+        _state.update {
+            it.copy(
+                editingMessage = message,
+                draft = message.content,
+                replyTo = null,
+            )
+        }
+    }
+
+    fun cancelEdit() {
+        _state.update { it.copy(editingMessage = null, draft = "") }
+    }
+
+    // ── Selection ──
+    fun enterSelectionMode(messageId: String) {
+        _state.update { it.copy(selectionMode = true, selectedIds = setOf(messageId)) }
+    }
+
+    fun toggleSelection(messageId: String) {
+        _state.update { s ->
+            val newSet = if (s.selectedIds.contains(messageId))
+                s.selectedIds - messageId
+            else s.selectedIds + messageId
+            s.copy(
+                selectedIds = newSet,
+                selectionMode = newSet.isNotEmpty(),
+            )
+        }
+    }
+
+    fun exitSelectionMode() {
+        _state.update { it.copy(selectionMode = false, selectedIds = emptySet()) }
+    }
+
+    fun canEdit(message: MessageDto): Boolean {
+        val isOwn = message.senderId != null && message.senderId == currentUserId
+        val isAdmin = currentUserRole == "admin"
+        val typeOk = message.messageType.lowercase() in setOf("text", "notification")
+        return typeOk && (isOwn || isAdmin)
+    }
+
+    fun canDelete(message: MessageDto): Boolean {
+        val isOwn = message.senderId != null && message.senderId == currentUserId
+        val isAdmin = currentUserRole == "admin"
+        return isOwn || isAdmin
+    }
+
     fun send() {
-        val text = _state.value.draft.trim()
+        val s = _state.value
+        val text = s.draft.trim()
         if (text.isBlank()) return
+
+        val editing = s.editingMessage
+        if (editing != null) {
+            scope.launch {
+                _state.update { it.copy(isSending = true) }
+                try {
+                    val updated = chatRepository.editMessage(chatId, editing.id, text)
+                    _state.update { st ->
+                        st.copy(
+                            messages = st.messages.map { if (it.id == updated.id) updated else it },
+                            draft = "",
+                            editingMessage = null,
+                            isSending = false,
+                        )
+                    }
+                } catch (e: Exception) {
+                    _state.update {
+                        it.copy(isSending = false, error = e.message ?: "Ошибка редактирования")
+                    }
+                }
+            }
+            return
+        }
+
+        val replyId = s.replyTo?.id
         scope.launch {
             _state.update { it.copy(isSending = true) }
             try {
-                val msg = chatRepository.sendMessage(chatId, text)
+                val msg = chatRepository.sendMessage(
+                    chatId = chatId,
+                    content = text,
+                    replyToMessageId = replyId,
+                )
                 val current = _state.value.messages
                 if (current.none { it.id == msg.id }) {
                     _state.update {
                         it.copy(
                             messages = listOf(msg) + it.messages,
                             draft = "",
-                            isSending = false
+                            replyTo = null,
+                            isSending = false,
                         )
                     }
                 } else {
-                    _state.update { it.copy(draft = "", isSending = false) }
+                    _state.update { it.copy(draft = "", replyTo = null, isSending = false) }
                 }
             } catch (e: Exception) {
                 _state.update {
-                    it.copy(
-                        isSending = false,
-                        error = e.message ?: "Ошибка отправки"
-                    )
+                    it.copy(isSending = false, error = e.message ?: "Ошибка отправки")
                 }
             }
         }
+    }
+
+    // ── Delete ──
+    fun deleteMessage(messageId: String) {
+        scope.launch {
+            try {
+                chatRepository.deleteMessage(chatId, messageId)
+                _state.update { st ->
+                    st.copy(messages = st.messages.filterNot { it.id == messageId })
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Ошибка удаления") }
+            }
+        }
+    }
+
+    fun deleteSelected() {
+        val ids = _state.value.selectedIds.toList()
+        if (ids.isEmpty()) return
+        scope.launch {
+            try {
+                chatRepository.bulkDeleteMessages(chatId, ids)
+                _state.update { st ->
+                    st.copy(
+                        messages = st.messages.filterNot { ids.contains(it.id) },
+                        selectionMode = false,
+                        selectedIds = emptySet(),
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Ошибка удаления") }
+            }
+        }
+    }
+
+    // ── Forward ──
+    fun forwardMessage(messageId: String, targetChatId: String) {
+        scope.launch {
+            try {
+                chatRepository.forwardMessage(
+                    sourceChatId = chatId,
+                    messageId = messageId,
+                    targetChatId = targetChatId,
+                )
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Ошибка пересылки") }
+            }
+        }
+    }
+
+    fun forwardSelected(targetChatId: String) {
+        val ids = _state.value.selectedIds.toList()
+        if (ids.isEmpty()) return
+        scope.launch {
+            try {
+                ids.forEach { id ->
+                    chatRepository.forwardMessage(
+                        sourceChatId = chatId,
+                        messageId = id,
+                        targetChatId = targetChatId,
+                    )
+                }
+                _state.update { it.copy(selectionMode = false, selectedIds = emptySet()) }
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Ошибка пересылки") }
+            }
+        }
+    }
+
+    // ── Pin ──
+    fun pinMessage(messageId: String) {
+        scope.launch {
+            try {
+                chatRepository.pinMessage(chatId, messageId)
+                // pinned_message подгрузится через WS-ивент или refresh chatInfo
+                loadChatInfo()
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Ошибка закрепления") }
+            }
+        }
+    }
+
+    fun unpinMessage(scopeKind: String = "local") {
+        scope.launch {
+            try {
+                chatRepository.unpinMessage(chatId, scopeKind)
+                _state.update { it.copy(pinnedMessage = null) }
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "Ошибка открепления") }
+            }
+        }
+    }
+
+    fun clearError() {
+        _state.update { it.copy(error = null) }
     }
 
     private fun observeWs() {
         scope.launch {
             wsService.events.collect { event ->
                 when (event.type) {
-                    "new_message" -> {
-                        try {
-                            val data = appJson.decodeFromJsonElement<WsNewMessage>(event.data)
-                            if (data.chatId == chatId) {
-                                val current = _state.value.messages
-                                if (current.none { it.id == data.message.id }) {
-                                    _state.update {
-                                        it.copy(messages = listOf(data.message) + it.messages)
-                                    }
-                                    try {
-                                        chatRepository.markRead(chatId, data.message.id)
-                                    } catch (_: Exception) {}
-                                }
-                            }
-                        } catch (_: Exception) {}
-                    }
-                    "message_read" -> {
-                        try {
-                            val data = appJson.decodeFromJsonElement<WsMessageRead>(event.data)
-                            if (data.chatId == chatId) {
-                                _state.update {
-                                    it.copy(readByOthersUpTo = data.lastReadMessageId)
-                                }
-                            }
-                        } catch (_: Exception) {}
-                    }
+                    "new_message" -> handleNewMessage(event.data)
+                    "message_edited" -> handleEdited(event.data)
+                    "message_deleted" -> handleDeleted(event.data)
+                    "message_pinned" -> handlePinned(event.data)
+                    "message_unpinned" -> handleUnpinned(event.data)
+                    "message_read" -> handleRead(event.data)
                 }
             }
         }
+    }
+
+    private suspend fun handleNewMessage(data: kotlinx.serialization.json.JsonElement) {
+        try {
+            val payload = appJson.decodeFromJsonElement<WsNewMessage>(data)
+            if (payload.chatId != chatId) return
+            val current = _state.value.messages
+            if (current.none { it.id == payload.message.id }) {
+                _state.update { it.copy(messages = listOf(payload.message) + it.messages) }
+                try { chatRepository.markRead(chatId, payload.message.id) } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun handleEdited(data: kotlinx.serialization.json.JsonElement) {
+        try {
+            val payload = appJson.decodeFromJsonElement<WsMessageEdited>(data)
+            if (payload.chatId != chatId) return
+            _state.update { st ->
+                st.copy(
+                    messages = st.messages.map {
+                        if (it.id == payload.message.id) payload.message else it
+                    },
+                    pinnedMessage = st.pinnedMessage?.let { pin ->
+                        if (pin.id == payload.message.id)
+                            pin.copy(content = payload.message.content)
+                        else pin
+                    },
+                )
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun handleDeleted(data: kotlinx.serialization.json.JsonElement) {
+        try {
+            val payload = appJson.decodeFromJsonElement<WsMessageDeleted>(data)
+            if (payload.chatId != chatId) return
+            val idSet = payload.messageIds.toSet()
+            _state.update { st ->
+                st.copy(
+                    messages = st.messages.filterNot { idSet.contains(it.id) },
+                    pinnedMessage = st.pinnedMessage?.takeUnless { idSet.contains(it.id) },
+                    selectedIds = st.selectedIds - idSet,
+                )
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun handlePinned(data: kotlinx.serialization.json.JsonElement) {
+        try {
+            val payload = appJson.decodeFromJsonElement<WsMessagePinned>(data)
+            if (payload.chatId != chatId) return
+            // Подтянем полную карточку пина через getChat (проще, чем собирать руками)
+            scope.launch { loadChatInfo() }
+        } catch (_: Exception) {}
+    }
+
+    private fun handleUnpinned(data: kotlinx.serialization.json.JsonElement) {
+        try {
+            val payload = appJson.decodeFromJsonElement<WsMessageUnpinned>(data)
+            if (payload.chatId != chatId) return
+            _state.update { it.copy(pinnedMessage = null) }
+        } catch (_: Exception) {}
+    }
+
+    private fun handleRead(data: kotlinx.serialization.json.JsonElement) {
+        try {
+            val payload = appJson.decodeFromJsonElement<WsMessageRead>(data)
+            if (payload.chatId != chatId) return
+            if (payload.userId == currentUserId) return
+            _state.update { it.copy(readByOthersUpTo = payload.lastReadMessageId) }
+        } catch (_: Exception) {}
     }
 }

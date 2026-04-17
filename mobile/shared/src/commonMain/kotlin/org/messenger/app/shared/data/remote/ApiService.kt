@@ -24,26 +24,17 @@ class ApiService(private val client: HttpClient) {
     }
 
     // ── Auth ──
-
     suspend fun requestOtp(phone: String): OtpResponse =
         requestAndParse {
-            client.post("api/v1/auth/request-otp") {
-                setBody(OtpRequestBody(phone))
-            }
+            client.post("api/v1/auth/request-otp") { setBody(OtpRequestBody(phone)) }
         }
 
     suspend fun verifyOtp(body: OtpVerifyBody): OtpVerifyResponse =
-        requestAndParse {
-            client.post("api/v1/auth/verify-otp") {
-                setBody(body)
-            }
-        }
+        requestAndParse { client.post("api/v1/auth/verify-otp") { setBody(body) } }
 
     suspend fun refreshToken(refreshToken: String): RefreshTokenResponse =
         requestAndParse {
-            client.post("api/v1/auth/refresh") {
-                setBody(RefreshTokenBody(refreshToken))
-            }
+            client.post("api/v1/auth/refresh") { setBody(RefreshTokenBody(refreshToken)) }
         }
 
     suspend fun logout(refreshToken: String) {
@@ -51,17 +42,13 @@ class ApiService(private val client: HttpClient) {
             setBody(RefreshTokenBody(refreshToken))
         }
         if (!response.status.isSuccess()) {
-            val body = response.bodyAsText()
-            throw ApiException(response.status.value, body)
+            throw ApiException(response.status.value, response.bodyAsText())
         }
     }
 
     // ── Chats ──
-
     suspend fun getChats(): List<ChatDto> {
-        val response: ChatListResponse = requestAndParse {
-            client.get("api/v1/chats")
-        }
+        val response: ChatListResponse = requestAndParse { client.get("api/v1/chats") }
         return response.chats
     }
 
@@ -69,7 +56,6 @@ class ApiService(private val client: HttpClient) {
         requestAndParse { client.get("api/v1/chats/$chatId") }
 
     // ── Messages ──
-
     suspend fun getMessages(chatId: String, before: String? = null, limit: Int = 50): MessagePage =
         requestAndParse {
             client.get("api/v1/chats/$chatId/messages") {
@@ -78,12 +64,85 @@ class ApiService(private val client: HttpClient) {
             }
         }
 
-    suspend fun sendMessage(chatId: String, content: String, idempotencyKey: String): MessageDto =
+    suspend fun sendMessage(
+        chatId: String,
+        content: String,
+        idempotencyKey: String,
+        replyToMessageId: String? = null,
+        forwardedFromMessageId: String? = null,
+    ): MessageDto =
         requestAndParse {
             client.post("api/v1/chats/$chatId/messages") {
-                setBody(SendMessageBody(content = content, idempotencyKey = idempotencyKey))
+                setBody(
+                    SendMessageBody(
+                        content = content,
+                        idempotencyKey = idempotencyKey,
+                        replyToMessageId = replyToMessageId,
+                        forwardedFromMessageId = forwardedFromMessageId,
+                    )
+                )
             }
         }
+
+    suspend fun editMessage(chatId: String, messageId: String, content: String): MessageDto =
+        requestAndParse {
+            client.patch("api/v1/chats/$chatId/messages/$messageId") {
+                setBody(EditMessageBody(content))
+            }
+        }
+
+    suspend fun deleteMessage(chatId: String, messageId: String) {
+        val response = client.delete("api/v1/chats/$chatId/messages/$messageId")
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
+
+    suspend fun bulkDeleteMessages(chatId: String, messageIds: List<String>) {
+        val response = client.post("api/v1/chats/$chatId/messages/bulk-delete") {
+            setBody(BulkDeleteBody(messageIds))
+        }
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
+
+    suspend fun forwardMessage(
+        sourceChatId: String,
+        messageId: String,
+        targetChatId: String,
+        idempotencyKey: String,
+    ): MessageDto =
+        requestAndParse {
+            client.post("api/v1/chats/forward") {
+                setBody(
+                    ForwardMessageBody(
+                        sourceChatId = sourceChatId,
+                        messageId = messageId,
+                        targetChatId = targetChatId,
+                        idempotencyKey = idempotencyKey,
+                    )
+                )
+            }
+        }
+
+    suspend fun pinMessage(chatId: String, messageId: String) {
+        val response = client.post("api/v1/chats/$chatId/pin") {
+            setBody(PinMessageBody(messageId))
+        }
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
+
+    suspend fun unpinMessage(chatId: String, scope: String = "local") {
+        val response = client.delete("api/v1/chats/$chatId/pin") {
+            parameter("scope", scope)
+        }
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
 
     suspend fun markRead(chatId: String, lastReadMessageId: String) {
         val response = client.post("api/v1/chats/$chatId/read") {
@@ -95,7 +154,6 @@ class ApiService(private val client: HttpClient) {
     }
 
     // ── Push tokens ──
-
     suspend fun registerPushToken(token: String, type: String = "fcm"): Boolean {
         return try {
             val response = client.post("api/v1/devices/push-token") {

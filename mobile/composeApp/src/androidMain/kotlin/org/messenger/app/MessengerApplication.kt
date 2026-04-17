@@ -17,6 +17,7 @@ class MessengerApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        org.messenger.app.shared.util.AndroidClipboardHolder.appContext = applicationContext
 
         // AppModule will auto-resolve URLs from saved TokenStorage
         appModule = AppModule(context = this)

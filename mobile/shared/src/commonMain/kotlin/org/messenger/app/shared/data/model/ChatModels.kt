@@ -9,6 +9,26 @@ data class ChatListResponse(
 )
 
 @Serializable
+data class PinnedMessageDto(
+    val id: String,
+    @SerialName("chat_id")
+    val chatId: String,
+    @SerialName("sender_id")
+    val senderId: String? = null,
+    @SerialName("sender_name")
+    val senderName: String? = null,
+    val content: String,
+    @SerialName("message_type")
+    val messageType: String = "text",
+    @SerialName("created_at")
+    val createdAt: String = "",
+    @SerialName("pinned_by_user_id")
+    val pinnedByUserId: String? = null,
+    @SerialName("pinned_at")
+    val pinnedAt: String? = null
+)
+
+@Serializable
 data class ChatDto(
     val id: String,
     val name: String? = null,
@@ -17,6 +37,14 @@ data class ChatDto(
     val unreadCount: Int = 0,
     @SerialName("last_message")
     val lastMessage: MessageDto? = null,
+    @SerialName("pinned_message")
+    val pinnedMessage: PinnedMessageDto? = null,
     @SerialName("created_at")
     val createdAt: String? = null
+)
+
+@Serializable
+data class PinMessageBody(
+    @SerialName("message_id")
+    val messageId: String
 )

@@ -10,13 +10,45 @@ data class WsEvent(
     val data: JsonElement
 )
 
-// Конкретные типы событий для удобного парсинга
-
 @Serializable
 data class WsNewMessage(
     @SerialName("chat_id")
     val chatId: String,
     val message: MessageDto
+)
+
+@Serializable
+data class WsMessageEdited(
+    @SerialName("chat_id")
+    val chatId: String,
+    val message: MessageDto
+)
+
+@Serializable
+data class WsMessageDeleted(
+    @SerialName("chat_id")
+    val chatId: String,
+    @SerialName("message_ids")
+    val messageIds: List<String>
+)
+
+@Serializable
+data class WsMessagePinned(
+    @SerialName("chat_id")
+    val chatId: String,
+    @SerialName("message_id")
+    val messageId: String,
+    @SerialName("pinned_by_user_id")
+    val pinnedByUserId: String? = null,
+    @SerialName("pinned_at")
+    val pinnedAt: String? = null
+)
+
+@Serializable
+data class WsMessageUnpinned(
+    @SerialName("chat_id")
+    val chatId: String,
+    val scope: String = "global"
 )
 
 @Serializable

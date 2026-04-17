@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.decodeFromJsonElement
 import org.messenger.app.shared.data.model.ChatDto
+import org.messenger.app.shared.data.model.WsMessageDeleted
+import org.messenger.app.shared.data.model.WsMessageEdited
 import org.messenger.app.shared.data.model.WsNewMessage
 import org.messenger.app.shared.data.remote.WsService
 import org.messenger.app.shared.data.remote.appJson
@@ -59,8 +61,42 @@ class ChatListViewModel(
                             updateChatWithNewMessage(msg)
                         } catch (_: Exception) {}
                     }
+                    "message_edited" -> {
+                        try {
+                            val ev = appJson.decodeFromJsonElement<WsMessageEdited>(event.data)
+                            updateLastIfMatches(ev.chatId, ev.message.id, ev.message.content)
+                        } catch (_: Exception) {}
+                    }
+                    "message_deleted" -> {
+                        try {
+                            val ev = appJson.decodeFromJsonElement<WsMessageDeleted>(event.data)
+                            // Если удалено last_message — проще перезагрузить список
+                            val affected = _state.value.chats.any { chat ->
+                                chat.id == ev.chatId &&
+                                        chat.lastMessage != null &&
+                                        ev.messageIds.contains(chat.lastMessage.id)
+                            }
+                            if (affected) loadChats()
+                        } catch (_: Exception) {}
+                    }
+                    "message_pinned", "message_unpinned" -> {
+                        loadChats()
+                    }
                 }
             }
+        }
+    }
+
+    private fun updateLastIfMatches(chatId: String, messageId: String, newContent: String) {
+        val list = _state.value.chats.toMutableList()
+        val idx = list.indexOfFirst {
+            it.id == chatId && it.lastMessage?.id == messageId
+        }
+        if (idx >= 0) {
+            val chat = list[idx]
+            val updatedLast = chat.lastMessage!!.copy(content = newContent)
+            list[idx] = chat.copy(lastMessage = updatedLast)
+            _state.value = _state.value.copy(chats = list)
         }
     }
 
@@ -73,12 +109,10 @@ class ChatListViewModel(
                 lastMessage = msg.message,
                 unreadCount = chat.unreadCount + 1
             )
-            // Поднимаем наверх
             val updated = current.removeAt(idx)
             current.add(0, updated)
             _state.value = _state.value.copy(chats = current)
         } else {
-            // Новый чат — перезагрузим
             loadChats()
         }
     }
