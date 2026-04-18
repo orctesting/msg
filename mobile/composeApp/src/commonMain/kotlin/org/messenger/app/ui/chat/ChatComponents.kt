@@ -29,6 +29,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.layout.Layout
+import kotlinx.datetime.toLocalDateTime
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.platform.LocalDensity
 import org.messenger.app.shared.data.model.MessageDto
@@ -641,13 +643,24 @@ private fun declOfNum(n: Int, one: String, few: String, many: String): String {
 
 internal fun formatTimeFromIso(iso: String): String {
     return try {
-        val timePart = if (iso.contains("T")) {
-            iso.substringAfter("T").substringBefore(".")
-                .substringBefore("+").substringBefore("Z")
-        } else iso
-        timePart.take(5)
+        val normalized = if (
+            iso.endsWith("Z") ||
+            iso.contains("+") ||
+            iso.substringAfter("T", "").contains("-")
+        ) iso else "${iso}Z"
+        val instant = kotlinx.datetime.Instant.parse(normalized)
+        val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+        val hh = local.hour.toString().padStart(2, '0')
+        val mm = local.minute.toString().padStart(2, '0')
+        "$hh:$mm"
     } catch (_: Exception) {
-        ""
+        try {
+            val timePart = if (iso.contains("T")) {
+                iso.substringAfter("T").substringBefore(".")
+                    .substringBefore("+").substringBefore("Z")
+            } else iso
+            timePart.take(5)
+        } catch (_: Exception) { "" }
     }
 }
 
@@ -667,14 +680,8 @@ internal fun isMessageReadByOthers(
 @Composable
 fun FocusOverlay(
     onDismiss: () -> Unit,
-    excludeMessageId: String,
-    listState: androidx.compose.foundation.lazy.LazyListState,
+    targetRect: androidx.compose.ui.geometry.Rect?,
 ) {
-    // Находим координаты выделяемого сообщения
-    val info = listState.layoutInfo
-    // Ищем item, key которого == excludeMessageId
-    val target = info.visibleItemsInfo.firstOrNull { it.key == excludeMessageId }
-
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -684,37 +691,81 @@ fun FocusOverlay(
                 onClick = onDismiss,
             )
     ) {
-        if (target == null) {
-            // сообщение не видно — затемняем целиком
+        if (targetRect == null) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.45f))
             )
         } else {
-            // затемняем область выше и ниже целевого item
-            val topPx = target.offset
-            val bottomPx = target.offset + target.size
-            val density = androidx.compose.ui.platform.LocalDensity.current
-            val topDp = with(density) { topPx.toDp().coerceAtLeast(0.dp) }
-            val bottomDp = with(density) { bottomPx.toDp() }
+            val density = LocalDensity.current
+            Layout(
+                content = {
+                    // top
+                    Box(modifier = Modifier.background(Color.Black.copy(alpha = 0.45f)))
+                    // bottom
+                    Box(modifier = Modifier.background(Color.Black.copy(alpha = 0.45f)))
+                    // left (of item row)
+                    Box(modifier = Modifier.background(Color.Black.copy(alpha = 0.45f)))
+                    // right (of item row)
+                    Box(modifier = Modifier.background(Color.Black.copy(alpha = 0.45f)))
+                },
+                modifier = Modifier.fillMaxSize()
+            ) { measurables, constraints ->
+                val w = constraints.maxWidth
+                val h = constraints.maxHeight
+                val top = targetRect.top.toInt().coerceIn(0, h)
+                val bottom = targetRect.bottom.toInt().coerceIn(0, h)
+                val left = targetRect.left.toInt().coerceIn(0, w)
+                val right = targetRect.right.toInt().coerceIn(0, w)
 
-            Column(modifier = Modifier.fillMaxSize()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(topDp)
-                        .background(Color.Black.copy(alpha = 0.45f))
-                )
-                // пропускаем выделенный item
-                Box(modifier = Modifier.fillMaxWidth().height(with(density) { target.size.toDp() }))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .background(Color.Black.copy(alpha = 0.45f))
-                )
+                val topH = top
+                val bottomH = (h - bottom).coerceAtLeast(0)
+                val midH = (bottom - top).coerceAtLeast(0)
+                val leftW = left
+                val rightW = (w - right).coerceAtLeast(0)
+
+                val topP = measurables[0].measure(androidx.compose.ui.unit.Constraints.fixed(w, topH))
+                val bottomP = measurables[1].measure(androidx.compose.ui.unit.Constraints.fixed(w, bottomH))
+                val leftP = measurables[2].measure(androidx.compose.ui.unit.Constraints.fixed(leftW, midH))
+                val rightP = measurables[3].measure(androidx.compose.ui.unit.Constraints.fixed(rightW, midH))
+
+                layout(w, h) {
+                    topP.place(0, 0)
+                    bottomP.place(0, bottom)
+                    leftP.place(0, top)
+                    rightP.place(right, top)
+                }
             }
+        }
+    }
+}
+
+private data class TargetInfo(
+    val offset: Int,
+    val size: Int,
+    val viewportStart: Int,
+    val viewportEnd: Int,
+)
+
+
+@Composable
+fun StickyDateHeader(label: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Surface(
+            shape = MaterialTheme.shapes.small,
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f),
+            tonalElevation = 2.dp,
+        ) {
+            Text(
+                text = label,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

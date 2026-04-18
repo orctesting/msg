@@ -4,7 +4,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -14,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.layout.onGloballyPositioned
 import kotlinx.coroutines.launch
 import org.messenger.app.shared.data.model.MessageDto
 import org.messenger.app.shared.di.AppModule
@@ -50,11 +50,31 @@ fun ChatScreen(
     var lastKnownTopMessageId by remember { mutableStateOf<String?>(null) }
     var showMessageMenuFor by remember { mutableStateOf<MessageDto?>(null) }
 
+    // Focus overlay state
+    val focusBounds = remember { mutableStateMapOf<String, androidx.compose.ui.geometry.Rect>() }
+    var overlayRootCoords by remember {
+        mutableStateOf<androidx.compose.ui.layout.LayoutCoordinates?>(null)
+    }
+
     val isAtBottom by remember {
         derivedStateOf {
             val info = listState.layoutInfo
             val firstVisible = info.visibleItemsInfo.firstOrNull()
             firstVisible == null || firstVisible.index == 0
+        }
+    }
+
+    val stickyDateKey by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val items = info.visibleItemsInfo
+            if (items.isEmpty()) return@derivedStateOf null
+            val topItem = items.last()
+            val key = topItem.key as? String ?: return@derivedStateOf null
+            if (!key.startsWith("msg_")) return@derivedStateOf null
+            val msgId = key.removePrefix("msg_")
+            val msg = state.messages.firstOrNull { it.id == msgId } ?: return@derivedStateOf null
+            dayKeyFromIso(msg.createdAt)
         }
     }
 
@@ -81,7 +101,6 @@ fun ChatScreen(
         }
     }
 
-    // Обработка системного "назад"
     org.messenger.app.util.PlatformBackHandler(
         enabled = true,
         onBack = {
@@ -95,14 +114,12 @@ fun ChatScreen(
         }
     )
 
-    // Helper: копирование выделенных сообщений
     fun copySelected() {
         val ids = state.selectedIds
         if (ids.isEmpty()) return
-        // Сохраняем порядок по списку messages (сверху вниз по времени)
         val sortedContents = state.messages
             .filter { ids.contains(it.id) }
-            .asReversed() // messages в state идут от новых к старым; reversed => от старых к новым
+            .asReversed()
             .map { it.content }
         copyToClipboard(sortedContents.joinToString("\n\n"))
         viewModel.exitSelectionMode()
@@ -181,6 +198,7 @@ fun ChatScreen(
                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
             } else {
                 val messages = state.messages
+                val focusTargetId = state.editingMessage?.id ?: state.replyTo?.id
 
                 Column(modifier = Modifier.fillMaxSize()) {
                     state.pinnedMessage?.let { pin ->
@@ -190,13 +208,18 @@ fun ChatScreen(
                             onClick = {
                                 val idx = messages.indexOfFirst { it.id == pin.id }
                                 if (idx >= 0) {
-                                    coroutineScope.launch { listState.animateScrollToItem(idx) }
+                                    val listIdx = computeListIndexForMessage(messages, pin.id, state.hasMore)
+                                    coroutineScope.launch { listState.animateScrollToItem(listIdx) }
                                 }
                             }
                         )
                     }
 
-                    Box(modifier = Modifier.weight(1f)) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .onGloballyPositioned { overlayRootCoords = it }
+                    ) {
                         LazyColumn(
                             state = listState,
                             modifier = Modifier.fillMaxSize(),
@@ -204,14 +227,55 @@ fun ChatScreen(
                             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            itemsIndexed(
-                                items = messages,
-                                key = { _, msg -> msg.id }
-                            ) { index, message ->
+                            messages.forEachIndexed { index, message ->
                                 val isOwn = message.senderId == currentUserId
                                 val isRead = isOwn && state.readByOthersUpTo != null &&
                                         isMessageReadByOthers(message, messages, state.readByOthersUpTo)
                                 val isSelected = state.selectedIds.contains(message.id)
+
+                                item(key = "msg_${message.id}") {
+                                    val isFocused = message.id == focusTargetId
+                                    Box(
+                                        modifier = if (isFocused) {
+                                            Modifier.onGloballyPositioned { coords ->
+                                                val root = overlayRootCoords
+                                                if (root != null && coords.isAttached) {
+                                                    val pos = root.localPositionOf(
+                                                        coords,
+                                                        androidx.compose.ui.geometry.Offset.Zero
+                                                    )
+                                                    focusBounds[message.id] = androidx.compose.ui.geometry.Rect(
+                                                        offset = pos,
+                                                        size = androidx.compose.ui.geometry.Size(
+                                                            coords.size.width.toFloat(),
+                                                            coords.size.height.toFloat()
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        } else Modifier
+                                    ) {
+                                        MessageBubble(
+                                            message = message,
+                                            isOwnMessage = isOwn,
+                                            isReadByOthers = isRead,
+                                            isSelected = isSelected,
+                                            selectionMode = state.selectionMode,
+                                            onClick = {
+                                                if (state.selectionMode) {
+                                                    viewModel.toggleSelection(message.id)
+                                                }
+                                            },
+                                            onLongClick = {
+                                                if (state.selectionMode) {
+                                                    viewModel.toggleSelection(message.id)
+                                                } else {
+                                                    showMessageMenuFor = message
+                                                }
+                                            },
+                                        )
+                                    }
+                                }
 
                                 val currentDay = dayKeyFromIso(message.createdAt)
                                 val olderMsg = if (index < messages.size - 1) messages[index + 1] else null
@@ -219,34 +283,15 @@ fun ChatScreen(
                                 val showDateHeader = olderDay != currentDay &&
                                         (olderMsg != null || !state.hasMore)
 
-                                Column {
-                                    if (showDateHeader) {
+                                if (showDateHeader) {
+                                    item(key = "date_${currentDay}_${message.id}") {
                                         DateSeparator(label = formatDateLabel(currentDay))
                                     }
-                                    MessageBubble(
-                                        message = message,
-                                        isOwnMessage = isOwn,
-                                        isReadByOthers = isRead,
-                                        isSelected = isSelected,
-                                        selectionMode = state.selectionMode,
-                                        onClick = {
-                                            if (state.selectionMode) {
-                                                viewModel.toggleSelection(message.id)
-                                            }
-                                        },
-                                        onLongClick = {
-                                            if (state.selectionMode) {
-                                                viewModel.toggleSelection(message.id)
-                                            } else {
-                                                showMessageMenuFor = message
-                                            }
-                                        },
-                                    )
                                 }
                             }
 
                             if (state.hasMore) {
-                                item {
+                                item(key = "loader") {
                                     LaunchedEffect(Unit) { viewModel.loadMessages() }
                                     Box(
                                         modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -255,6 +300,16 @@ fun ChatScreen(
                                         CircularProgressIndicator(modifier = Modifier.size(24.dp))
                                     }
                                 }
+                            }
+                        }
+
+                        stickyDateKey?.let { key ->
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .align(Alignment.TopCenter)
+                            ) {
+                                StickyDateHeader(label = formatDateLabel(key))
                             }
                         }
 
@@ -274,7 +329,7 @@ fun ChatScreen(
                                         coroutineScope.launch {
                                             val targetId = firstUnreadMessageId
                                             if (targetId != null && unreadCount > 0) {
-                                                val idx = messages.indexOfFirst { it.id == targetId }
+                                                val idx = computeListIndexForMessage(messages, targetId, state.hasMore)
                                                 if (idx >= 0) listState.animateScrollToItem(idx)
                                                 else listState.animateScrollToItem(0)
                                             } else listState.animateScrollToItem(0)
@@ -285,25 +340,17 @@ fun ChatScreen(
                                 )
                             }
                         }
-                    }
-                }
-                // Затемнение + фокус при edit/reply
-                val focusTargetId = state.editingMessage?.id ?: state.replyTo?.id
-                if (focusTargetId != null) {
-                    LaunchedEffect(focusTargetId) {
-                        val idx = state.messages.indexOfFirst { it.id == focusTargetId }
-                        if (idx >= 0) {
-                            coroutineScope.launch { listState.animateScrollToItem(idx) }
+
+                        if (focusTargetId != null) {
+                            FocusOverlay(
+                                onDismiss = {
+                                    if (state.editingMessage != null) viewModel.cancelEdit()
+                                    else viewModel.setReplyTo(null)
+                                },
+                                targetRect = focusBounds[focusTargetId],
+                            )
                         }
                     }
-                    FocusOverlay(
-                        onDismiss = {
-                            if (state.editingMessage != null) viewModel.cancelEdit()
-                            else viewModel.setReplyTo(null)
-                        },
-                        excludeMessageId = focusTargetId,
-                        listState = listState,
-                    )
                 }
             }
 
@@ -346,4 +393,22 @@ fun ChatScreen(
             }
         }
     }
+}
+
+private fun computeListIndexForMessage(
+    messages: List<MessageDto>,
+    targetMessageId: String,
+    hasMore: Boolean,
+): Int {
+    var lazyIndex = 0
+    messages.forEachIndexed { index, message ->
+        if (message.id == targetMessageId) return lazyIndex
+        lazyIndex++
+        val currentDay = dayKeyFromIso(message.createdAt)
+        val olderMsg = if (index < messages.size - 1) messages[index + 1] else null
+        val olderDay = olderMsg?.let { dayKeyFromIso(it.createdAt) }
+        val showDateHeader = olderDay != currentDay && (olderMsg != null || !hasMore)
+        if (showDateHeader) lazyIndex++
+    }
+    return -1
 }

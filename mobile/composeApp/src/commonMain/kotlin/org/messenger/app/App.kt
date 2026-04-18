@@ -55,6 +55,15 @@ fun App(
 
     // Скоуп для пересылок (forward) — живёт на уровне App, не привязан к ChatScreen
     val forwardScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.Main) }
+    // Deep links (FCM tap на Android). На других платформах возвращает null.
+    LaunchedEffect(Unit) {
+        val flow = observeDeepLinks() ?: return@LaunchedEffect
+        flow.collect { (chatId, chatName) ->
+            if (currentAppModule.tokenStorage.isLoggedIn()) {
+                currentScreen = Screen.Chat(chatId, chatName)
+            }
+        }
+    }
 
     AppTheme {
         Surface(
@@ -225,3 +234,5 @@ private var pendingServerAddress: String? = null
 expect fun updateCurrentChatId(chatId: String?)
 expect fun onLoginSuccessCallback(appModule: AppModule)
 expect fun syncAppModule(appModule: AppModule)
+
+expect fun observeDeepLinks(): kotlinx.coroutines.flow.Flow<Pair<String, String>>?

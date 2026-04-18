@@ -24,3 +24,12 @@ actual fun onLoginSuccessCallback(appModule: AppModule) {
 actual fun syncAppModule(appModule: AppModule) {
     MessengerApplication.instance.updateAppModule(appModule)
 }
+
+actual fun observeDeepLinks(): kotlinx.coroutines.flow.Flow<Pair<String, String>>? {
+    return DeepLinkHandler.deepLinks
+        .let { flow ->
+            kotlinx.coroutines.flow.flow {
+                flow.collect { emit(it.chatId to it.chatName) }
+            }
+        }
+}
