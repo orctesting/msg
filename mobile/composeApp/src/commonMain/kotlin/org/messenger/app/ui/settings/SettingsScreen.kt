@@ -1,9 +1,11 @@
 package org.messenger.app.ui.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -19,6 +21,7 @@ const val APP_VERSION = "1.0.0"
 fun SettingsScreen(
     appModule: AppModule,
     onBack: () -> Unit,
+    onOpenContacts: () -> Unit,
     onLogout: () -> Unit
 ) {
     val phone = appModule.tokenStorage.getUserPhone()
@@ -57,6 +60,17 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                ListItem(
+                    modifier = Modifier.clickable(onClick = onOpenContacts),
+                    headlineContent = { Text("Контакты") },
+                    leadingContent = {
+                        Icon(Icons.Default.Contacts, contentDescription = null)
+                    }
+                )
+                HorizontalDivider()
 
                 Spacer(modifier = Modifier.height(16.dp))
 

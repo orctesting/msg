@@ -19,11 +19,13 @@ import org.messenger.app.ui.chatlist.ChatListScreen
 import org.messenger.app.ui.forward.ForwardTargetScreen
 import org.messenger.app.ui.settings.SettingsScreen
 import org.messenger.app.ui.theme.AppTheme
+import org.messenger.app.ui.contacts.ContactsScreen
 
 sealed class Screen {
     data object Auth : Screen()
     data object ChatList : Screen()
     data object Settings : Screen()
+    data object Contacts : Screen()
     data class Chat(val chatId: String, val chatName: String) : Screen()
     data class ForwardPicker(
         val sourceChatId: String,
@@ -159,10 +161,33 @@ fun App(
                     SettingsScreen(
                         appModule = currentAppModule,
                         onBack = { currentScreen = Screen.ChatList },
+                        onOpenContacts = { currentScreen = Screen.Contacts },
                         onLogout = {
                             currentAppModule.tokenStorage.clear()
                             currentAppModule.wsService.disconnect()
                             currentScreen = Screen.Auth
+                        }
+                    )
+                }
+
+                is Screen.Contacts -> {
+                    PlatformBackHandler(enabled = true) {
+                        currentScreen = Screen.Settings
+                    }
+                    ContactsScreen(
+                        appModule = currentAppModule,
+                        onBack = { currentScreen = Screen.Settings },
+                        onContactClick = { contact ->
+                            // Создать / открыть личный чат с контактом
+                            forwardScope.launch {
+                                try {
+                                    val chat = currentAppModule.chatRepository
+                                        .createPersonalChat(contactId = contact.id)
+                                    currentScreen = Screen.Chat(chat.id, chat.name ?: contact.displayName)
+                                } catch (_: Exception) {
+                                    // silently ignore; пользователь увидит через state ошибки если расширим
+                                }
+                            }
                         }
                     )
                 }

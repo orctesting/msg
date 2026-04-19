@@ -29,6 +29,14 @@ data class PinnedMessageDto(
 )
 
 @Serializable
+data class PeerUserDto(
+    val id: String,
+    val phone: String,
+    @SerialName("display_name")
+    val displayName: String
+)
+
+@Serializable
 data class ChatDto(
     val id: String,
     val name: String? = null,
@@ -39,6 +47,12 @@ data class ChatDto(
     val lastMessage: MessageDto? = null,
     @SerialName("pinned_message")
     val pinnedMessage: PinnedMessageDto? = null,
+    @SerialName("peer_user")
+    val peerUser: PeerUserDto? = null,
+    @SerialName("peer_is_in_contacts")
+    val peerIsInContacts: Boolean? = null,
+    @SerialName("peer_dismissed")
+    val peerDismissed: Boolean? = null,
     @SerialName("created_at")
     val createdAt: String? = null
 )

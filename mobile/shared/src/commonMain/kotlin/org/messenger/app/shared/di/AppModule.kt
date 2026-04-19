@@ -39,6 +39,10 @@ class AppModule(
 
     val chatRepository by lazy { ChatRepository(apiService) }
 
+    val contactsRepository by lazy {
+        org.messenger.app.shared.domain.repository.ContactsRepository(apiService)
+    }
+
     companion object {
         private const val DEFAULT_BASE_URL = "http://10.0.2.2:8000/"
         private const val DEFAULT_WS_URL = "ws://10.0.2.2:8000/"

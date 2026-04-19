@@ -165,4 +165,78 @@ class ApiService(private val client: HttpClient) {
             false
         }
     }
+
+    // ── Contacts ──
+    suspend fun getContacts(): List<ContactDto> {
+        val response: ContactListResponse = requestAndParse { client.get("api/v1/contacts") }
+        return response.contacts
+    }
+
+    suspend fun createContact(phone: String, displayName: String): ContactDto =
+        requestAndParse {
+            client.post("api/v1/contacts") {
+                setBody(CreateContactBody(phone = phone, displayName = displayName))
+            }
+        }
+
+    suspend fun updateContact(
+        contactId: String,
+        displayName: String? = null,
+        phone: String? = null,
+    ): ContactDto =
+        requestAndParse {
+            client.patch("api/v1/contacts/$contactId") {
+                setBody(UpdateContactBody(displayName = displayName, phone = phone))
+            }
+        }
+
+    suspend fun deleteContact(contactId: String) {
+        val response = client.delete("api/v1/contacts/$contactId")
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
+
+    suspend fun dismissPeer(peerUserId: String) {
+        val response = client.post("api/v1/contacts/dismiss") {
+            setBody(DismissPeerBody(peerUserId))
+        }
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
+
+    // ── Personal chat ──
+    suspend fun createPersonalChat(
+        contactId: String? = null,
+        phone: String? = null,
+    ): ChatDto =
+        requestAndParse {
+            client.post("api/v1/chats/personal") {
+                setBody(CreatePersonalChatBody(contactId = contactId, phone = phone))
+            }
+        }
+
+    // ── Admin: users search + create chat ──
+    suspend fun adminListUsers(
+        offset: Int = 0,
+        limit: Int = 50,
+        search: String? = null,
+        isActive: Boolean? = null,
+    ): List<UserDto> =
+        requestAndParse {
+            client.get("api/v1/admin/users") {
+                parameter("offset", offset)
+                parameter("limit", limit)
+                search?.let { parameter("search", it) }
+                isActive?.let { parameter("is_active", it) }
+            }
+        }
+
+    suspend fun adminCreateChat(name: String, memberIds: List<String>): ChatDto =
+        requestAndParse {
+            client.post("api/v1/admin/chats") {
+                setBody(CreateGroupChatBody(name = name, type = "group", memberIds = memberIds))
+            }
+        }
 }

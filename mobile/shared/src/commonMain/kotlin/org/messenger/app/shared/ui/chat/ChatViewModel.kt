@@ -14,12 +14,17 @@ import org.messenger.app.shared.data.remote.ApiException
 import org.messenger.app.shared.data.remote.WsService
 import org.messenger.app.shared.data.remote.appJson
 import org.messenger.app.shared.domain.repository.ChatRepository
+import org.messenger.app.shared.domain.repository.ContactsRepository
 
 data class ChatUiState(
     val chatId: String = "",
     val chatName: String = "",
+    val chatType: String = "group",
     val messages: List<MessageDto> = emptyList(),
     val pinnedMessage: PinnedMessageDto? = null,
+    val peerUser: PeerUserDto? = null,
+    val peerIsInContacts: Boolean? = null,
+    val peerDismissed: Boolean? = null,
     val readByOthersUpTo: String? = null,
     val draft: String = "",
     val replyTo: MessageDto? = null,
@@ -39,6 +44,7 @@ class ChatViewModel(
     private val wsService: WsService,
     private val currentUserId: String? = null,
     private val currentUserRole: String? = null,
+    private val contactsRepository: ContactsRepository? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -54,14 +60,18 @@ class ChatViewModel(
         observeWs()
     }
 
-    private fun loadChatInfo() {
+    fun loadChatInfo() {
         scope.launch {
             try {
                 val chat = chatRepository.getChat(chatId)
                 _state.update {
                     it.copy(
                         chatName = chat.name ?: "Чат",
+                        chatType = chat.type,
                         pinnedMessage = chat.pinnedMessage,
+                        peerUser = chat.peerUser,
+                        peerIsInContacts = chat.peerIsInContacts,
+                        peerDismissed = chat.peerDismissed,
                     )
                 }
             } catch (_: Exception) {}
@@ -80,9 +90,11 @@ class ChatViewModel(
                 val reversed = page.messages.reversed()
                 val newReadUpTo = page.readByOthersUpTo ?: _state.value.readByOthersUpTo
 
-                _state.update {
-                    it.copy(
-                        messages = it.messages + reversed,
+                _state.update { st ->
+                    val existingIds = st.messages.map { it.id }.toHashSet()
+                    val dedup = reversed.filterNot { existingIds.contains(it.id) }
+                    st.copy(
+                        messages = st.messages + dedup,
                         hasMore = page.hasMore,
                         isLoading = false,
                         readByOthersUpTo = newReadUpTo
@@ -125,12 +137,10 @@ class ChatViewModel(
         _state.update { it.copy(draft = text) }
     }
 
-    // ── Reply ──
     fun setReplyTo(message: MessageDto?) {
         _state.update { it.copy(replyTo = message, editingMessage = null) }
     }
 
-    // ── Edit ──
     fun startEdit(message: MessageDto) {
         _state.update {
             it.copy(
@@ -145,7 +155,6 @@ class ChatViewModel(
         _state.update { it.copy(editingMessage = null, draft = "") }
     }
 
-    // ── Selection ──
     fun enterSelectionMode(messageId: String) {
         _state.update { it.copy(selectionMode = true, selectedIds = setOf(messageId)) }
     }
@@ -237,7 +246,6 @@ class ChatViewModel(
         }
     }
 
-    // ── Delete ──
     fun deleteMessage(messageId: String) {
         scope.launch {
             try {
@@ -270,7 +278,6 @@ class ChatViewModel(
         }
     }
 
-    // ── Forward ──
     fun forwardMessage(messageId: String, targetChatId: String) {
         scope.launch {
             try {
@@ -304,12 +311,10 @@ class ChatViewModel(
         }
     }
 
-    // ── Pin ──
     fun pinMessage(messageId: String) {
         scope.launch {
             try {
                 chatRepository.pinMessage(chatId, messageId)
-                // pinned_message подгрузится через WS-ивент или refresh chatInfo
                 loadChatInfo()
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message ?: "Ошибка закрепления") }
@@ -326,6 +331,22 @@ class ChatViewModel(
                 _state.update { it.copy(error = e.message ?: "Ошибка открепления") }
             }
         }
+    }
+
+    // ── Peer contact actions ──
+    fun dismissPeerContact() {
+        val peerId = _state.value.peerUser?.id ?: return
+        val repo = contactsRepository ?: return
+        scope.launch {
+            try {
+                repo.dismissPeer(peerId)
+                _state.update { it.copy(peerDismissed = true) }
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun markPeerAddedToContacts() {
+        _state.update { it.copy(peerIsInContacts = true) }
     }
 
     fun clearError() {
@@ -397,7 +418,6 @@ class ChatViewModel(
         try {
             val payload = appJson.decodeFromJsonElement<WsMessagePinned>(data)
             if (payload.chatId != chatId) return
-            // Подтянем полную карточку пина через getChat (проще, чем собирать руками)
             scope.launch { loadChatInfo() }
         } catch (_: Exception) {}
     }

@@ -39,6 +39,7 @@ fun ChatScreen(
             wsService = appModule.wsService,
             currentUserId = currentUserId,
             currentUserRole = currentUserRole,
+            contactsRepository = appModule.contactsRepository,
         )
     }
     val state by viewModel.state.collectAsState()
@@ -201,14 +202,28 @@ fun ChatScreen(
                 val focusTargetId = state.editingMessage?.id ?: state.replyTo?.id
 
                 Column(modifier = Modifier.fillMaxSize()) {
+                    val peer = state.peerUser
+                    if (
+                        state.chatType == "personal" &&
+                        peer != null &&
+                        state.peerIsInContacts == false &&
+                        state.peerDismissed != true
+                    ) {
+                        AddPeerContactPrompt(
+                            peer = peer,
+                            contactsRepository = appModule.contactsRepository,
+                            onDismiss = { viewModel.dismissPeerContact() },
+                            onAdded = { viewModel.markPeerAddedToContacts() },
+                        )
+                    }
+
                     state.pinnedMessage?.let { pin ->
                         PinnedMessageBar(
                             pin = pin,
                             onClose = { viewModel.unpinMessage("local") },
                             onClick = {
-                                val idx = messages.indexOfFirst { it.id == pin.id }
-                                if (idx >= 0) {
-                                    val listIdx = computeListIndexForMessage(messages, pin.id, state.hasMore)
+                                val listIdx = computeListIndexForMessage(messages, pin.id, state.hasMore)
+                                if (listIdx >= 0) {
                                     coroutineScope.launch { listState.animateScrollToItem(listIdx) }
                                 }
                             }
@@ -284,7 +299,7 @@ fun ChatScreen(
                                         (olderMsg != null || !state.hasMore)
 
                                 if (showDateHeader) {
-                                    item(key = "date_${currentDay}_${message.id}") {
+                                    item(key = "date_${currentDay}") {
                                         DateSeparator(label = formatDateLabel(currentDay))
                                     }
                                 }

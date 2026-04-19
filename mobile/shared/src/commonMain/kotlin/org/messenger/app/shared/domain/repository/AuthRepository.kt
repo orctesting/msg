@@ -25,7 +25,8 @@ class AuthRepository(
         )
         val response = api.verifyOtp(body)
         tokenStorage.saveTokens(response.accessToken, response.refreshToken)
-        tokenStorage.saveUser(response.userId, phone, "")
+        val role = org.messenger.app.shared.util.JwtUtil.extractRole(response.accessToken) ?: "user"
+        tokenStorage.saveUser(response.userId, phone, "", role)
         return response
     }
 

@@ -10,6 +10,7 @@ class TokenStorage(private val settings: Settings = Settings()) {
         private const val KEY_USER_ID = "user_id"
         private const val KEY_USER_PHONE = "user_phone"
         private const val KEY_USER_NAME = "user_display_name"
+        private const val KEY_USER_ROLE = "user_role"
         private const val KEY_SERVER_URL = "server_url"
     }
 
@@ -22,11 +23,14 @@ class TokenStorage(private val settings: Settings = Settings()) {
     fun getAccessToken(): String? = settings.getStringOrNull(KEY_ACCESS)
     fun getRefreshToken(): String? = settings.getStringOrNull(KEY_REFRESH)
 
-    fun saveUser(id: String, phone: String, displayName: String) {
+    fun saveUser(id: String, phone: String, displayName: String, role: String = "user") {
         settings.putString(KEY_USER_ID, id)
         settings.putString(KEY_USER_PHONE, phone)
         settings.putString(KEY_USER_NAME, displayName)
+        settings.putString(KEY_USER_ROLE, role)
     }
+
+    fun getUserRole(): String? = settings.getStringOrNull(KEY_USER_ROLE)
 
     fun getUserId(): String? = settings.getStringOrNull(KEY_USER_ID)
     fun getUserPhone(): String? = settings.getStringOrNull(KEY_USER_PHONE)
@@ -46,6 +50,7 @@ class TokenStorage(private val settings: Settings = Settings()) {
         settings.remove(KEY_USER_ID)
         settings.remove(KEY_USER_PHONE)
         settings.remove(KEY_USER_NAME)
+        settings.remove(KEY_USER_ROLE)
         // НЕ удаляем server_url — пусть остаётся после логаута
     }
 }

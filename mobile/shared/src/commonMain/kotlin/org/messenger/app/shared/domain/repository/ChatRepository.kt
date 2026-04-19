@@ -61,4 +61,19 @@ class ChatRepository(private val api: ApiService) {
 
     suspend fun markRead(chatId: String, lastReadMessageId: String) =
         api.markRead(chatId, lastReadMessageId)
+
+    suspend fun createPersonalChat(
+        contactId: String? = null,
+        phone: String? = null,
+    ): ChatDto = api.createPersonalChat(contactId = contactId, phone = phone)
+
+    suspend fun adminListUsers(
+        offset: Int = 0,
+        limit: Int = 50,
+        search: String? = null,
+    ): List<org.messenger.app.shared.data.model.UserDto> =
+        api.adminListUsers(offset = offset, limit = limit, search = search)
+
+    suspend fun adminCreateGroupChat(name: String, memberIds: List<String>): ChatDto =
+        api.adminCreateChat(name, memberIds)
 }
