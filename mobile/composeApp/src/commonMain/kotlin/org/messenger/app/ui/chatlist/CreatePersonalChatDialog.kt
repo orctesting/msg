@@ -6,8 +6,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PersonOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -39,6 +41,7 @@ fun CreatePersonalChatDialog(
 
     var isCreating by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var showAddContactDialog by remember { mutableStateOf(false) }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -61,6 +64,20 @@ fun CreatePersonalChatDialog(
                             }
                         }
                     )
+                },
+                bottomBar = {
+                    Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = { showAddContactDialog = true },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                        ) {
+                            Icon(Icons.Default.PersonAdd, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Добавить контакт")
+                        }
+                    }
                 }
             ) { padding ->
                 Box(
@@ -80,7 +97,7 @@ fun CreatePersonalChatDialog(
                                 Text("Нет контактов")
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
-                                    "Добавьте контакты в разделе «Контакты»",
+                                    "Добавьте контакт кнопкой снизу",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -140,6 +157,66 @@ fun CreatePersonalChatDialog(
             }
         }
     }
+
+    if (showAddContactDialog) {
+        AddContactDialog(
+            onDismiss = { showAddContactDialog = false },
+            onConfirm = { phone, name ->
+                viewModel.addContact(phone, name) { ok ->
+                    if (ok) showAddContactDialog = false
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun AddContactDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (phone: String, displayName: String) -> Unit,
+) {
+    var phone by remember { mutableStateOf("+7") }
+    var displayName by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Новый контакт") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = phone,
+                    onValueChange = {
+                        val s = when {
+                            it.isEmpty() -> "+"
+                            !it.startsWith("+") -> "+$it"
+                            else -> it
+                        }
+                        phone = s
+                    },
+                    label = { Text("Телефон") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = displayName,
+                    onValueChange = { displayName = it },
+                    label = { Text("Имя") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(phone.trim(), displayName.trim()) },
+                enabled = phone.length > 1 && displayName.isNotBlank()
+            ) { Text("Сохранить") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+        }
+    )
 }
 
 @Composable

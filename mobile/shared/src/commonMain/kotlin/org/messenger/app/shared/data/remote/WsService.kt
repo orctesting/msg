@@ -8,6 +8,7 @@ import io.ktor.http.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.withLock
 import kotlin.math.pow
 import org.messenger.app.shared.data.local.TokenStorage
 import org.messenger.app.shared.data.model.RefreshTokenBody
@@ -74,32 +75,32 @@ class WsService(
     private suspend fun getValidToken(): String? {
         val current = tokenStorage.getAccessToken()
         if (current != null) return current
-
-        // Token is null — try refresh
         return tryRefreshToken()
     }
 
-    /**
-     * Called when WS connection is rejected (e.g. 403).
-     * Refreshes the token so next reconnect attempt uses a fresh one.
-     */
     private suspend fun tryRefreshToken(): String? {
-        val refresh = tokenStorage.getRefreshToken() ?: return null
-        return try {
-            val response = client.post("api/v1/auth/refresh") {
-                contentType(ContentType.Application.Json)
-                setBody(RefreshTokenBody(refresh))
-            }
-            if (response.status == HttpStatusCode.OK) {
-                val tokens: RefreshTokenResponse = response.body()
-                tokenStorage.saveTokens(tokens.accessToken, tokens.refreshToken)
-                tokens.accessToken
-            } else {
-                tokenStorage.clear()
+        return refreshMutex.withLock {
+            // Если другой поток уже обновил токен — используем его
+            val existing = tokenStorage.getAccessToken()
+            if (existing != null) return@withLock existing
+
+            val refresh = tokenStorage.getRefreshToken() ?: return@withLock null
+            try {
+                val response = client.post("api/v1/auth/refresh") {
+                    contentType(ContentType.Application.Json)
+                    setBody(RefreshTokenBody(refresh))
+                }
+                if (response.status == HttpStatusCode.OK) {
+                    val tokens: RefreshTokenResponse = response.body()
+                    tokenStorage.saveTokens(tokens.accessToken, tokens.refreshToken)
+                    tokens.accessToken
+                } else {
+                    tokenStorage.clear()
+                    null
+                }
+            } catch (_: Exception) {
                 null
             }
-        } catch (_: Exception) {
-            null
         }
     }
 
