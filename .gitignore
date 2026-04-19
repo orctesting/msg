@@ -37,3 +37,18 @@ oreshnik-f1d0c-f587277f3574.json
 **/firebase-adminsdk*.json
 **/service-account*.json
 firebase-service-account.json
+
+# Certbot / Let's Encrypt
+certbot/conf/
+certbot/logs/
+certbot/work/
+
+# Сертификаты и ключи
+*.pem
+*.key
+*.crt
+*.cer
+*.pfx
+*.p12
+*.jks
+*.keystore

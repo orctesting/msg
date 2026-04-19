@@ -85,12 +85,32 @@ services:
     image: nginx:alpine
     container_name: messenger_nginx
     ports:
-      - "${NGINX_PORT:-80}:80"
+      - "80:80"
+      - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    command: >
+      sh -c "nginx -g 'daemon off;' &
+             NGINX_PID=$$!;
+             while :; do sleep 6h; nginx -s reload; done &
+             wait $$NGINX_PID"
     depends_on:
       backend:
         condition: service_healthy
+    restart: unless-stopped
+
+  certbot:
+    image: infinityofspace/certbot_dns_duckdns:latest
+    container_name: messenger_certbot
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/renew.sh:/renew.sh:ro
+    environment:
+      - DUCKDNS_TOKEN=${DUCKDNS_TOKEN}
+    entrypoint: ["/bin/sh", "/renew.sh"]
+    restart: unless-stopped
 
 volumes:
   postgres_data:

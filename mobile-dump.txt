@@ -1,6 +1,6 @@
 ﻿======================================================================
 MOBILE PROJECT DUMP
-Generated: 2026-04-19 22:14:38
+Generated: 2026-04-20 00:02:22
 Root: D:\messenger_proj\source\mobile
 ======================================================================
 
@@ -3624,7 +3624,7 @@ private fun UserSelectRow(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chatlist\CreatePersonalChatDialog.kt
-SIZE: 7.7 KB
+SIZE: 10.5 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chatlist
 
@@ -3634,8 +3634,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PersonOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -3667,6 +3669,7 @@ fun CreatePersonalChatDialog(
 
     var isCreating by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var showAddContactDialog by remember { mutableStateOf(false) }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -3689,6 +3692,20 @@ fun CreatePersonalChatDialog(
                             }
                         }
                     )
+                },
+                bottomBar = {
+                    Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = { showAddContactDialog = true },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                        ) {
+                            Icon(Icons.Default.PersonAdd, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Р”РѕР±Р°РІРёС‚СЊ РєРѕРЅС‚Р°РєС‚")
+                        }
+                    }
                 }
             ) { padding ->
                 Box(
@@ -3708,7 +3725,7 @@ fun CreatePersonalChatDialog(
                                 Text("РќРµС‚ РєРѕРЅС‚Р°РєС‚РѕРІ")
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
-                                    "Р”РѕР±Р°РІСЊС‚Рµ РєРѕРЅС‚Р°РєС‚С‹ РІ СЂР°Р·РґРµР»Рµ В«РљРѕРЅС‚Р°РєС‚С‹В»",
+                                    "Р”РѕР±Р°РІСЊС‚Рµ РєРѕРЅС‚Р°РєС‚ РєРЅРѕРїРєРѕР№ СЃРЅРёР·Сѓ",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -3768,6 +3785,66 @@ fun CreatePersonalChatDialog(
             }
         }
     }
+
+    if (showAddContactDialog) {
+        AddContactDialog(
+            onDismiss = { showAddContactDialog = false },
+            onConfirm = { phone, name ->
+                viewModel.addContact(phone, name) { ok ->
+                    if (ok) showAddContactDialog = false
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun AddContactDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (phone: String, displayName: String) -> Unit,
+) {
+    var phone by remember { mutableStateOf("+7") }
+    var displayName by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("РќРѕРІС‹Р№ РєРѕРЅС‚Р°РєС‚") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = phone,
+                    onValueChange = {
+                        val s = when {
+                            it.isEmpty() -> "+"
+                            !it.startsWith("+") -> "+$it"
+                            else -> it
+                        }
+                        phone = s
+                    },
+                    label = { Text("РўРµР»РµС„РѕРЅ") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = displayName,
+                    onValueChange = { displayName = it },
+                    label = { Text("РРјСЏ") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(phone.trim(), displayName.trim()) },
+                enabled = phone.length > 1 && displayName.isNotBlank()
+            ) { Text("РЎРѕС…СЂР°РЅРёС‚СЊ") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("РћС‚РјРµРЅР°") }
+        }
+    )
 }
 
 @Composable
@@ -6190,7 +6267,7 @@ expect fun createPlatformEngine(): HttpClientEngine
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\remote\HttpClientFactory.kt
-SIZE: 2.4 KB
+SIZE: 3.7 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.remote
 
@@ -6205,6 +6282,8 @@ import io.ktor.client.plugins.websocket.*
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import org.messenger.app.shared.data.local.TokenStorage
 import org.messenger.app.shared.data.model.RefreshTokenBody
@@ -6216,6 +6295,9 @@ val appJson = Json {
     isLenient = true
     coerceInputValues = true
 }
+
+// Р•РґРёРЅС‹Р№ mutex РґР»СЏ refresh-РѕРїРµСЂР°С†РёР№ РјРµР¶РґСѓ HTTP Рё WS
+internal val refreshMutex = Mutex()
 
 fun createHttpClient(
     tokenStorage: TokenStorage,
@@ -6232,7 +6314,7 @@ fun createHttpClient(
 
     install(Logging) {
         logger = Logger.DEFAULT
-        level = LogLevel.BODY
+        level = LogLevel.INFO
     }
 
     install(WebSockets)
@@ -6248,23 +6330,43 @@ fun createHttpClient(
             }
 
             refreshTokens {
-                val refresh = tokenStorage.getRefreshToken() ?: return@refreshTokens null
-                val response = client.post("api/v1/auth/refresh") {
-                    markAsRefreshTokenRequest()
-                    setBody(RefreshTokenBody(refresh))
-                }
-                if (response.status == HttpStatusCode.OK) {
-                    val tokens: RefreshTokenResponse = response.body()
-                    tokenStorage.saveTokens(tokens.accessToken, tokens.refreshToken)
-                    BearerTokens(tokens.accessToken, tokens.refreshToken)
-                } else {
-                    tokenStorage.clear()
-                    null
+                refreshMutex.withLock {
+                    // РњРµР¶РґСѓ РѕР¶РёРґР°РЅРёРµРј mutex С‚РѕРєРµРЅ РјРѕРі РѕР±РЅРѕРІРёС‚СЊСЃСЏ РґСЂСѓРіРёРј РїРѕС‚РѕРєРѕРј вЂ”
+                    // СЃСЂР°РІРЅРёРІР°РµРј СЃ С‚РµРј, РєРѕС‚РѕСЂС‹Р№ Р±С‹Р» РІ РјРѕРјРµРЅС‚ 401
+                    val currentAccess = tokenStorage.getAccessToken()
+                    val staleAccess = oldTokens?.accessToken
+                    if (currentAccess != null && currentAccess != staleAccess) {
+                        val currentRefresh = tokenStorage.getRefreshToken()
+                        if (currentRefresh != null) {
+                            return@withLock BearerTokens(currentAccess, currentRefresh)
+                        }
+                    }
+
+                    val refresh = tokenStorage.getRefreshToken()
+                        ?: return@withLock null
+
+                    try {
+                        val response = client.post("api/v1/auth/refresh") {
+                            markAsRefreshTokenRequest()
+                            contentType(ContentType.Application.Json)
+                            setBody(RefreshTokenBody(refresh))
+                        }
+                        if (response.status == HttpStatusCode.OK) {
+                            val tokens: RefreshTokenResponse = response.body()
+                            tokenStorage.saveTokens(tokens.accessToken, tokens.refreshToken)
+                            BearerTokens(tokens.accessToken, tokens.refreshToken)
+                        } else {
+                            tokenStorage.clear()
+                            null
+                        }
+                    } catch (_: Exception) {
+                        null
+                    }
                 }
             }
 
             sendWithoutRequest { request ->
-                !request.url.encodedPath.contains("auth")
+                !request.url.encodedPath.contains("/auth/")
             }
         }
     }
@@ -6272,7 +6374,7 @@ fun createHttpClient(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\remote\WsService.kt
-SIZE: 5.4 KB
+SIZE: 5.6 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.remote
 
@@ -6284,6 +6386,7 @@ import io.ktor.http.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.withLock
 import kotlin.math.pow
 import org.messenger.app.shared.data.local.TokenStorage
 import org.messenger.app.shared.data.model.RefreshTokenBody
@@ -6350,32 +6453,32 @@ class WsService(
     private suspend fun getValidToken(): String? {
         val current = tokenStorage.getAccessToken()
         if (current != null) return current
-
-        // Token is null вЂ” try refresh
         return tryRefreshToken()
     }
 
-    /**
-     * Called when WS connection is rejected (e.g. 403).
-     * Refreshes the token so next reconnect attempt uses a fresh one.
-     */
     private suspend fun tryRefreshToken(): String? {
-        val refresh = tokenStorage.getRefreshToken() ?: return null
-        return try {
-            val response = client.post("api/v1/auth/refresh") {
-                contentType(ContentType.Application.Json)
-                setBody(RefreshTokenBody(refresh))
-            }
-            if (response.status == HttpStatusCode.OK) {
-                val tokens: RefreshTokenResponse = response.body()
-                tokenStorage.saveTokens(tokens.accessToken, tokens.refreshToken)
-                tokens.accessToken
-            } else {
-                tokenStorage.clear()
+        return refreshMutex.withLock {
+            // Р•СЃР»Рё РґСЂСѓРіРѕР№ РїРѕС‚РѕРє СѓР¶Рµ РѕР±РЅРѕРІРёР» С‚РѕРєРµРЅ вЂ” РёСЃРїРѕР»СЊР·СѓРµРј РµРіРѕ
+            val existing = tokenStorage.getAccessToken()
+            if (existing != null) return@withLock existing
+
+            val refresh = tokenStorage.getRefreshToken() ?: return@withLock null
+            try {
+                val response = client.post("api/v1/auth/refresh") {
+                    contentType(ContentType.Application.Json)
+                    setBody(RefreshTokenBody(refresh))
+                }
+                if (response.status == HttpStatusCode.OK) {
+                    val tokens: RefreshTokenResponse = response.body()
+                    tokenStorage.saveTokens(tokens.accessToken, tokens.refreshToken)
+                    tokens.accessToken
+                } else {
+                    tokenStorage.clear()
+                    null
+                }
+            } catch (_: Exception) {
                 null
             }
-        } catch (_: Exception) {
-            null
         }
     }
 
