@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+venv/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Docker
+docker-compose.override.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Test
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Firebase
+composeApp/google-services.json
+**/google-services.json
+oreshnik-f1d0c-f587277f3574.json
+
+# Firebase Admin SDK (бэкенд)
+**/firebase-adminsdk*.json
+**/service-account*.json
+firebase-service-account.json
+
+# Certbot / Let's Encrypt
+certbot/conf/
+certbot/logs/
+certbot/work/
+
+# Сертификаты и ключи
+*.pem
+*.key
+*.crt
+*.cer
+*.pfx
+*.p12
+*.jks
+*.keystore
