@@ -6,6 +6,8 @@ from sqlalchemy import select, desc, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from app.db.models.push_log import PushLog
+from app.db.models.attachment import Attachment
+from app.services import s3_service
 import structlog
 
 from app.db.session import get_async_session
@@ -87,7 +89,7 @@ def _forwarded_info_from(msg: Message) -> ForwardedInfo | None:
     )
 
 
-def _message_to_out(message: Message) -> MessageOut:
+def _message_to_out(message: Message, attachments_out: list | None = None) -> MessageOut:
     sender = message.sender
     reply_preview = None
     if message.reply_to_message_id is not None:
@@ -113,6 +115,7 @@ def _message_to_out(message: Message) -> MessageOut:
         edited_at=message.edited_at,
         reply_to=reply_preview,
         forwarded_from=_forwarded_info_from(message),
+        attachments=attachments_out or [],
     )
 
 
@@ -140,10 +143,52 @@ async def _load_message_full(session: AsyncSession, message_id: uuid.UUID) -> Me
             joinedload(Message.sender),
             joinedload(Message.reply_to).joinedload(Message.sender),
             joinedload(Message.forwarded_from).joinedload(Message.sender),
+            joinedload(Message.attachments),
         )
         .where(Message.id == message_id)
     )
     return result.scalars().unique().one_or_none()
+    
+    
+async def _build_attachments_out(message: Message) -> list:
+    from app.api.schemas.attachment import AttachmentOut
+    result = []
+    atts = list(message.attachments or [])
+    for att in atts:
+        download_url = None
+        thumb_url = None
+        if att.status in ("uploaded", "ready"):
+            try:
+                download_url = await s3_service.generate_presigned_download_url(
+                    att.storage_key, filename=att.original_filename
+                )
+            except Exception as e:
+                logger.error("msg_att_presign_error", error=str(e))
+            if att.thumbnail_key:
+                try:
+                    thumb_url = await s3_service.generate_presigned_download_url(
+                        att.thumbnail_key
+                    )
+                except Exception:
+                    pass
+        result.append(
+            AttachmentOut(
+                id=att.id,
+                original_filename=att.original_filename,
+                mime_type=att.mime_type,
+                size_bytes=att.size_bytes,
+                file_kind=att.file_kind,
+                width=att.width,
+                height=att.height,
+                duration_ms=att.duration_ms,
+                has_thumbnail=att.thumbnail_key is not None,
+                status=att.status,
+                created_at=att.created_at,
+                download_url=download_url,
+                thumbnail_url=thumb_url,
+            )
+        )
+    return result
 
 
 @router.get("/{chat_id}/messages", response_model=MessageListOut)
@@ -162,6 +207,7 @@ async def get_messages(
             joinedload(Message.sender),
             joinedload(Message.reply_to).joinedload(Message.sender),
             joinedload(Message.forwarded_from).joinedload(Message.sender),
+            joinedload(Message.attachments),
         )
         .where(Message.chat_id == chat_id)
     )
@@ -197,8 +243,13 @@ async def get_messages(
     if row:
         read_by_others_up_to = row[0]
 
+    messages_out = []
+    for m in messages:
+        atts_out = await _build_attachments_out(m)
+        messages_out.append(_message_to_out(m, atts_out))
+
     return MessageListOut(
-        messages=[_message_to_out(m) for m in messages],
+        messages=messages_out,
         has_more=has_more,
         read_by_others_up_to=read_by_others_up_to,
     )
@@ -261,6 +312,28 @@ async def send_message(
             if existing is not None:
                 full = await _load_message_full(session, existing.id)
                 return _message_to_out(full)
+                
+    # Валидация attachments
+    validated_attachments: list[Attachment] = []
+    if body.attachment_ids:
+        att_res = await session.execute(
+            select(Attachment).where(Attachment.id.in_(body.attachment_ids))
+        )
+        atts = list(att_res.scalars().all())
+        if len(atts) != len(body.attachment_ids):
+            raise NotFoundException("Some attachments not found")
+        for a in atts:
+            if a.uploader_user_id != current_user.id:
+                raise ForbiddenException("Attachment belongs to another user")
+            if a.message_id is not None:
+                raise ConflictException("Attachment already linked to another message")
+            if a.status not in ("uploaded", "ready"):
+                raise ConflictException(f"Attachment {a.id} is not ready")
+        validated_attachments = atts
+
+    # Требование: либо content, либо вложения
+    if not body.content.strip() and not validated_attachments:
+        raise ConflictException("Message must have content or attachments")
 
     message = Message(
         chat_id=chat_id,
@@ -273,12 +346,33 @@ async def send_message(
         forwarded_from_sender_name=forwarded_sender_name,
     )
     session.add(message)
+    await session.flush()
+
+    need_thumb_ids: list[uuid.UUID] = []
+    for a in validated_attachments:
+        a.message_id = message.id
+        a.chat_id = chat_id
+        if a.status == "uploaded":
+            a.status = "ready"
+        # Если превью ещё не было сгенерировано для image — перегенерим
+        if a.file_kind == "image" and a.thumbnail_key is None:
+            need_thumb_ids.append(a.id)
+
     await session.commit()
+
+    # Enqueue thumbnail generation для тех, у кого его ещё нет
+    for aid in need_thumb_ids:
+        try:
+            from app.workers.tasks.attachments import generate_attachment_thumbnail
+            generate_attachment_thumbnail.delay(str(aid))
+        except Exception as e:
+            logger.error("enqueue_thumbnail_send_error", error=str(e))
     
     await _ensure_personal_chat_visible(session, chat_id)
 
     full = await _load_message_full(session, message.id)
-    message_out = _message_to_out(full)
+    atts_out = await _build_attachments_out(full)
+    message_out = _message_to_out(full, atts_out)
 
     try:
         await ws_manager.publish_new_message(
@@ -317,6 +411,8 @@ async def edit_message(
     await _check_membership(session, chat_id, current_user.id)
 
     msg = await _load_message_full(session, message_id)
+    atts_out = await _build_attachments_out(msg)
+    out = _message_to_out(msg, atts_out)
     if msg is None or msg.chat_id != chat_id:
         raise NotFoundException("Message not found")
 
@@ -555,7 +651,8 @@ async def forward_message(
     await _ensure_personal_chat_visible(session, body.target_chat_id)
 
     full = await _load_message_full(session, new_msg.id)
-    out = _message_to_out(full)
+    atts_out = await _build_attachments_out(full)
+    out = _message_to_out(full, atts_out)
 
     try:
         await ws_manager.publish_new_message(

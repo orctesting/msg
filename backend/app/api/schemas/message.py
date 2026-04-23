@@ -2,6 +2,8 @@ import uuid
 from datetime import datetime
 from pydantic import BaseModel
 
+from app.api.schemas.attachment import AttachmentOut
+
 
 class ReplyPreview(BaseModel):
     id: uuid.UUID
@@ -19,11 +21,12 @@ class ForwardedInfo(BaseModel):
 
 
 class MessageSendIn(BaseModel):
-    content: str
+    content: str = ""
     message_type: str = "text"
     idempotency_key: str | None = None
     reply_to_message_id: uuid.UUID | None = None
     forwarded_from_message_id: uuid.UUID | None = None
+    attachment_ids: list[uuid.UUID] = []
 
 
 class MessageEditIn(BaseModel):
@@ -42,6 +45,7 @@ class MessageOut(BaseModel):
     edited_at: datetime | None = None
     reply_to: ReplyPreview | None = None
     forwarded_from: ForwardedInfo | None = None
+    attachments: list[AttachmentOut] = []
 
     model_config = {"from_attributes": True}
 

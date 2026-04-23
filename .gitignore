@@ -6,6 +6,8 @@ dist/
 .venv/
 venv/
 .env
+.ini
+duckdns.ini
 
 # IDE
 .idea/

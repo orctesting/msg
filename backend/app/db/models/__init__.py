@@ -11,6 +11,7 @@ from app.db.models.otp_session import OTPSession  # noqa
 from app.db.models.refresh_token import RefreshToken  # noqa
 from app.db.models.contact import Contact  # noqa
 from app.db.models.user_contact_dismissal import UserContactDismissal  # noqa
+from app.db.models.attachment import Attachment  # noqa
 
 __all__ = [
     "User",
@@ -27,4 +28,5 @@ __all__ = [
     "RefreshToken",
     "Contact",
     "UserContactDismissal",
+    "Attachment",
 ]

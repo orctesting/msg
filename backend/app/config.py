@@ -26,6 +26,17 @@ class Settings(BaseSettings):
     otp_max_requests_per_hour: int = 20
     otp_max_verify_attempts: int = 20
     otp_session_ttl_seconds: int = 300
+    
+    s3_endpoint_url: str = "http://localhost:9000"
+    s3_public_endpoint_url: str = "http://localhost:9000"
+    s3_access_key: str = "minio_admin"
+    s3_secret_key: str = "minio_secret_change_me"
+    s3_bucket: str = "attachments"
+    s3_region: str = "us-east-1"
+
+    attachment_max_size_bytes: int = 50 * 1024 * 1024
+    attachment_upload_url_ttl_seconds: int = 900
+    attachment_download_url_ttl_seconds: int = 3600
 
     admin_phone: str = "+70000000000"
     admin_display_name: str = "Admin"
