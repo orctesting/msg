@@ -56,6 +56,13 @@ class Message(Base):
         foreign_keys=[forwarded_from_message_id],
         post_update=True,
     )
+    attachments = relationship(
+        "Attachment",
+        back_populates="message",
+        foreign_keys="Attachment.message_id",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )    
 
 
 class MessageRead(Base):

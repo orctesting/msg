@@ -1,6 +1,6 @@
 ﻿======================================================================
 MOBILE PROJECT DUMP
-Generated: 2026-04-20 00:02:22
+Generated: 2026-04-24 01:30:41
 Root: D:\messenger_proj\source\mobile
 ======================================================================
 
@@ -1124,15 +1124,24 @@ SIZE: 0.1 KB
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\res\xml\network_security_config.xml
-SIZE: 0.4 KB
+SIZE: 0.8 KB
 ----------------------------------------------------------------------
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
+    <!-- Р›РѕРєР°Р»СЊРЅР°СЏ СЂР°Р·СЂР°Р±РѕС‚РєР°: СЂР°Р·СЂРµС€Р°РµРј HTTP -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">10.0.2.2</domain>
         <domain includeSubdomains="true">localhost</domain>
         <domain includeSubdomains="true">192.168.1.188</domain>
         <domain includeSubdomains="true">46.146.86.206</domain>
+    </domain-config>
+
+    <!-- РџСЂРѕРґР°РєС€РЅ-РґРѕРјРµРЅ: С‚РѕР»СЊРєРѕ HTTPS СЃ РґРѕРІРµСЂРµРЅРЅС‹РјРё CA (Let's Encrypt) -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">msg-app.duckdns.org</domain>
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
     </domain-config>
 </network-security-config>
 
@@ -5928,7 +5937,7 @@ data class MarkReadBody(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\model\WsModels.kt
-SIZE: 1.6 KB
+SIZE: 2 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.model
 
@@ -6006,6 +6015,20 @@ data class WsTyping(
     val chatId: String,
     @SerialName("user_id")
     val userId: String
+)
+
+@Serializable
+data class WsAttachmentReady(
+    @SerialName("chat_id")
+    val chatId: String,
+    @SerialName("message_id")
+    val messageId: String,
+    @SerialName("attachment_id")
+    val attachmentId: String,
+    @SerialName("has_thumbnail")
+    val hasThumbnail: Boolean = false,
+    val width: Int? = null,
+    val height: Int? = null
 )
 
 ----------------------------------------------------------------------

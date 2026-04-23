@@ -75,3 +75,17 @@ data class WsTyping(
     @SerialName("user_id")
     val userId: String
 )
+
+@Serializable
+data class WsAttachmentReady(
+    @SerialName("chat_id")
+    val chatId: String,
+    @SerialName("message_id")
+    val messageId: String,
+    @SerialName("attachment_id")
+    val attachmentId: String,
+    @SerialName("has_thumbnail")
+    val hasThumbnail: Boolean = false,
+    val width: Int? = null,
+    val height: Int? = null
+)

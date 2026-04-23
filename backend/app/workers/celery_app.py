@@ -6,7 +6,7 @@ celery_app = Celery(
     "messenger",
     broker=settings.redis_url,
     backend=settings.redis_url,
-    include=["app.workers.tasks.push"],
+    include=["app.workers.tasks.push", "app.workers.tasks.attachments"],
 )
 
 celery_app.conf.update(

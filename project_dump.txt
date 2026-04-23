@@ -714,6 +714,75 @@ def downgrade() -> None:
 
 
 ================================================================================
+FILE: backend/alembic/versions/a7b8c9d0e1f2_add_attachments.py
+================================================================================
+"""add attachments table
+
+Revision ID: a7b8c9d0e1f2
+Revises: f6a7b8c9d0e1
+Create Date: 2026-04-25 00:00:00.000000
+"""
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+
+revision = "a7b8c9d0e1f2"
+down_revision = "f6a7b8c9d0e1"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    op.create_table(
+        "attachments",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "uploader_user_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("users.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        sa.Column(
+            "chat_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("chats.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
+        sa.Column(
+            "message_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("messages.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
+        sa.Column("storage_key", sa.Text(), nullable=False),
+        sa.Column("original_filename", sa.String(length=500), nullable=False),
+        sa.Column("mime_type", sa.String(length=255), nullable=False),
+        sa.Column("size_bytes", sa.BigInteger(), nullable=False, server_default="0"),
+        sa.Column("file_kind", sa.String(length=20), nullable=False, server_default="file"),
+        sa.Column("width", sa.Integer(), nullable=True),
+        sa.Column("height", sa.Integer(), nullable=True),
+        sa.Column("duration_ms", sa.Integer(), nullable=True),
+        sa.Column("thumbnail_key", sa.Text(), nullable=True),
+        sa.Column("sha256", sa.String(length=64), nullable=True),
+        sa.Column("status", sa.String(length=20), nullable=False, server_default="pending"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+    )
+    op.create_index("ix_attachments_uploader_user_id", "attachments", ["uploader_user_id"])
+    op.create_index("ix_attachments_chat_id", "attachments", ["chat_id"])
+    op.create_index("ix_attachments_message_id", "attachments", ["message_id"])
+    op.create_index("ix_attachments_status", "attachments", ["status"])
+
+
+def downgrade() -> None:
+    op.drop_index("ix_attachments_status", table_name="attachments")
+    op.drop_index("ix_attachments_message_id", table_name="attachments")
+    op.drop_index("ix_attachments_chat_id", table_name="attachments")
+    op.drop_index("ix_attachments_uploader_user_id", table_name="attachments")
+    op.drop_table("attachments")
+
+
+================================================================================
 FILE: backend/alembic/versions/c3d4e5f6a7b8_message_edit_reply_forward_pin.py
 ================================================================================
 """message edit/reply/forward + pin + deleted_messages + user_pinned_dismissals
@@ -1172,6 +1241,50 @@ def downgrade() -> None:
 
 
 ================================================================================
+FILE: backend/app/api/schemas/attachment.py
+================================================================================
+import uuid
+from datetime import datetime
+from pydantic import BaseModel, Field
+
+
+class PresignUploadIn(BaseModel):
+    filename: str = Field(..., min_length=1, max_length=500)
+    mime_type: str = Field(..., min_length=1, max_length=255)
+    size_bytes: int = Field(..., gt=0)
+    chat_id: uuid.UUID | None = None
+
+
+class PresignUploadOut(BaseModel):
+    attachment_id: uuid.UUID
+    upload_url: str
+    storage_key: str
+    expires_in: int
+
+
+class AttachmentCompleteIn(BaseModel):
+    pass
+
+
+class AttachmentOut(BaseModel):
+    id: uuid.UUID
+    original_filename: str
+    mime_type: str
+    size_bytes: int
+    file_kind: str
+    width: int | None = None
+    height: int | None = None
+    duration_ms: int | None = None
+    has_thumbnail: bool = False
+    status: str
+    created_at: datetime
+    download_url: str | None = None
+    thumbnail_url: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+================================================================================
 FILE: backend/app/api/schemas/auth.py
 ================================================================================
 import uuid
@@ -1356,6 +1469,8 @@ import uuid
 from datetime import datetime
 from pydantic import BaseModel
 
+from app.api.schemas.attachment import AttachmentOut
+
 
 class ReplyPreview(BaseModel):
     id: uuid.UUID
@@ -1373,11 +1488,12 @@ class ForwardedInfo(BaseModel):
 
 
 class MessageSendIn(BaseModel):
-    content: str
+    content: str = ""
     message_type: str = "text"
     idempotency_key: str | None = None
     reply_to_message_id: uuid.UUID | None = None
     forwarded_from_message_id: uuid.UUID | None = None
+    attachment_ids: list[uuid.UUID] = []
 
 
 class MessageEditIn(BaseModel):
@@ -1396,6 +1512,7 @@ class MessageOut(BaseModel):
     edited_at: datetime | None = None
     reply_to: ReplyPreview | None = None
     forwarded_from: ForwardedInfo | None = None
+    attachments: list[AttachmentOut] = []
 
     model_config = {"from_attributes": True}
 
@@ -1756,6 +1873,303 @@ async def remove_chat_member(
     await session.delete(member)
     await session.commit()
     return OkResponse(detail="Member removed")
+
+
+================================================================================
+FILE: backend/app/api/v1/attachments.py
+================================================================================
+import uuid
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+import structlog
+
+from app.db.session import get_async_session
+from app.db.models.user import User
+from app.db.models.attachment import Attachment
+from app.db.models.chat_member import ChatMember
+from app.db.models.message import Message
+from app.core.dependencies import get_current_user
+from app.core.exceptions import (
+    NotFoundException,
+    ForbiddenException,
+    ConflictException,
+)
+from app.config import settings
+from app.services import s3_service
+from app.api.schemas.attachment import (
+    PresignUploadIn,
+    PresignUploadOut,
+    AttachmentOut,
+)
+from app.api.schemas.base import OkResponse
+
+logger = structlog.get_logger()
+router = APIRouter(prefix="/attachments", tags=["attachments"])
+
+ALLOWED_MIME_PREFIXES = ("image/", "video/", "audio/", "application/", "text/")
+
+
+def _detect_file_kind(mime: str) -> str:
+    m = mime.lower()
+    if m.startswith("image/"):
+        return "image"
+    if m.startswith("video/"):
+        return "video"
+    if m.startswith("audio/"):
+        return "audio"
+    return "file"
+
+
+async def _assert_chat_membership(
+    session: AsyncSession, chat_id: uuid.UUID, user_id: uuid.UUID
+) -> None:
+    res = await session.execute(
+        select(ChatMember).where(
+            ChatMember.chat_id == chat_id,
+            ChatMember.user_id == user_id,
+        )
+    )
+    if res.scalar_one_or_none() is None:
+        raise ForbiddenException("You are not a member of this chat")
+
+
+async def _build_attachment_out(
+    att: Attachment,
+    include_urls: bool = True,
+) -> AttachmentOut:
+    download_url = None
+    thumbnail_url = None
+    if include_urls and att.status in ("uploaded", "ready"):
+        try:
+            download_url = await s3_service.generate_presigned_download_url(
+                att.storage_key, filename=att.original_filename
+            )
+        except Exception as e:
+            logger.error("presign_download_error", error=str(e), attachment_id=str(att.id))
+        if att.thumbnail_key:
+            try:
+                thumbnail_url = await s3_service.generate_presigned_download_url(
+                    att.thumbnail_key
+                )
+            except Exception:
+                pass
+
+    return AttachmentOut(
+        id=att.id,
+        original_filename=att.original_filename,
+        mime_type=att.mime_type,
+        size_bytes=att.size_bytes,
+        file_kind=att.file_kind,
+        width=att.width,
+        height=att.height,
+        duration_ms=att.duration_ms,
+        has_thumbnail=att.thumbnail_key is not None,
+        status=att.status,
+        created_at=att.created_at,
+        download_url=download_url,
+        thumbnail_url=thumbnail_url,
+    )
+
+
+@router.post("/presign-upload", response_model=PresignUploadOut)
+async def presign_upload(
+    body: PresignUploadIn,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    if body.size_bytes > settings.attachment_max_size_bytes:
+        raise ConflictException(
+            f"File too large (max {settings.attachment_max_size_bytes} bytes)"
+        )
+
+    if not any(body.mime_type.lower().startswith(p) for p in ALLOWED_MIME_PREFIXES):
+        raise ConflictException("Mime type not allowed")
+
+    if body.chat_id is not None:
+        await _assert_chat_membership(session, body.chat_id, current_user.id)
+
+    attachment_id = uuid.uuid4()
+    storage_key = s3_service.build_storage_key(body.chat_id, attachment_id, body.filename)
+
+    att = Attachment(
+        id=attachment_id,
+        uploader_user_id=current_user.id,
+        chat_id=body.chat_id,
+        storage_key=storage_key,
+        original_filename=body.filename,
+        mime_type=body.mime_type,
+        size_bytes=body.size_bytes,
+        file_kind=_detect_file_kind(body.mime_type),
+        status="pending",
+    )
+    session.add(att)
+    await session.commit()
+
+    try:
+        upload_url = await s3_service.generate_presigned_upload_url(
+            storage_key=storage_key,
+            content_type=body.mime_type,
+            size_bytes=body.size_bytes,
+        )
+    except Exception as e:
+        logger.error("presign_upload_error", error=str(e))
+        raise ConflictException("Failed to generate upload URL")
+
+    return PresignUploadOut(
+        attachment_id=attachment_id,
+        upload_url=upload_url,
+        storage_key=storage_key,
+        expires_in=settings.attachment_upload_url_ttl_seconds,
+    )
+
+
+@router.post("/{attachment_id}/complete", response_model=AttachmentOut)
+async def complete_upload(
+    attachment_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    res = await session.execute(
+        select(Attachment).where(Attachment.id == attachment_id)
+    )
+    att = res.scalar_one_or_none()
+    if att is None:
+        raise NotFoundException("Attachment not found")
+    if att.uploader_user_id != current_user.id:
+        raise ForbiddenException("Not your attachment")
+
+    if att.status in ("uploaded", "ready"):
+        return await _build_attachment_out(att)
+
+    head = await s3_service.head_object(att.storage_key)
+    if head is None:
+        raise ConflictException("Object not found in storage; upload failed or not finished")
+
+    actual_size = int(head.get("ContentLength", 0) or 0)
+    if actual_size > 0:
+        att.size_bytes = actual_size
+    att.status = "uploaded"
+    await session.commit()
+    await session.refresh(att)
+
+    head = await s3_service.head_object(att.storage_key)
+    if head is None:
+        raise ConflictException("Object not found in storage; upload failed or not finished")
+
+    actual_size = int(head.get("ContentLength", 0) or 0)
+    if actual_size > 0:
+        att.size_bytes = actual_size
+    att.status = "uploaded"
+    await session.commit()
+    await session.refresh(att)
+
+    # Для изображений — ставим задачу на генерацию превью
+    if att.file_kind == "image":
+        try:
+            from app.workers.tasks.attachments import generate_attachment_thumbnail
+            generate_attachment_thumbnail.delay(str(att.id))
+        except Exception as e:
+            logger.error("enqueue_thumbnail_error", error=str(e))
+            # Fallback: считаем ready без превью
+            att.status = "ready"
+            await session.commit()
+            await session.refresh(att)
+    else:
+        att.status = "ready"
+        await session.commit()
+        await session.refresh(att)
+
+    return await _build_attachment_out(att)
+
+
+@router.get("/{attachment_id}", response_model=AttachmentOut)
+async def get_attachment(
+    attachment_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    res = await session.execute(
+        select(Attachment).where(Attachment.id == attachment_id)
+    )
+    att = res.scalar_one_or_none()
+    if att is None:
+        raise NotFoundException("Attachment not found")
+
+    # Доступ: uploader или член чата
+    if att.uploader_user_id != current_user.id:
+        if att.chat_id is None:
+            raise ForbiddenException("No access")
+        await _assert_chat_membership(session, att.chat_id, current_user.id)
+
+    return await _build_attachment_out(att)
+
+
+@router.get("/{attachment_id}/download-url")
+async def get_download_url(
+    attachment_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    res = await session.execute(
+        select(Attachment).where(Attachment.id == attachment_id)
+    )
+    att = res.scalar_one_or_none()
+    if att is None:
+        raise NotFoundException("Attachment not found")
+
+    if att.uploader_user_id != current_user.id:
+        if att.chat_id is None:
+            raise ForbiddenException("No access")
+        await _assert_chat_membership(session, att.chat_id, current_user.id)
+
+    if att.status not in ("uploaded", "ready"):
+        raise ConflictException("Attachment is not ready")
+
+    url = await s3_service.generate_presigned_download_url(
+        att.storage_key, filename=att.original_filename
+    )
+    thumb = None
+    if att.thumbnail_key:
+        try:
+            thumb = await s3_service.generate_presigned_download_url(att.thumbnail_key)
+        except Exception:
+            pass
+    return {
+        "download_url": url,
+        "thumbnail_url": thumb,
+        "expires_in": settings.attachment_download_url_ttl_seconds,
+    }
+
+
+@router.delete("/{attachment_id}", response_model=OkResponse)
+async def delete_attachment(
+    attachment_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    res = await session.execute(
+        select(Attachment).where(Attachment.id == attachment_id)
+    )
+    att = res.scalar_one_or_none()
+    if att is None:
+        raise NotFoundException("Attachment not found")
+    if att.uploader_user_id != current_user.id and current_user.role != "admin":
+        raise ForbiddenException("Not your attachment")
+    if att.message_id is not None:
+        raise ConflictException("Attachment is linked to a message; delete the message instead")
+
+    try:
+        await s3_service.delete_object(att.storage_key)
+        if att.thumbnail_key:
+            await s3_service.delete_object(att.thumbnail_key)
+    except Exception as e:
+        logger.error("s3_delete_error", error=str(e))
+
+    await session.delete(att)
+    await session.commit()
+    return OkResponse(detail="Deleted")
 
 
 ================================================================================
@@ -2753,6 +3167,8 @@ from sqlalchemy import select, desc, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from app.db.models.push_log import PushLog
+from app.db.models.attachment import Attachment
+from app.services import s3_service
 import structlog
 
 from app.db.session import get_async_session
@@ -2834,7 +3250,7 @@ def _forwarded_info_from(msg: Message) -> ForwardedInfo | None:
     )
 
 
-def _message_to_out(message: Message) -> MessageOut:
+def _message_to_out(message: Message, attachments_out: list | None = None) -> MessageOut:
     sender = message.sender
     reply_preview = None
     if message.reply_to_message_id is not None:
@@ -2860,6 +3276,7 @@ def _message_to_out(message: Message) -> MessageOut:
         edited_at=message.edited_at,
         reply_to=reply_preview,
         forwarded_from=_forwarded_info_from(message),
+        attachments=attachments_out or [],
     )
 
 
@@ -2887,10 +3304,52 @@ async def _load_message_full(session: AsyncSession, message_id: uuid.UUID) -> Me
             joinedload(Message.sender),
             joinedload(Message.reply_to).joinedload(Message.sender),
             joinedload(Message.forwarded_from).joinedload(Message.sender),
+            joinedload(Message.attachments),
         )
         .where(Message.id == message_id)
     )
     return result.scalars().unique().one_or_none()
+    
+    
+async def _build_attachments_out(message: Message) -> list:
+    from app.api.schemas.attachment import AttachmentOut
+    result = []
+    atts = list(message.attachments or [])
+    for att in atts:
+        download_url = None
+        thumb_url = None
+        if att.status in ("uploaded", "ready"):
+            try:
+                download_url = await s3_service.generate_presigned_download_url(
+                    att.storage_key, filename=att.original_filename
+                )
+            except Exception as e:
+                logger.error("msg_att_presign_error", error=str(e))
+            if att.thumbnail_key:
+                try:
+                    thumb_url = await s3_service.generate_presigned_download_url(
+                        att.thumbnail_key
+                    )
+                except Exception:
+                    pass
+        result.append(
+            AttachmentOut(
+                id=att.id,
+                original_filename=att.original_filename,
+                mime_type=att.mime_type,
+                size_bytes=att.size_bytes,
+                file_kind=att.file_kind,
+                width=att.width,
+                height=att.height,
+                duration_ms=att.duration_ms,
+                has_thumbnail=att.thumbnail_key is not None,
+                status=att.status,
+                created_at=att.created_at,
+                download_url=download_url,
+                thumbnail_url=thumb_url,
+            )
+        )
+    return result
 
 
 @router.get("/{chat_id}/messages", response_model=MessageListOut)
@@ -2909,6 +3368,7 @@ async def get_messages(
             joinedload(Message.sender),
             joinedload(Message.reply_to).joinedload(Message.sender),
             joinedload(Message.forwarded_from).joinedload(Message.sender),
+            joinedload(Message.attachments),
         )
         .where(Message.chat_id == chat_id)
     )
@@ -2944,8 +3404,13 @@ async def get_messages(
     if row:
         read_by_others_up_to = row[0]
 
+    messages_out = []
+    for m in messages:
+        atts_out = await _build_attachments_out(m)
+        messages_out.append(_message_to_out(m, atts_out))
+
     return MessageListOut(
-        messages=[_message_to_out(m) for m in messages],
+        messages=messages_out,
         has_more=has_more,
         read_by_others_up_to=read_by_others_up_to,
     )
@@ -3008,6 +3473,28 @@ async def send_message(
             if existing is not None:
                 full = await _load_message_full(session, existing.id)
                 return _message_to_out(full)
+                
+    # Валидация attachments
+    validated_attachments: list[Attachment] = []
+    if body.attachment_ids:
+        att_res = await session.execute(
+            select(Attachment).where(Attachment.id.in_(body.attachment_ids))
+        )
+        atts = list(att_res.scalars().all())
+        if len(atts) != len(body.attachment_ids):
+            raise NotFoundException("Some attachments not found")
+        for a in atts:
+            if a.uploader_user_id != current_user.id:
+                raise ForbiddenException("Attachment belongs to another user")
+            if a.message_id is not None:
+                raise ConflictException("Attachment already linked to another message")
+            if a.status not in ("uploaded", "ready"):
+                raise ConflictException(f"Attachment {a.id} is not ready")
+        validated_attachments = atts
+
+    # Требование: либо content, либо вложения
+    if not body.content.strip() and not validated_attachments:
+        raise ConflictException("Message must have content or attachments")
 
     message = Message(
         chat_id=chat_id,
@@ -3020,12 +3507,33 @@ async def send_message(
         forwarded_from_sender_name=forwarded_sender_name,
     )
     session.add(message)
+    await session.flush()
+
+    need_thumb_ids: list[uuid.UUID] = []
+    for a in validated_attachments:
+        a.message_id = message.id
+        a.chat_id = chat_id
+        if a.status == "uploaded":
+            a.status = "ready"
+        # Если превью ещё не было сгенерировано для image — перегенерим
+        if a.file_kind == "image" and a.thumbnail_key is None:
+            need_thumb_ids.append(a.id)
+
     await session.commit()
+
+    # Enqueue thumbnail generation для тех, у кого его ещё нет
+    for aid in need_thumb_ids:
+        try:
+            from app.workers.tasks.attachments import generate_attachment_thumbnail
+            generate_attachment_thumbnail.delay(str(aid))
+        except Exception as e:
+            logger.error("enqueue_thumbnail_send_error", error=str(e))
     
     await _ensure_personal_chat_visible(session, chat_id)
 
     full = await _load_message_full(session, message.id)
-    message_out = _message_to_out(full)
+    atts_out = await _build_attachments_out(full)
+    message_out = _message_to_out(full, atts_out)
 
     try:
         await ws_manager.publish_new_message(
@@ -3064,6 +3572,8 @@ async def edit_message(
     await _check_membership(session, chat_id, current_user.id)
 
     msg = await _load_message_full(session, message_id)
+    atts_out = await _build_attachments_out(msg)
+    out = _message_to_out(msg, atts_out)
     if msg is None or msg.chat_id != chat_id:
         raise NotFoundException("Message not found")
 
@@ -3302,7 +3812,8 @@ async def forward_message(
     await _ensure_personal_chat_visible(session, body.target_chat_id)
 
     full = await _load_message_full(session, new_msg.id)
-    out = _message_to_out(full)
+    atts_out = await _build_attachments_out(full)
+    out = _message_to_out(full, atts_out)
 
     try:
         await ws_manager.publish_new_message(
@@ -3599,7 +4110,7 @@ FILE: backend/app/api/v1/router.py
 ================================================================================
 from fastapi import APIRouter
 
-from app.api.v1 import auth, chats, messages, admin, push, ws, devices, contacts
+from app.api.v1 import auth, chats, messages, admin, push, ws, devices, contacts, attachments
 
 api_v1_router = APIRouter()
 
@@ -3611,6 +4122,7 @@ api_v1_router.include_router(push.router)
 api_v1_router.include_router(devices.router)
 api_v1_router.include_router(ws.router)
 api_v1_router.include_router(contacts.router)
+api_v1_router.include_router(attachments.router)
 
 
 @api_v1_router.get("/ping")
@@ -3752,6 +4264,17 @@ class Settings(BaseSettings):
     otp_max_requests_per_hour: int = 20
     otp_max_verify_attempts: int = 20
     otp_session_ttl_seconds: int = 300
+    
+    s3_endpoint_url: str = "http://localhost:9000"
+    s3_public_endpoint_url: str = "http://localhost:9000"
+    s3_access_key: str = "minio_admin"
+    s3_secret_key: str = "minio_secret_change_me"
+    s3_bucket: str = "attachments"
+    s3_region: str = "us-east-1"
+
+    attachment_max_size_bytes: int = 50 * 1024 * 1024
+    attachment_upload_url_ttl_seconds: int = 900
+    attachment_download_url_ttl_seconds: int = 3600
 
     admin_phone: str = "+70000000000"
     admin_display_name: str = "Admin"
@@ -3954,6 +4477,7 @@ from app.db.models.otp_session import OTPSession  # noqa
 from app.db.models.refresh_token import RefreshToken  # noqa
 from app.db.models.contact import Contact  # noqa
 from app.db.models.user_contact_dismissal import UserContactDismissal  # noqa
+from app.db.models.attachment import Attachment  # noqa
 
 __all__ = [
     "User",
@@ -3970,7 +4494,80 @@ __all__ = [
     "RefreshToken",
     "Contact",
     "UserContactDismissal",
+    "Attachment",
 ]
+
+
+================================================================================
+FILE: backend/app/db/models/attachment.py
+================================================================================
+import uuid
+from datetime import datetime
+
+from sqlalchemy import String, Integer, BigInteger, Text, DateTime, ForeignKey, func
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.base import Base
+
+
+class Attachment(Base):
+    __tablename__ = "attachments"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    uploader_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    chat_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chats.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("messages.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
+    storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    file_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="file")
+
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    thumbnail_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", index=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    uploader = relationship("User", foreign_keys=[uploader_user_id])
+    message = relationship(
+        "Message",
+        foreign_keys=[message_id],
+        back_populates="attachments",
+    )
 
 
 ================================================================================
@@ -4228,6 +4825,13 @@ class Message(Base):
         foreign_keys=[forwarded_from_message_id],
         post_update=True,
     )
+    attachments = relationship(
+        "Attachment",
+        back_populates="message",
+        foreign_keys="Attachment.message_id",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )    
 
 
 class MessageRead(Base):
@@ -4864,6 +5468,170 @@ def get_sync_redis() -> redis.Redis:
 
 
 ================================================================================
+FILE: backend/app/services/s3_service.py
+================================================================================
+import uuid
+from typing import Any
+
+import aioboto3
+from botocore.config import Config as BotoConfig
+import structlog
+
+from app.config import settings
+
+logger = structlog.get_logger()
+
+_session: aioboto3.Session | None = None
+
+
+def _get_session() -> aioboto3.Session:
+    global _session
+    if _session is None:
+        _session = aioboto3.Session(
+            aws_access_key_id=settings.s3_access_key,
+            aws_secret_access_key=settings.s3_secret_key,
+            region_name=settings.s3_region,
+        )
+    return _session
+
+
+def _client_kwargs(public: bool = False) -> dict[str, Any]:
+    endpoint = settings.s3_public_endpoint_url if public else settings.s3_endpoint_url
+    return {
+        "service_name": "s3",
+        "endpoint_url": endpoint,
+        "config": BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),
+    }
+
+
+def build_storage_key(chat_id: uuid.UUID | str | None, attachment_id: uuid.UUID, filename: str) -> str:
+    safe = filename.replace("/", "_").replace("\\", "_")[:200]
+    prefix = f"chat_{chat_id}" if chat_id else "unassigned"
+    return f"{prefix}/{attachment_id}_{safe}"
+
+
+async def generate_presigned_upload_url(
+    storage_key: str,
+    content_type: str,
+    size_bytes: int,
+    ttl_seconds: int | None = None,
+) -> str:
+    ttl = ttl_seconds or settings.attachment_upload_url_ttl_seconds
+    session = _get_session()
+    async with session.client(**_client_kwargs(public=True)) as s3:
+        url = await s3.generate_presigned_url(
+            ClientMethod="put_object",
+            Params={
+                "Bucket": settings.s3_bucket,
+                "Key": storage_key,
+                "ContentType": content_type,
+            },
+            ExpiresIn=ttl,
+            HttpMethod="PUT",
+        )
+    return url
+
+
+async def generate_presigned_download_url(
+    storage_key: str,
+    filename: str | None = None,
+    ttl_seconds: int | None = None,
+) -> str:
+    ttl = ttl_seconds or settings.attachment_download_url_ttl_seconds
+    session = _get_session()
+    params: dict[str, Any] = {"Bucket": settings.s3_bucket, "Key": storage_key}
+    if filename:
+        params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
+    async with session.client(**_client_kwargs(public=True)) as s3:
+        url = await s3.generate_presigned_url(
+            ClientMethod="get_object",
+            Params=params,
+            ExpiresIn=ttl,
+        )
+    return url
+
+
+async def head_object(storage_key: str) -> dict | None:
+    session = _get_session()
+    try:
+        async with session.client(**_client_kwargs(public=False)) as s3:
+            return await s3.head_object(Bucket=settings.s3_bucket, Key=storage_key)
+    except Exception as e:
+        logger.info("s3_head_object_miss", key=storage_key, error=str(e))
+        return None
+
+
+async def delete_object(storage_key: str) -> None:
+    session = _get_session()
+    try:
+        async with session.client(**_client_kwargs(public=False)) as s3:
+            await s3.delete_object(Bucket=settings.s3_bucket, Key=storage_key)
+    except Exception as e:
+        logger.error("s3_delete_object_error", key=storage_key, error=str(e))
+
+
+================================================================================
+FILE: backend/app/services/s3_sync_service.py
+================================================================================
+import io
+from typing import Any
+
+import boto3
+from botocore.config import Config as BotoConfig
+import structlog
+
+from app.config import settings
+
+logger = structlog.get_logger()
+
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        _client = boto3.client(
+            "s3",
+            endpoint_url=settings.s3_endpoint_url,
+            aws_access_key_id=settings.s3_access_key,
+            aws_secret_access_key=settings.s3_secret_key,
+            region_name=settings.s3_region,
+            config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),
+        )
+    return _client
+
+
+def download_object_bytes(storage_key: str) -> bytes | None:
+    try:
+        obj = _get_client().get_object(Bucket=settings.s3_bucket, Key=storage_key)
+        return obj["Body"].read()
+    except Exception as e:
+        logger.error("s3_sync_download_error", key=storage_key, error=str(e))
+        return None
+
+
+def upload_bytes(storage_key: str, data: bytes, content_type: str) -> bool:
+    try:
+        _get_client().put_object(
+            Bucket=settings.s3_bucket,
+            Key=storage_key,
+            Body=data,
+            ContentType=content_type,
+        )
+        return True
+    except Exception as e:
+        logger.error("s3_sync_upload_error", key=storage_key, error=str(e))
+        return False
+
+
+def head_object(storage_key: str) -> dict | None:
+    try:
+        return _get_client().head_object(Bucket=settings.s3_bucket, Key=storage_key)
+    except Exception:
+        return None
+
+
+================================================================================
 FILE: backend/app/services/ws_manager.py
 ================================================================================
 import uuid
@@ -5111,7 +5879,7 @@ celery_app = Celery(
     "messenger",
     broker=settings.redis_url,
     backend=settings.redis_url,
-    include=["app.workers.tasks.push"],
+    include=["app.workers.tasks.push", "app.workers.tasks.attachments"],
 )
 
 celery_app.conf.update(
@@ -5125,6 +5893,136 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
 )
 
+
+
+================================================================================
+FILE: backend/app/workers/tasks/attachments.py
+================================================================================
+import io
+import uuid
+
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
+from PIL import Image
+import structlog
+
+from app.config import settings
+from app.workers.celery_app import celery_app
+from app.db.models.attachment import Attachment
+from app.services import s3_sync_service
+
+logger = structlog.get_logger()
+
+_sync_engine = create_engine(settings.database_url.replace("+asyncpg", ""), future=True)
+SyncSessionLocal = sessionmaker(bind=_sync_engine, autoflush=False, autocommit=False)
+
+
+THUMBNAIL_MAX_SIZE = (512, 512)
+THUMBNAIL_QUALITY = 80
+
+
+def _thumbnail_key_for(storage_key: str) -> str:
+    return f"thumbs/{storage_key}.jpg"
+
+
+def _generate_image_thumbnail(data: bytes) -> tuple[bytes, int, int] | None:
+    try:
+        img = Image.open(io.BytesIO(data))
+        img = img.convert("RGB")
+        original_w, original_h = img.size
+        img.thumbnail(THUMBNAIL_MAX_SIZE, Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=THUMBNAIL_QUALITY, optimize=True)
+        return buf.getvalue(), original_w, original_h
+    except Exception as e:
+        logger.error("thumbnail_generate_error", error=str(e))
+        return None
+
+
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
+def generate_attachment_thumbnail(self, attachment_id: str):
+    session: Session = SyncSessionLocal()
+    try:
+        att = session.execute(
+            select(Attachment).where(Attachment.id == uuid.UUID(attachment_id))
+        ).scalar_one_or_none()
+        if att is None:
+            logger.info("attachment_thumb_skip_not_found", attachment_id=attachment_id)
+            return
+
+        if att.file_kind != "image":
+            att.status = "ready"
+            session.commit()
+            return
+
+        data = s3_sync_service.download_object_bytes(att.storage_key)
+        if data is None:
+            logger.warning("attachment_thumb_no_data", attachment_id=attachment_id)
+            att.status = "ready"
+            session.commit()
+            return
+
+        result = _generate_image_thumbnail(data)
+        if result is None:
+            att.status = "ready"
+            session.commit()
+            return
+
+        thumb_bytes, orig_w, orig_h = result
+        thumb_key = _thumbnail_key_for(att.storage_key)
+
+        uploaded = s3_sync_service.upload_bytes(
+            thumb_key, thumb_bytes, content_type="image/jpeg"
+        )
+        if uploaded:
+            att.thumbnail_key = thumb_key
+        att.width = orig_w
+        att.height = orig_h
+        att.status = "ready"
+        session.commit()
+
+        logger.info(
+            "attachment_thumb_generated",
+            attachment_id=attachment_id,
+            thumb_size=len(thumb_bytes),
+        )
+
+        # WS broadcast о готовности превью
+        try:
+            _publish_attachment_ready(att)
+        except Exception as e:
+            logger.error("attachment_ws_publish_error", error=str(e))
+
+    except Exception as exc:
+        logger.error("attachment_thumb_task_error", error=str(exc))
+        session.rollback()
+        raise self.retry(exc=exc)
+    finally:
+        session.close()
+
+
+def _publish_attachment_ready(att: Attachment):
+    """Publish via Redis pubsub (sync) to notify all WS subscribers of the chat."""
+    if att.chat_id is None or att.message_id is None:
+        return
+
+    import json
+    from app.services.redis_service import get_sync_redis
+
+    redis = get_sync_redis()
+    event = {
+        "type": "attachment_ready",
+        "data": {
+            "chat_id": str(att.chat_id),
+            "message_id": str(att.message_id),
+            "attachment_id": str(att.id),
+            "has_thumbnail": att.thumbnail_key is not None,
+            "width": att.width,
+            "height": att.height,
+        },
+    }
+    channel = f"chat:{att.chat_id}"
+    redis.publish(channel, json.dumps(event, default=str))
 
 
 ================================================================================
@@ -5488,6 +6386,9 @@ python-multipart==0.0.20
 firebase-admin==6.6.0
 pytest==8.3.5
 pytest-asyncio==0.25.3
+aioboto3==13.2.0
+Pillow==11.0.0
+boto3==1.35.63
 
 
 ================================================================================
@@ -6419,6 +7320,28 @@ async def create_user_and_login(
 
 
 ================================================================================
+FILE: certbot/renew.sh
+================================================================================
+#!/bin/sh
+set -e
+
+trap exit TERM
+
+while :; do
+  echo "[$(date)] Running certbot renew..."
+  certbot renew \
+    --non-interactive \
+    --preferred-challenges dns \
+    --authenticator dns-duckdns \
+    --dns-duckdns-token "$DUCKDNS_TOKEN" \
+    --dns-duckdns-propagation-seconds 60 || echo "Renew failed, will retry"
+  echo "[$(date)] Sleeping 12h..."
+  sleep 12h &
+  wait $!
+done
+
+
+================================================================================
 FILE: docker-compose.prod.yml
 ================================================================================
 services:
@@ -6490,10 +7413,18 @@ services:
       - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-in-production}
       - LOG_LEVEL=${LOG_LEVEL:-DEBUG}
       - FCM_SERVICE_ACCOUNT_JSON=/app/firebase-service-account.json
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_PUBLIC_ENDPOINT_URL=${S3_PUBLIC_ENDPOINT_URL:-http://localhost:9000}
+      - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minio_admin}
+      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minio_secret_change_me}
+      - S3_BUCKET=${MINIO_BUCKET:-attachments}
+      - S3_REGION=us-east-1
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
@@ -6516,26 +7447,96 @@ services:
       - ENVIRONMENT=development
       - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-in-production}
       - FCM_SERVICE_ACCOUNT_JSON=/app/firebase-service-account.json
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_PUBLIC_ENDPOINT_URL=${S3_PUBLIC_ENDPOINT_URL:-http://localhost:9000}
+      - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minio_admin}
+      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minio_secret_change_me}
+      - S3_BUCKET=${MINIO_BUCKET:-attachments}
+      - S3_REGION=us-east-1
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+        
+  minio:
+    image: minio/minio:latest
+    container_name: messenger_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio_secret_change_me}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio_init:
+    image: minio/mc:latest
+    container_name: messenger_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio_secret_change_me}
+      MINIO_BUCKET: ${MINIO_BUCKET:-attachments}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD;
+      mc mb --ignore-existing local/$$MINIO_BUCKET;
+      mc anonymous set download local/$$MINIO_BUCKET/thumbs || true;
+      echo 'MinIO init done';
+      "
+    restart: "no"
 
   nginx:
     image: nginx:alpine
     container_name: messenger_nginx
     ports:
-      - "${NGINX_PORT:-80}:80"
+      - "80:80"
+      - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    command: >
+      sh -c "nginx -g 'daemon off;' &
+             NGINX_PID=$$!;
+             while :; do sleep 6h; nginx -s reload; done &
+             wait $$NGINX_PID"
     depends_on:
       backend:
         condition: service_healthy
+    restart: unless-stopped
+
+  certbot:
+    image: infinityofspace/certbot_dns_duckdns:latest
+    container_name: messenger_certbot
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/renew.sh:/renew.sh:ro
+    environment:
+      - DUCKDNS_TOKEN=${DUCKDNS_TOKEN}
+    entrypoint: ["/bin/sh", "/renew.sh"]
+    restart: unless-stopped
 
 volumes:
   postgres_data:
   redis_data:
+  minio_data:
+
+
+================================================================================
+FILE: duckdns.ini
+================================================================================
+dns_duckdns_token = 66a98307-5c81-465b-b591-f5ae83a15596
 
 
 ================================================================================
@@ -6727,7 +7728,7 @@ FILE: mobile-dump.txt
 ================================================================================
 ======================================================================
 MOBILE PROJECT DUMP
-Generated: 2026-04-20 00:02:22
+Generated: 2026-04-24 01:30:41
 Root: D:\messenger_proj\source\mobile
 ======================================================================
 
@@ -7851,15 +8852,24 @@ SIZE: 0.1 KB
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\res\xml\network_security_config.xml
-SIZE: 0.4 KB
+SIZE: 0.8 KB
 ----------------------------------------------------------------------
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
+    <!-- Р›РѕРєР°Р»СЊРЅР°СЏ СЂР°Р·СЂР°Р±РѕС‚РєР°: СЂР°Р·СЂРµС€Р°РµРј HTTP -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">10.0.2.2</domain>
         <domain includeSubdomains="true">localhost</domain>
         <domain includeSubdomains="true">192.168.1.188</domain>
         <domain includeSubdomains="true">46.146.86.206</domain>
+    </domain-config>
+
+    <!-- РџСЂРѕРґР°РєС€РЅ-РґРѕРјРµРЅ: С‚РѕР»СЊРєРѕ HTTPS СЃ РґРѕРІРµСЂРµРЅРЅС‹РјРё CA (Let's Encrypt) -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">msg-app.duckdns.org</domain>
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
     </domain-config>
 </network-security-config>
 
@@ -12655,7 +13665,7 @@ data class MarkReadBody(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\model\WsModels.kt
-SIZE: 1.6 KB
+SIZE: 2 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.model
 
@@ -12733,6 +13743,20 @@ data class WsTyping(
     val chatId: String,
     @SerialName("user_id")
     val userId: String
+)
+
+@Serializable
+data class WsAttachmentReady(
+    @SerialName("chat_id")
+    val chatId: String,
+    @SerialName("message_id")
+    val messageId: String,
+    @SerialName("attachment_id")
+    val attachmentId: String,
+    @SerialName("has_thumbnail")
+    val hasThumbnail: Boolean = false,
+    val width: Int? = null,
+    val height: Int? = null
 )
 
 ----------------------------------------------------------------------
@@ -14761,7 +15785,24 @@ http {
 
     server {
         listen 80;
-        server_name _;
+        server_name msg-app.duckdns.org;
+
+        location / {
+            return 301 https://$host$request_uri;
+        }
+    }
+
+    server {
+        listen 443 ssl;
+        http2 on;
+        server_name msg-app.duckdns.org;
+
+        ssl_certificate     /etc/letsencrypt/live/msg-app.duckdns.org/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/msg-app.duckdns.org/privkey.pem;
+
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers HIGH:!aNULL:!MD5;
+        ssl_prefer_server_ciphers on;
 
         client_max_body_size 10M;
 
@@ -14781,6 +15822,7 @@ http {
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
             proxy_read_timeout 86400;
         }
     }
