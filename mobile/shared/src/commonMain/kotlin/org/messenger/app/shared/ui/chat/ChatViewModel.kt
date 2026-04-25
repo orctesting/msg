@@ -13,8 +13,20 @@ import org.messenger.app.shared.data.model.*
 import org.messenger.app.shared.data.remote.ApiException
 import org.messenger.app.shared.data.remote.WsService
 import org.messenger.app.shared.data.remote.appJson
+import org.messenger.app.shared.domain.repository.AttachmentsRepository
 import org.messenger.app.shared.domain.repository.ChatRepository
 import org.messenger.app.shared.domain.repository.ContactsRepository
+
+data class UploadingAttachment(
+    val localId: String,
+    val filename: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val isUploading: Boolean = true,
+    val error: String? = null,
+    val attachment: AttachmentDto? = null,
+    val previewBytes: ByteArray? = null,
+)
 
 data class ChatUiState(
     val chatId: String = "",
@@ -31,6 +43,7 @@ data class ChatUiState(
     val editingMessage: MessageDto? = null,
     val selectionMode: Boolean = false,
     val selectedIds: Set<String> = emptySet(),
+    val uploadingAttachments: List<UploadingAttachment> = emptyList(),
     val isLoading: Boolean = false,
     val isSending: Boolean = false,
     val hasMore: Boolean = true,
@@ -45,6 +58,7 @@ class ChatViewModel(
     private val currentUserId: String? = null,
     private val currentUserRole: String? = null,
     private val contactsRepository: ContactsRepository? = null,
+    private val attachmentsRepository: AttachmentsRepository? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -53,6 +67,7 @@ class ChatViewModel(
 
     private var loadRetryCount = 0
     private val maxLoadRetries = 3
+    private var localIdCounter = 0L
 
     init {
         loadChatInfo()
@@ -188,13 +203,86 @@ class ChatViewModel(
         return isOwn || isAdmin
     }
 
+    // ── Attachments upload ──
+
+    fun uploadAttachment(filename: String, mimeType: String, bytes: ByteArray) {
+        val repo = attachmentsRepository ?: run {
+            _state.update { it.copy(error = "Загрузка файлов недоступна") }
+            return
+        }
+        val localId = "local-${++localIdCounter}"
+        val previewBytes = if (mimeType.startsWith("image/", ignoreCase = true) && bytes.size <= 10 * 1024 * 1024) {
+            bytes
+        } else null
+
+        val placeholder = UploadingAttachment(
+            localId = localId,
+            filename = filename,
+            mimeType = mimeType,
+            sizeBytes = bytes.size.toLong(),
+            previewBytes = previewBytes,
+        )
+        _state.update { it.copy(uploadingAttachments = it.uploadingAttachments + placeholder) }
+
+        scope.launch {
+            try {
+                val att = repo.uploadFile(
+                    filename = filename,
+                    mimeType = mimeType,
+                    data = bytes,
+                    chatId = chatId,
+                )
+                _state.update { st ->
+                    st.copy(
+                        uploadingAttachments = st.uploadingAttachments.map {
+                            if (it.localId == localId)
+                                it.copy(isUploading = false, attachment = att)
+                            else it
+                        }
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update { st ->
+                    st.copy(
+                        uploadingAttachments = st.uploadingAttachments.map {
+                            if (it.localId == localId)
+                                it.copy(isUploading = false, error = e.message ?: "Ошибка загрузки")
+                            else it
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    fun removeUploadingAttachment(localId: String) {
+        scope.launch {
+            val item = _state.value.uploadingAttachments.firstOrNull { it.localId == localId }
+            // Если успели загрузить — пытаемся удалить с сервера
+            item?.attachment?.let { att ->
+                try { attachmentsRepository?.delete(att.id) } catch (_: Exception) {}
+            }
+            _state.update { st ->
+                st.copy(uploadingAttachments = st.uploadingAttachments.filterNot { it.localId == localId })
+            }
+        }
+    }
+
     fun send() {
         val s = _state.value
         val text = s.draft.trim()
-        if (text.isBlank()) return
+        val readyAttachments = s.uploadingAttachments.mapNotNull { it.attachment }
+        val hasUploadingInProgress = s.uploadingAttachments.any { it.isUploading }
+
+        if (hasUploadingInProgress) {
+            _state.update { it.copy(error = "Дождитесь окончания загрузки файлов") }
+            return
+        }
+        if (text.isBlank() && readyAttachments.isEmpty()) return
 
         val editing = s.editingMessage
         if (editing != null) {
+            // edit не поддерживает вложения
             scope.launch {
                 _state.update { it.copy(isSending = true) }
                 try {
@@ -224,6 +312,7 @@ class ChatViewModel(
                     chatId = chatId,
                     content = text,
                     replyToMessageId = replyId,
+                    attachmentIds = readyAttachments.map { it.id },
                 )
                 val current = _state.value.messages
                 if (current.none { it.id == msg.id }) {
@@ -232,11 +321,19 @@ class ChatViewModel(
                             messages = listOf(msg) + it.messages,
                             draft = "",
                             replyTo = null,
+                            uploadingAttachments = emptyList(),
                             isSending = false,
                         )
                     }
                 } else {
-                    _state.update { it.copy(draft = "", replyTo = null, isSending = false) }
+                    _state.update {
+                        it.copy(
+                            draft = "",
+                            replyTo = null,
+                            uploadingAttachments = emptyList(),
+                            isSending = false,
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 _state.update {
@@ -333,7 +430,6 @@ class ChatViewModel(
         }
     }
 
-    // ── Peer contact actions ──
     fun dismissPeerContact() {
         val peerId = _state.value.peerUser?.id ?: return
         val repo = contactsRepository ?: return
@@ -363,6 +459,7 @@ class ChatViewModel(
                     "message_pinned" -> handlePinned(event.data)
                     "message_unpinned" -> handleUnpinned(event.data)
                     "message_read" -> handleRead(event.data)
+                    "attachment_ready" -> handleAttachmentReady(event.data)
                 }
             }
         }
@@ -436,6 +533,31 @@ class ChatViewModel(
             if (payload.chatId != chatId) return
             if (payload.userId == currentUserId) return
             _state.update { it.copy(readByOthersUpTo = payload.lastReadMessageId) }
+        } catch (_: Exception) {}
+    }
+
+    private fun handleAttachmentReady(data: kotlinx.serialization.json.JsonElement) {
+        try {
+            val payload = appJson.decodeFromJsonElement<WsAttachmentReady>(data)
+            if (payload.chatId != chatId) return
+            // Перезагрузим вложение, чтобы получить thumbnail_url
+            scope.launch {
+                val updated = try {
+                    attachmentsRepository?.getAttachment(payload.attachmentId)
+                } catch (_: Exception) { null } ?: return@launch
+
+                _state.update { st ->
+                    val newMessages = st.messages.map { msg ->
+                        if (msg.id != payload.messageId) msg
+                        else msg.copy(
+                            attachments = msg.attachments.map {
+                                if (it.id == updated.id) updated else it
+                            }
+                        )
+                    }
+                    st.copy(messages = newMessages)
+                }
+            }
         } catch (_: Exception) {}
     }
 }

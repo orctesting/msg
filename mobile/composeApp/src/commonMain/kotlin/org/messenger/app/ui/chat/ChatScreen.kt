@@ -40,9 +40,17 @@ fun ChatScreen(
             currentUserId = currentUserId,
             currentUserRole = currentUserRole,
             contactsRepository = appModule.contactsRepository,
+            attachmentsRepository = appModule.attachmentsRepository,
         )
     }
     val state by viewModel.state.collectAsState()
+    val filePicker = org.messenger.app.util.rememberFilePicker { picked ->
+        viewModel.uploadAttachment(
+            filename = picked.name,
+            mimeType = picked.mimeType,
+            bytes = picked.bytes,
+        )
+    }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
@@ -178,6 +186,7 @@ fun ChatScreen(
                     draft = state.draft,
                     replyTo = state.replyTo,
                     editing = state.editingMessage,
+                    uploadingAttachments = state.uploadingAttachments,
                     onDraftChanged = viewModel::onDraftChanged,
                     onCancelReply = { viewModel.setReplyTo(null) },
                     onCancelEdit = viewModel::cancelEdit,
@@ -185,6 +194,8 @@ fun ChatScreen(
                         viewModel.send()
                         coroutineScope.launch { listState.animateScrollToItem(0) }
                     },
+                    onAttachClick = { filePicker.launch("*/*") },
+                    onRemoveAttachment = viewModel::removeUploadingAttachment,
                     isSending = state.isSending
                 )
             }
@@ -276,6 +287,7 @@ fun ChatScreen(
                                             isReadByOthers = isRead,
                                             isSelected = isSelected,
                                             selectionMode = state.selectionMode,
+                                            attachmentsRepository = appModule.attachmentsRepository,
                                             onClick = {
                                                 if (state.selectionMode) {
                                                     viewModel.toggleSelection(message.id)

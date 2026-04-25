@@ -48,7 +48,8 @@ data class MessageDto(
     @SerialName("reply_to")
     val replyTo: ReplyPreviewDto? = null,
     @SerialName("forwarded_from")
-    val forwardedFrom: ForwardedInfoDto? = null
+    val forwardedFrom: ForwardedInfoDto? = null,
+    val attachments: List<AttachmentDto> = emptyList(),
 )
 
 @Serializable
@@ -61,7 +62,9 @@ data class SendMessageBody(
     @SerialName("reply_to_message_id")
     val replyToMessageId: String? = null,
     @SerialName("forwarded_from_message_id")
-    val forwardedFromMessageId: String? = null
+    val forwardedFromMessageId: String? = null,
+    @SerialName("attachment_ids")
+    val attachmentIds: List<String> = emptyList(),
 )
 
 @Serializable

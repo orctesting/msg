@@ -1904,6 +1904,8 @@ from app.api.schemas.attachment import (
     AttachmentOut,
 )
 from app.api.schemas.base import OkResponse
+from fastapi import APIRouter, Depends, Request
+from app.utils.public_url import derive_s3_public_base
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/attachments", tags=["attachments"])
@@ -1938,20 +1940,24 @@ async def _assert_chat_membership(
 async def _build_attachment_out(
     att: Attachment,
     include_urls: bool = True,
+    public_base: str | None = None,
 ) -> AttachmentOut:
     download_url = None
     thumbnail_url = None
     if include_urls and att.status in ("uploaded", "ready"):
         try:
             download_url = await s3_service.generate_presigned_download_url(
-                att.storage_key, filename=att.original_filename
+                att.storage_key,
+                filename=att.original_filename,
+                public_base_override=public_base,
             )
         except Exception as e:
             logger.error("presign_download_error", error=str(e), attachment_id=str(att.id))
         if att.thumbnail_key:
             try:
                 thumbnail_url = await s3_service.generate_presigned_download_url(
-                    att.thumbnail_key
+                    att.thumbnail_key,
+                    public_base_override=public_base,
                 )
             except Exception:
                 pass
@@ -1976,6 +1982,7 @@ async def _build_attachment_out(
 @router.post("/presign-upload", response_model=PresignUploadOut)
 async def presign_upload(
     body: PresignUploadIn,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -2012,6 +2019,7 @@ async def presign_upload(
             storage_key=storage_key,
             content_type=body.mime_type,
             size_bytes=body.size_bytes,
+            public_base_override=derive_s3_public_base(request),
         )
     except Exception as e:
         logger.error("presign_upload_error", error=str(e))
@@ -2028,6 +2036,7 @@ async def presign_upload(
 @router.post("/{attachment_id}/complete", response_model=AttachmentOut)
 async def complete_upload(
     attachment_id: uuid.UUID,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -2041,18 +2050,7 @@ async def complete_upload(
         raise ForbiddenException("Not your attachment")
 
     if att.status in ("uploaded", "ready"):
-        return await _build_attachment_out(att)
-
-    head = await s3_service.head_object(att.storage_key)
-    if head is None:
-        raise ConflictException("Object not found in storage; upload failed or not finished")
-
-    actual_size = int(head.get("ContentLength", 0) or 0)
-    if actual_size > 0:
-        att.size_bytes = actual_size
-    att.status = "uploaded"
-    await session.commit()
-    await session.refresh(att)
+        return await _build_attachment_out(att, public_base=derive_s3_public_base(request))
 
     head = await s3_service.head_object(att.storage_key)
     if head is None:
@@ -2081,12 +2079,13 @@ async def complete_upload(
         await session.commit()
         await session.refresh(att)
 
-    return await _build_attachment_out(att)
+    return await _build_attachment_out(att, public_base=derive_s3_public_base(request))
 
 
 @router.get("/{attachment_id}", response_model=AttachmentOut)
 async def get_attachment(
     attachment_id: uuid.UUID,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -2103,12 +2102,13 @@ async def get_attachment(
             raise ForbiddenException("No access")
         await _assert_chat_membership(session, att.chat_id, current_user.id)
 
-    return await _build_attachment_out(att)
+    return await _build_attachment_out(att, public_base=derive_s3_public_base(request))
 
 
 @router.get("/{attachment_id}/download-url")
 async def get_download_url(
     attachment_id: uuid.UUID,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -2128,12 +2128,12 @@ async def get_download_url(
         raise ConflictException("Attachment is not ready")
 
     url = await s3_service.generate_presigned_download_url(
-        att.storage_key, filename=att.original_filename
+        att.storage_key, filename=att.original_filename, public_base_override=derive_s3_public_base(request)
     )
     thumb = None
     if att.thumbnail_key:
         try:
-            thumb = await s3_service.generate_presigned_download_url(att.thumbnail_key)
+            thumb = await s3_service.generate_presigned_download_url(att.thumbnail_key, public_base_override=derive_s3_public_base(request))
         except Exception:
             pass
     return {
@@ -3193,6 +3193,8 @@ from app.api.schemas.message import (
 from app.api.schemas.base import OkResponse
 from app.services.ws_manager import ws_manager
 from app.utils.idempotency import acquire_message_idempotency
+from fastapi import APIRouter, Depends, Query, Request
+from app.utils.public_url import derive_s3_public_base
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/chats", tags=["messages"])
@@ -3311,7 +3313,7 @@ async def _load_message_full(session: AsyncSession, message_id: uuid.UUID) -> Me
     return result.scalars().unique().one_or_none()
     
     
-async def _build_attachments_out(message: Message) -> list:
+async def _build_attachments_out(message: Message, public_base: str | None = None) -> list:
     from app.api.schemas.attachment import AttachmentOut
     result = []
     atts = list(message.attachments or [])
@@ -3321,32 +3323,27 @@ async def _build_attachments_out(message: Message) -> list:
         if att.status in ("uploaded", "ready"):
             try:
                 download_url = await s3_service.generate_presigned_download_url(
-                    att.storage_key, filename=att.original_filename
+                    att.storage_key,
+                    filename=att.original_filename,
+                    public_base_override=public_base,
                 )
             except Exception as e:
                 logger.error("msg_att_presign_error", error=str(e))
             if att.thumbnail_key:
                 try:
                     thumb_url = await s3_service.generate_presigned_download_url(
-                        att.thumbnail_key
+                        att.thumbnail_key,
+                        public_base_override=public_base,
                     )
                 except Exception:
                     pass
         result.append(
             AttachmentOut(
-                id=att.id,
-                original_filename=att.original_filename,
-                mime_type=att.mime_type,
-                size_bytes=att.size_bytes,
-                file_kind=att.file_kind,
-                width=att.width,
-                height=att.height,
-                duration_ms=att.duration_ms,
-                has_thumbnail=att.thumbnail_key is not None,
-                status=att.status,
-                created_at=att.created_at,
-                download_url=download_url,
-                thumbnail_url=thumb_url,
+                id=att.id, original_filename=att.original_filename, mime_type=att.mime_type,
+                size_bytes=att.size_bytes, file_kind=att.file_kind, width=att.width,
+                height=att.height, duration_ms=att.duration_ms,
+                has_thumbnail=att.thumbnail_key is not None, status=att.status,
+                created_at=att.created_at, download_url=download_url, thumbnail_url=thumb_url,
             )
         )
     return result
@@ -3355,6 +3352,7 @@ async def _build_attachments_out(message: Message) -> list:
 @router.get("/{chat_id}/messages", response_model=MessageListOut)
 async def get_messages(
     chat_id: uuid.UUID,
+    request: Request,
     before: uuid.UUID | None = Query(None),
     limit: int = Query(50, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -3406,7 +3404,7 @@ async def get_messages(
 
     messages_out = []
     for m in messages:
-        atts_out = await _build_attachments_out(m)
+        atts_out = await _build_attachments_out(m, public_base=derive_s3_public_base(request))
         messages_out.append(_message_to_out(m, atts_out))
 
     return MessageListOut(
@@ -3419,6 +3417,7 @@ async def get_messages(
 @router.post("/{chat_id}/messages", response_model=MessageOut, status_code=201)
 async def send_message(
     chat_id: uuid.UUID,
+    request: Request,
     body: MessageSendIn,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
@@ -3532,7 +3531,7 @@ async def send_message(
     await _ensure_personal_chat_visible(session, chat_id)
 
     full = await _load_message_full(session, message.id)
-    atts_out = await _build_attachments_out(full)
+    atts_out = await _build_attachments_out(full, public_base=derive_s3_public_base(request))
     message_out = _message_to_out(full, atts_out)
 
     try:
@@ -3564,6 +3563,7 @@ async def send_message(
 @router.patch("/{chat_id}/messages/{message_id}", response_model=MessageOut)
 async def edit_message(
     chat_id: uuid.UUID,
+    request: Request,
     message_id: uuid.UUID,
     body: MessageEditIn,
     current_user: User = Depends(get_current_user),
@@ -3572,7 +3572,7 @@ async def edit_message(
     await _check_membership(session, chat_id, current_user.id)
 
     msg = await _load_message_full(session, message_id)
-    atts_out = await _build_attachments_out(msg)
+    atts_out = await _build_attachments_out(msg, public_base=derive_s3_public_base(request))
     out = _message_to_out(msg, atts_out)
     if msg is None or msg.chat_id != chat_id:
         raise NotFoundException("Message not found")
@@ -3764,6 +3764,7 @@ async def bulk_delete_messages(
 @router.post("/forward", response_model=MessageOut, status_code=201)
 async def forward_message(
     body: ForwardMessageIn,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -3812,7 +3813,7 @@ async def forward_message(
     await _ensure_personal_chat_visible(session, body.target_chat_id)
 
     full = await _load_message_full(session, new_msg.id)
-    atts_out = await _build_attachments_out(full)
+    atts_out = await _build_attachments_out(full, public_base=derive_s3_public_base(request))
     out = _message_to_out(full, atts_out)
 
     try:
@@ -5476,6 +5477,7 @@ from typing import Any
 import aioboto3
 from botocore.config import Config as BotoConfig
 import structlog
+from urllib.parse import urlparse, urlunparse
 
 from app.config import settings
 
@@ -5510,15 +5512,30 @@ def build_storage_key(chat_id: uuid.UUID | str | None, attachment_id: uuid.UUID,
     return f"{prefix}/{attachment_id}_{safe}"
 
 
+def _client_kwargs_with_endpoint(endpoint: str) -> dict[str, Any]:
+    return {
+        "service_name": "s3",
+        "endpoint_url": endpoint,
+        "config": BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),
+    }
+
+
 async def generate_presigned_upload_url(
     storage_key: str,
     content_type: str,
     size_bytes: int,
     ttl_seconds: int | None = None,
+    public_base_override: str | None = None,
 ) -> str:
     ttl = ttl_seconds or settings.attachment_upload_url_ttl_seconds
+    # Парсим override: отделяем path-prefix (например /s3) от хоста
+    base = public_base_override or settings.s3_public_endpoint_url
+    parsed = urlparse(base)
+    path_prefix = parsed.path.rstrip("/")  # "/s3" или ""
+    endpoint_for_signing = urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+
     session = _get_session()
-    async with session.client(**_client_kwargs(public=True)) as s3:
+    async with session.client(**_client_kwargs_with_endpoint(endpoint_for_signing)) as s3:
         url = await s3.generate_presigned_url(
             ClientMethod="put_object",
             Params={
@@ -5529,6 +5546,9 @@ async def generate_presigned_upload_url(
             ExpiresIn=ttl,
             HttpMethod="PUT",
         )
+    # Вставляем path_prefix после хоста
+    if path_prefix:
+        url = url.replace(f"{parsed.scheme}://{parsed.netloc}/", f"{parsed.scheme}://{parsed.netloc}{path_prefix}/", 1)
     return url
 
 
@@ -5536,17 +5556,29 @@ async def generate_presigned_download_url(
     storage_key: str,
     filename: str | None = None,
     ttl_seconds: int | None = None,
+    public_base_override: str | None = None,
 ) -> str:
     ttl = ttl_seconds or settings.attachment_download_url_ttl_seconds
+    base = public_base_override or settings.s3_public_endpoint_url
+    parsed = urlparse(base)
+    path_prefix = parsed.path.rstrip("/")
+    endpoint_for_signing = urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+
     session = _get_session()
     params: dict[str, Any] = {"Bucket": settings.s3_bucket, "Key": storage_key}
     if filename:
         params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
-    async with session.client(**_client_kwargs(public=True)) as s3:
+    async with session.client(**_client_kwargs_with_endpoint(endpoint_for_signing)) as s3:
         url = await s3.generate_presigned_url(
             ClientMethod="get_object",
             Params=params,
             ExpiresIn=ttl,
+        )
+    if path_prefix:
+        url = url.replace(
+            f"{parsed.scheme}://{parsed.netloc}/",
+            f"{parsed.scheme}://{parsed.netloc}{path_prefix}/",
+            1,
         )
     return url
 
@@ -5568,6 +5600,7 @@ async def delete_object(storage_key: str) -> None:
             await s3.delete_object(Bucket=settings.s3_bucket, Key=storage_key)
     except Exception as e:
         logger.error("s3_delete_object_error", key=storage_key, error=str(e))
+        
 
 
 ================================================================================
@@ -5866,6 +5899,33 @@ def setup_logging():
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )
+
+
+================================================================================
+FILE: backend/app/utils/public_url.py
+================================================================================
+from fastapi import Request
+from app.config import settings
+
+
+def derive_s3_public_base(request: Request) -> str:
+    """
+    Returns the public S3 endpoint URL.
+    If S3_PUBLIC_ENDPOINT_URL is explicitly set and not localhost,
+    uses it. Otherwise derives from the incoming request (assumes nginx
+    proxies /s3/ to MinIO).
+    """
+    configured = (settings.s3_public_endpoint_url or "").strip()
+    if configured and "localhost" not in configured and "127.0.0.1" not in configured:
+        return configured
+
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    scheme = forwarded_proto or request.url.scheme
+    host = forwarded_host or request.url.netloc
+    if not host:
+        return configured or ""
+    return f"{scheme}://{host}/s3"
 
 
 ================================================================================
@@ -6388,7 +6448,8 @@ pytest==8.3.5
 pytest-asyncio==0.25.3
 aioboto3==13.2.0
 Pillow==11.0.0
-boto3==1.35.63
+boto3==1.35.36
+botocore==1.35.36
 
 
 ================================================================================
@@ -7534,12 +7595,6 @@ volumes:
 
 
 ================================================================================
-FILE: duckdns.ini
-================================================================================
-dns_duckdns_token = 66a98307-5c81-465b-b591-f5ae83a15596
-
-
-================================================================================
 FILE: mobile/gradle/libs.versions.toml
 ================================================================================
 [versions]
@@ -7728,7 +7783,7 @@ FILE: mobile-dump.txt
 ================================================================================
 ======================================================================
 MOBILE PROJECT DUMP
-Generated: 2026-04-24 01:30:41
+Generated: 2026-04-26 01:22:16
 Root: D:\messenger_proj\source\mobile
 ======================================================================
 
@@ -8611,6 +8666,61 @@ actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {
     BackHandler(enabled = enabled, onBack = onBack)
 }
 
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\util\FilePicker.android.kt
+SIZE: 1.8 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import org.messenger.app.MessengerApplication
+
+@Composable
+actual fun rememberFilePicker(
+    onPicked: (PickedFile) -> Unit,
+): FilePickerLauncher {
+    val context = LocalContext.current
+
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        try {
+            val resolver = context.contentResolver
+            val mime = resolver.getType(uri) ?: "application/octet-stream"
+            val name = queryFileName(context, uri) ?: "file"
+            val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: return@rememberLauncherForActivityResult
+            onPicked(PickedFile(name = name, mimeType = mime, bytes = bytes))
+        } catch (_: Exception) {}
+    }
+
+    return remember {
+        object : FilePickerLauncher {
+            override fun launch(mimeFilter: String) {
+                launcher.launch(mimeFilter)
+            }
+        }
+    }
+}
+
+private fun queryFileName(
+    context: android.content.Context,
+    uri: android.net.Uri,
+): String? {
+    return try {
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val nameIdx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (cursor.moveToFirst() && nameIdx >= 0) cursor.getString(nameIdx) else null
+        }
+    } catch (_: Exception) {
+        null
+    }
+}
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\res\drawable\ic_launcher_background.xml
@@ -9585,7 +9695,7 @@ private fun AddContactInlineDialog(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chat\ChatComponents.kt
-SIZE: 27.6 KB
+SIZE: 35.5 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chat
 
@@ -9619,6 +9729,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.layout.Layout
+import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import org.messenger.app.shared.data.model.AttachmentDto
+import org.messenger.app.shared.ui.chat.UploadingAttachment
 import kotlinx.datetime.toLocalDateTime
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.platform.LocalDensity
@@ -9794,10 +9914,13 @@ fun MessageInput(
     draft: String,
     replyTo: MessageDto?,
     editing: MessageDto?,
+    uploadingAttachments: List<UploadingAttachment>,
     onDraftChanged: (String) -> Unit,
     onCancelReply: () -> Unit,
     onCancelEdit: () -> Unit,
     onSend: () -> Unit,
+    onAttachClick: () -> Unit,
+    onRemoveAttachment: (String) -> Unit,
     isSending: Boolean,
 ) {
     Surface(
@@ -9821,10 +9944,23 @@ fun MessageInput(
                 )
             }
 
+            if (uploadingAttachments.isNotEmpty() && editing == null) {
+                UploadingAttachmentsRow(
+                    items = uploadingAttachments,
+                    onRemove = onRemoveAttachment,
+                )
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (editing == null) {
+                    IconButton(onClick = onAttachClick) {
+                        Icon(Icons.Default.AttachFile, contentDescription = "РџСЂРёРєСЂРµРїРёС‚СЊ С„Р°Р№Р»")
+                    }
+                }
+
                 OutlinedTextField(
                     value = draft,
                     onValueChange = onDraftChanged,
@@ -9835,9 +9971,14 @@ fun MessageInput(
 
                 Spacer(modifier = Modifier.width(8.dp))
 
+                val hasReadyAttachments = uploadingAttachments.any { !it.isUploading && it.attachment != null }
+                val anyUploading = uploadingAttachments.any { it.isUploading }
+                val canSend = !isSending && !anyUploading &&
+                        (draft.isNotBlank() || hasReadyAttachments || editing != null)
+
                 IconButton(
                     onClick = onSend,
-                    enabled = !isSending && draft.isNotBlank(),
+                    enabled = canSend,
                 ) {
                     if (isSending) {
                         CircularProgressIndicator(
@@ -9854,6 +9995,172 @@ fun MessageInput(
             }
         }
     }
+}
+
+@Composable
+private fun UploadingAttachmentsRow(
+    items: List<UploadingAttachment>,
+    onRemove: (String) -> Unit,
+) {
+    LazyRow(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(items, key = { it.localId }) { item ->
+            UploadingAttachmentChip(item = item, onRemove = { onRemove(item.localId) })
+        }
+    }
+}
+
+@Composable
+private fun UploadingAttachmentChip(
+    item: UploadingAttachment,
+    onRemove: () -> Unit,
+) {
+    val kind = detectKindByMime(item.mimeType)
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 1.dp,
+        modifier = Modifier.widthIn(min = 140.dp, max = 220.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = iconForKind(kind),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(28.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = item.filename,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val err = item.error
+                when {
+                    err != null -> {
+                        Text(
+                            text = err,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    item.isUploading -> {
+                        Text(
+                            text = "Р—Р°РіСЂСѓР·РєР°...",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    else -> {
+                        Text(
+                            text = formatSize(item.sizeBytes),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.width(4.dp))
+            if (item.isUploading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                )
+            } else {
+                IconButton(
+                    onClick = onRemove,
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "РЈРґР°Р»РёС‚СЊ",
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AttachmentChip(
+    attachment: AttachmentDto,
+    onClick: () -> Unit,
+) {
+    val kind = attachment.fileKind.lowercase()
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+        modifier = Modifier
+            .widthIn(min = 160.dp, max = 240.dp)
+            .clickable(onClick = onClick),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = iconForKind(kind),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(28.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = attachment.originalFilename,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = formatSize(attachment.sizeBytes),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+private fun detectKindByMime(mime: String): String {
+    val m = mime.lowercase()
+    return when {
+        m.startsWith("image/") -> "image"
+        m.startsWith("video/") -> "video"
+        m.startsWith("audio/") -> "audio"
+        else -> "file"
+    }
+}
+
+private fun iconForKind(kind: String): androidx.compose.ui.graphics.vector.ImageVector =
+    when (kind.lowercase()) {
+        "image" -> Icons.Default.Image
+        "video" -> Icons.Default.Movie
+        "audio" -> Icons.Default.AudioFile
+        else -> Icons.Default.InsertDriveFile
+    }
+
+private fun formatSize(bytes: Long): String {
+    if (bytes < 1024) return "$bytes B"
+    val kb = bytes / 1024.0
+    if (kb < 1024) return "${"%.1f".format(kb)} KB"
+    val mb = kb / 1024.0
+    if (mb < 1024) return "${"%.1f".format(mb)} MB"
+    val gb = mb / 1024.0
+    return "${"%.1f".format(gb)} GB"
 }
 
 @Composable
@@ -10030,11 +10337,31 @@ fun MessageBubble(
                     Spacer(Modifier.height(4.dp))
                 }
 
-                LinkifiedText(
-                    text = message.content,
-                    baseStyle = MaterialTheme.typography.bodyMedium,
-                    onUrlClick = { url -> org.messenger.app.shared.util.openUrl(url) },
-                )
+                if (message.attachments.isNotEmpty()) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.padding(bottom = if (message.content.isNotBlank()) 6.dp else 0.dp),
+                    ) {
+                        message.attachments.forEach { att ->
+                            AttachmentChip(
+                                attachment = att,
+                                onClick = {
+                                    att.downloadUrl?.let { url ->
+                                        org.messenger.app.shared.util.openUrl(url)
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+
+                if (message.content.isNotBlank()) {
+                    LinkifiedText(
+                        text = message.content,
+                        baseStyle = MaterialTheme.typography.bodyMedium,
+                        onUrlClick = { url -> org.messenger.app.shared.util.openUrl(url) },
+                    )
+                }
 
                 Row(
                     modifier = Modifier.align(Alignment.End),
@@ -10361,7 +10688,7 @@ fun StickyDateHeader(label: String) {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chat\ChatScreen.kt
-SIZE: 18.8 KB
+SIZE: 19.3 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chat
 
@@ -10405,9 +10732,17 @@ fun ChatScreen(
             currentUserId = currentUserId,
             currentUserRole = currentUserRole,
             contactsRepository = appModule.contactsRepository,
+            attachmentsRepository = appModule.attachmentsRepository,
         )
     }
     val state by viewModel.state.collectAsState()
+    val filePicker = org.messenger.app.util.rememberFilePicker { picked ->
+        viewModel.uploadAttachment(
+            filename = picked.name,
+            mimeType = picked.mimeType,
+            bytes = picked.bytes,
+        )
+    }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
@@ -10543,6 +10878,7 @@ fun ChatScreen(
                     draft = state.draft,
                     replyTo = state.replyTo,
                     editing = state.editingMessage,
+                    uploadingAttachments = state.uploadingAttachments,
                     onDraftChanged = viewModel::onDraftChanged,
                     onCancelReply = { viewModel.setReplyTo(null) },
                     onCancelEdit = viewModel::cancelEdit,
@@ -10550,6 +10886,8 @@ fun ChatScreen(
                         viewModel.send()
                         coroutineScope.launch { listState.animateScrollToItem(0) }
                     },
+                    onAttachClick = { filePicker.launch("*/*") },
+                    onRemoveAttachment = viewModel::removeUploadingAttachment,
                     isSending = state.isSending
                 )
             }
@@ -12201,6 +12539,29 @@ expect fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit)
 
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\util\FilePicker.kt
+SIZE: 0.4 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.runtime.Composable
+
+data class PickedFile(
+    val name: String,
+    val mimeType: String,
+    val bytes: ByteArray,
+)
+
+@Composable
+expect fun rememberFilePicker(
+    onPicked: (PickedFile) -> Unit,
+): FilePickerLauncher
+
+interface FilePickerLauncher {
+    fun launch(mimeFilter: String = "*/*")
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonTest\kotlin\org\messenger\app\ComposeAppCommonTest.kt
 SIZE: 0.2 KB
 ----------------------------------------------------------------------
@@ -12261,6 +12622,24 @@ actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {}
 
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\util\FilePicker.ios.kt
+SIZE: 0.3 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+
+@Composable
+actual fun rememberFilePicker(
+    onPicked: (PickedFile) -> Unit,
+): FilePickerLauncher = remember {
+    object : FilePickerLauncher {
+        override fun launch(mimeFilter: String) {}
+    }
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\AppPlatform.jvm.kt
 SIZE: 0.3 KB
 ----------------------------------------------------------------------
@@ -12311,6 +12690,43 @@ actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {}
 
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\util\FilePicker.jvm.kt
+SIZE: 1.2 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import java.awt.FileDialog
+import java.awt.Frame
+import java.io.File
+import java.nio.file.Files
+
+@Composable
+actual fun rememberFilePicker(
+    onPicked: (PickedFile) -> Unit,
+): FilePickerLauncher = remember {
+    object : FilePickerLauncher {
+        override fun launch(mimeFilter: String) {
+            try {
+                val dialog = FileDialog(null as Frame?, "Р’С‹Р±РµСЂРёС‚Рµ С„Р°Р№Р»", FileDialog.LOAD)
+                dialog.isVisible = true
+                val dir = dialog.directory
+                val file = dialog.file
+                if (dir != null && file != null) {
+                    val f = File(dir, file)
+                    val bytes = f.readBytes()
+                    val mime = try {
+                        Files.probeContentType(f.toPath()) ?: "application/octet-stream"
+                    } catch (_: Exception) { "application/octet-stream" }
+                    onPicked(PickedFile(name = f.name, mimeType = mime, bytes = bytes))
+                }
+            } catch (_: Exception) {}
+        }
+    }
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\wasmJsMain\kotlin\org\messenger\app\AppPlatform.wasmJs.kt
 SIZE: 0.3 KB
 ----------------------------------------------------------------------
@@ -12344,6 +12760,24 @@ import androidx.compose.runtime.Composable
 actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {}
 
 
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\wasmJsMain\kotlin\org\messenger\app\util\FilePicker.wasmJs.kt
+SIZE: 0.3 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+
+@Composable
+actual fun rememberFilePicker(
+    onPicked: (PickedFile) -> Unit,
+): FilePickerLauncher = remember {
+    object : FilePickerLauncher {
+        override fun launch(mimeFilter: String) {}
+    }
+}
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\gradle.properties
@@ -13315,6 +13749,74 @@ data class ApiError(
 )
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\model\AttachmentModels.kt
+SIZE: 1.6 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.data.model
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+@Serializable
+data class AttachmentDto(
+    val id: String,
+    @SerialName("original_filename")
+    val originalFilename: String,
+    @SerialName("mime_type")
+    val mimeType: String,
+    @SerialName("size_bytes")
+    val sizeBytes: Long,
+    @SerialName("file_kind")
+    val fileKind: String, // image/video/audio/file
+    val width: Int? = null,
+    val height: Int? = null,
+    @SerialName("duration_ms")
+    val durationMs: Int? = null,
+    @SerialName("has_thumbnail")
+    val hasThumbnail: Boolean = false,
+    val status: String,
+    @SerialName("created_at")
+    val createdAt: String,
+    @SerialName("download_url")
+    val downloadUrl: String? = null,
+    @SerialName("thumbnail_url")
+    val thumbnailUrl: String? = null,
+)
+
+@Serializable
+data class PresignUploadBody(
+    val filename: String,
+    @SerialName("mime_type")
+    val mimeType: String,
+    @SerialName("size_bytes")
+    val sizeBytes: Long,
+    @SerialName("chat_id")
+    val chatId: String? = null,
+)
+
+@Serializable
+data class PresignUploadResponse(
+    @SerialName("attachment_id")
+    val attachmentId: String,
+    @SerialName("upload_url")
+    val uploadUrl: String,
+    @SerialName("storage_key")
+    val storageKey: String,
+    @SerialName("expires_in")
+    val expiresIn: Int,
+)
+
+@Serializable
+data class DownloadUrlResponse(
+    @SerialName("download_url")
+    val downloadUrl: String,
+    @SerialName("thumbnail_url")
+    val thumbnailUrl: String? = null,
+    @SerialName("expires_in")
+    val expiresIn: Int,
+)
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\model\AuthModels.kt
 SIZE: 1.8 KB
 ----------------------------------------------------------------------
@@ -13557,7 +14059,7 @@ data class PushTokenResponse(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\model\MessageModels.kt
-SIZE: 2.7 KB
+SIZE: 2.8 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.model
 
@@ -13609,7 +14111,8 @@ data class MessageDto(
     @SerialName("reply_to")
     val replyTo: ReplyPreviewDto? = null,
     @SerialName("forwarded_from")
-    val forwardedFrom: ForwardedInfoDto? = null
+    val forwardedFrom: ForwardedInfoDto? = null,
+    val attachments: List<AttachmentDto> = emptyList(),
 )
 
 @Serializable
@@ -13622,7 +14125,9 @@ data class SendMessageBody(
     @SerialName("reply_to_message_id")
     val replyToMessageId: String? = null,
     @SerialName("forwarded_from_message_id")
-    val forwardedFromMessageId: String? = null
+    val forwardedFromMessageId: String? = null,
+    @SerialName("attachment_ids")
+    val attachmentIds: List<String> = emptyList(),
 )
 
 @Serializable
@@ -13761,7 +14266,7 @@ data class WsAttachmentReady(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\remote\ApiService.kt
-SIZE: 8.4 KB
+SIZE: 10.3 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.remote
 
@@ -13770,6 +14275,7 @@ import io.ktor.client.call.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import io.ktor.client.plugins.auth.*
 import org.messenger.app.shared.data.model.*
 
 class ApiException(val statusCode: Int, val errorBody: String) :
@@ -13835,6 +14341,7 @@ class ApiService(private val client: HttpClient) {
         idempotencyKey: String,
         replyToMessageId: String? = null,
         forwardedFromMessageId: String? = null,
+        attachmentIds: List<String> = emptyList(),
     ): MessageDto =
         requestAndParse {
             client.post("api/v1/chats/$chatId/messages") {
@@ -13844,6 +14351,7 @@ class ApiService(private val client: HttpClient) {
                         idempotencyKey = idempotencyKey,
                         replyToMessageId = replyToMessageId,
                         forwardedFromMessageId = forwardedFromMessageId,
+                        attachmentIds = attachmentIds,
                     )
                 )
             }
@@ -14004,6 +14512,48 @@ class ApiService(private val client: HttpClient) {
                 setBody(CreateGroupChatBody(name = name, type = "group", memberIds = memberIds))
             }
         }
+
+    // в”Ђв”Ђ Attachments в”Ђв”Ђ
+    suspend fun presignUpload(body: PresignUploadBody): PresignUploadResponse =
+        requestAndParse {
+            client.post("api/v1/attachments/presign-upload") { setBody(body) }
+        }
+
+    suspend fun uploadToS3(url: String, data: ByteArray, contentType: String) {
+        val response = client.put(url) {
+            // РЈРґР°Р»СЏРµРј Authorization (presigned URL СѓР¶Рµ РїРѕРґРїРёСЃР°РЅ)
+            headers.remove(HttpHeaders.Authorization)
+            // РџРѕРјРµС‡Р°РµРј РєР°Рє refresh-Р·Р°РїСЂРѕСЃ, С‡С‚РѕР±С‹ Auth-РїР»Р°РіРёРЅ РЅРµ РїРѕРґСЃС‚Р°РІР»СЏР» С‚РѕРєРµРЅ
+            attributes.put(io.ktor.client.plugins.auth.AuthCircuitBreaker, Unit)
+            contentType(ContentType.parse(contentType))
+            setBody(data)
+        }
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
+
+    suspend fun completeAttachment(attachmentId: String): AttachmentDto =
+        requestAndParse {
+            client.post("api/v1/attachments/$attachmentId/complete")
+        }
+
+    suspend fun getAttachment(attachmentId: String): AttachmentDto =
+        requestAndParse {
+            client.get("api/v1/attachments/$attachmentId")
+        }
+
+    suspend fun getAttachmentDownloadUrl(attachmentId: String): DownloadUrlResponse =
+        requestAndParse {
+            client.get("api/v1/attachments/$attachmentId/download-url")
+        }
+
+    suspend fun deleteAttachment(attachmentId: String) {
+        val response = client.delete("api/v1/attachments/$attachmentId")
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
 }
 
 ----------------------------------------------------------------------
@@ -14294,7 +14844,7 @@ class WsService(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\di\AppModule.kt
-SIZE: 2.2 KB
+SIZE: 2.3 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.di
 
@@ -14341,6 +14891,10 @@ class AppModule(
         org.messenger.app.shared.domain.repository.ContactsRepository(apiService)
     }
 
+    val attachmentsRepository by lazy {
+        org.messenger.app.shared.domain.repository.AttachmentsRepository(apiService)
+    }
+
     companion object {
         private const val DEFAULT_BASE_URL = "http://10.0.2.2:8000/"
         private const val DEFAULT_WS_URL = "ws://10.0.2.2:8000/"
@@ -14359,6 +14913,51 @@ class AppModule(
             return base.replaceFirst("http://", "ws://").replaceFirst("https://", "wss://")
         }
     }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\domain\repository\AttachmentsRepository.kt
+SIZE: 1.4 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.domain.repository
+
+import org.messenger.app.shared.data.model.AttachmentDto
+import org.messenger.app.shared.data.model.DownloadUrlResponse
+import org.messenger.app.shared.data.model.PresignUploadBody
+import org.messenger.app.shared.data.remote.ApiService
+
+class AttachmentsRepository(private val api: ApiService) {
+
+    /**
+     * РџРѕР»РЅС‹Р№ С†РёРєР» Р·Р°РіСЂСѓР·РєРё: presign в†’ PUT РІ S3 в†’ complete.
+     * Р’РѕР·РІСЂР°С‰Р°РµС‚ РіРѕС‚РѕРІС‹Р№ AttachmentDto СЃРѕ СЃС‚Р°С‚СѓСЃРѕРј "uploaded" РёР»Рё "ready".
+     */
+    suspend fun uploadFile(
+        filename: String,
+        mimeType: String,
+        data: ByteArray,
+        chatId: String?,
+    ): AttachmentDto {
+        val presign = api.presignUpload(
+            PresignUploadBody(
+                filename = filename,
+                mimeType = mimeType,
+                sizeBytes = data.size.toLong(),
+                chatId = chatId,
+            )
+        )
+        api.uploadToS3(presign.uploadUrl, data, mimeType)
+        return api.completeAttachment(presign.attachmentId)
+    }
+
+    suspend fun getAttachment(attachmentId: String): AttachmentDto =
+        api.getAttachment(attachmentId)
+
+    suspend fun getDownloadUrl(attachmentId: String): DownloadUrlResponse =
+        api.getAttachmentDownloadUrl(attachmentId)
+
+    suspend fun delete(attachmentId: String) =
+        api.deleteAttachment(attachmentId)
 }
 
 ----------------------------------------------------------------------
@@ -14416,7 +15015,7 @@ class AuthRepository(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\domain\repository\ChatRepository.kt
-SIZE: 2.8 KB
+SIZE: 2.9 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.domain.repository
 
@@ -14442,6 +15041,7 @@ class ChatRepository(private val api: ApiService) {
         content: String,
         replyToMessageId: String? = null,
         forwardedFromMessageId: String? = null,
+        attachmentIds: List<String> = emptyList(),
     ): MessageDto =
         api.sendMessage(
             chatId = chatId,
@@ -14449,6 +15049,7 @@ class ChatRepository(private val api: ApiService) {
             idempotencyKey = Uuid.random().toString(),
             replyToMessageId = replyToMessageId,
             forwardedFromMessageId = forwardedFromMessageId,
+            attachmentIds = attachmentIds,
         )
 
     suspend fun editMessage(chatId: String, messageId: String, content: String): MessageDto =
@@ -14792,7 +15393,7 @@ class AuthViewModel(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\chat\ChatViewModel.kt
-SIZE: 16 KB
+SIZE: 20.8 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.ui.chat
 
@@ -14809,8 +15410,19 @@ import org.messenger.app.shared.data.model.*
 import org.messenger.app.shared.data.remote.ApiException
 import org.messenger.app.shared.data.remote.WsService
 import org.messenger.app.shared.data.remote.appJson
+import org.messenger.app.shared.domain.repository.AttachmentsRepository
 import org.messenger.app.shared.domain.repository.ChatRepository
 import org.messenger.app.shared.domain.repository.ContactsRepository
+
+data class UploadingAttachment(
+    val localId: String,
+    val filename: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val isUploading: Boolean = true,
+    val error: String? = null,
+    val attachment: AttachmentDto? = null,
+)
 
 data class ChatUiState(
     val chatId: String = "",
@@ -14827,6 +15439,7 @@ data class ChatUiState(
     val editingMessage: MessageDto? = null,
     val selectionMode: Boolean = false,
     val selectedIds: Set<String> = emptySet(),
+    val uploadingAttachments: List<UploadingAttachment> = emptyList(),
     val isLoading: Boolean = false,
     val isSending: Boolean = false,
     val hasMore: Boolean = true,
@@ -14841,6 +15454,7 @@ class ChatViewModel(
     private val currentUserId: String? = null,
     private val currentUserRole: String? = null,
     private val contactsRepository: ContactsRepository? = null,
+    private val attachmentsRepository: AttachmentsRepository? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -14849,6 +15463,7 @@ class ChatViewModel(
 
     private var loadRetryCount = 0
     private val maxLoadRetries = 3
+    private var localIdCounter = 0L
 
     init {
         loadChatInfo()
@@ -14984,13 +15599,81 @@ class ChatViewModel(
         return isOwn || isAdmin
     }
 
+    // в”Ђв”Ђ Attachments upload в”Ђв”Ђ
+
+    fun uploadAttachment(filename: String, mimeType: String, bytes: ByteArray) {
+        val repo = attachmentsRepository ?: run {
+            _state.update { it.copy(error = "Р—Р°РіСЂСѓР·РєР° С„Р°Р№Р»РѕРІ РЅРµРґРѕСЃС‚СѓРїРЅР°") }
+            return
+        }
+        val localId = "local-${++localIdCounter}"
+        val placeholder = UploadingAttachment(
+            localId = localId,
+            filename = filename,
+            mimeType = mimeType,
+            sizeBytes = bytes.size.toLong(),
+        )
+        _state.update { it.copy(uploadingAttachments = it.uploadingAttachments + placeholder) }
+
+        scope.launch {
+            try {
+                val att = repo.uploadFile(
+                    filename = filename,
+                    mimeType = mimeType,
+                    data = bytes,
+                    chatId = chatId,
+                )
+                _state.update { st ->
+                    st.copy(
+                        uploadingAttachments = st.uploadingAttachments.map {
+                            if (it.localId == localId)
+                                it.copy(isUploading = false, attachment = att)
+                            else it
+                        }
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update { st ->
+                    st.copy(
+                        uploadingAttachments = st.uploadingAttachments.map {
+                            if (it.localId == localId)
+                                it.copy(isUploading = false, error = e.message ?: "РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё")
+                            else it
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    fun removeUploadingAttachment(localId: String) {
+        scope.launch {
+            val item = _state.value.uploadingAttachments.firstOrNull { it.localId == localId }
+            // Р•СЃР»Рё СѓСЃРїРµР»Рё Р·Р°РіСЂСѓР·РёС‚СЊ вЂ” РїС‹С‚Р°РµРјСЃСЏ СѓРґР°Р»РёС‚СЊ СЃ СЃРµСЂРІРµСЂР°
+            item?.attachment?.let { att ->
+                try { attachmentsRepository?.delete(att.id) } catch (_: Exception) {}
+            }
+            _state.update { st ->
+                st.copy(uploadingAttachments = st.uploadingAttachments.filterNot { it.localId == localId })
+            }
+        }
+    }
+
     fun send() {
         val s = _state.value
         val text = s.draft.trim()
-        if (text.isBlank()) return
+        val readyAttachments = s.uploadingAttachments.mapNotNull { it.attachment }
+        val hasUploadingInProgress = s.uploadingAttachments.any { it.isUploading }
+
+        if (hasUploadingInProgress) {
+            _state.update { it.copy(error = "Р”РѕР¶РґРёС‚РµСЃСЊ РѕРєРѕРЅС‡Р°РЅРёСЏ Р·Р°РіСЂСѓР·РєРё С„Р°Р№Р»РѕРІ") }
+            return
+        }
+        if (text.isBlank() && readyAttachments.isEmpty()) return
 
         val editing = s.editingMessage
         if (editing != null) {
+            // edit РЅРµ РїРѕРґРґРµСЂР¶РёРІР°РµС‚ РІР»РѕР¶РµРЅРёСЏ
             scope.launch {
                 _state.update { it.copy(isSending = true) }
                 try {
@@ -15020,6 +15703,7 @@ class ChatViewModel(
                     chatId = chatId,
                     content = text,
                     replyToMessageId = replyId,
+                    attachmentIds = readyAttachments.map { it.id },
                 )
                 val current = _state.value.messages
                 if (current.none { it.id == msg.id }) {
@@ -15028,11 +15712,19 @@ class ChatViewModel(
                             messages = listOf(msg) + it.messages,
                             draft = "",
                             replyTo = null,
+                            uploadingAttachments = emptyList(),
                             isSending = false,
                         )
                     }
                 } else {
-                    _state.update { it.copy(draft = "", replyTo = null, isSending = false) }
+                    _state.update {
+                        it.copy(
+                            draft = "",
+                            replyTo = null,
+                            uploadingAttachments = emptyList(),
+                            isSending = false,
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 _state.update {
@@ -15129,7 +15821,6 @@ class ChatViewModel(
         }
     }
 
-    // в”Ђв”Ђ Peer contact actions в”Ђв”Ђ
     fun dismissPeerContact() {
         val peerId = _state.value.peerUser?.id ?: return
         val repo = contactsRepository ?: return
@@ -15159,6 +15850,7 @@ class ChatViewModel(
                     "message_pinned" -> handlePinned(event.data)
                     "message_unpinned" -> handleUnpinned(event.data)
                     "message_read" -> handleRead(event.data)
+                    "attachment_ready" -> handleAttachmentReady(event.data)
                 }
             }
         }
@@ -15232,6 +15924,31 @@ class ChatViewModel(
             if (payload.chatId != chatId) return
             if (payload.userId == currentUserId) return
             _state.update { it.copy(readByOthersUpTo = payload.lastReadMessageId) }
+        } catch (_: Exception) {}
+    }
+
+    private fun handleAttachmentReady(data: kotlinx.serialization.json.JsonElement) {
+        try {
+            val payload = appJson.decodeFromJsonElement<WsAttachmentReady>(data)
+            if (payload.chatId != chatId) return
+            // РџРµСЂРµР·Р°РіСЂСѓР·РёРј РІР»РѕР¶РµРЅРёРµ, С‡С‚РѕР±С‹ РїРѕР»СѓС‡РёС‚СЊ thumbnail_url
+            scope.launch {
+                val updated = try {
+                    attachmentsRepository?.getAttachment(payload.attachmentId)
+                } catch (_: Exception) { null } ?: return@launch
+
+                _state.update { st ->
+                    val newMessages = st.messages.map { msg ->
+                        if (msg.id != payload.messageId) msg
+                        else msg.copy(
+                            attachments = msg.attachments.map {
+                                if (it.id == updated.id) updated else it
+                            }
+                        )
+                    }
+                    st.copy(messages = newMessages)
+                }
+            }
         } catch (_: Exception) {}
     }
 }
@@ -15765,7 +16482,7 @@ SIZE: 0.2 KB
 }
 
 ======================================================================
-Total files dumped: 113
+Total files dumped: 120
 ======================================================================
 
 
@@ -15781,6 +16498,10 @@ events {
 http {
     upstream backend {
         server backend:8000;
+    }
+
+    upstream s3_minio {
+        server minio:9000;
     }
 
     server {
@@ -15804,7 +16525,20 @@ http {
         ssl_ciphers HIGH:!aNULL:!MD5;
         ssl_prefer_server_ciphers on;
 
-        client_max_body_size 10M;
+        client_max_body_size 60M;
+
+        # S3 / MinIO proxy: /s3/<bucket>/<key> -> minio:9000/<bucket>/<key>
+        location /s3/ {
+            rewrite ^/s3/(.*)$ /$1 break;
+            proxy_pass http://s3_minio;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_http_version 1.1;
+            proxy_request_buffering off;
+            proxy_buffering off;
+        }
 
         location / {
             proxy_pass http://backend;

@@ -32,6 +32,8 @@ from app.api.schemas.message import (
 from app.api.schemas.base import OkResponse
 from app.services.ws_manager import ws_manager
 from app.utils.idempotency import acquire_message_idempotency
+from fastapi import APIRouter, Depends, Query, Request
+from app.utils.public_url import derive_s3_public_base
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/chats", tags=["messages"])
@@ -150,7 +152,7 @@ async def _load_message_full(session: AsyncSession, message_id: uuid.UUID) -> Me
     return result.scalars().unique().one_or_none()
     
     
-async def _build_attachments_out(message: Message) -> list:
+async def _build_attachments_out(message: Message, public_base: str | None = None) -> list:
     from app.api.schemas.attachment import AttachmentOut
     result = []
     atts = list(message.attachments or [])
@@ -160,32 +162,27 @@ async def _build_attachments_out(message: Message) -> list:
         if att.status in ("uploaded", "ready"):
             try:
                 download_url = await s3_service.generate_presigned_download_url(
-                    att.storage_key, filename=att.original_filename
+                    att.storage_key,
+                    filename=att.original_filename,
+                    public_base_override=public_base,
                 )
             except Exception as e:
                 logger.error("msg_att_presign_error", error=str(e))
             if att.thumbnail_key:
                 try:
                     thumb_url = await s3_service.generate_presigned_download_url(
-                        att.thumbnail_key
+                        att.thumbnail_key,
+                        public_base_override=public_base,
                     )
                 except Exception:
                     pass
         result.append(
             AttachmentOut(
-                id=att.id,
-                original_filename=att.original_filename,
-                mime_type=att.mime_type,
-                size_bytes=att.size_bytes,
-                file_kind=att.file_kind,
-                width=att.width,
-                height=att.height,
-                duration_ms=att.duration_ms,
-                has_thumbnail=att.thumbnail_key is not None,
-                status=att.status,
-                created_at=att.created_at,
-                download_url=download_url,
-                thumbnail_url=thumb_url,
+                id=att.id, original_filename=att.original_filename, mime_type=att.mime_type,
+                size_bytes=att.size_bytes, file_kind=att.file_kind, width=att.width,
+                height=att.height, duration_ms=att.duration_ms,
+                has_thumbnail=att.thumbnail_key is not None, status=att.status,
+                created_at=att.created_at, download_url=download_url, thumbnail_url=thumb_url,
             )
         )
     return result
@@ -194,6 +191,7 @@ async def _build_attachments_out(message: Message) -> list:
 @router.get("/{chat_id}/messages", response_model=MessageListOut)
 async def get_messages(
     chat_id: uuid.UUID,
+    request: Request,
     before: uuid.UUID | None = Query(None),
     limit: int = Query(50, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -245,7 +243,7 @@ async def get_messages(
 
     messages_out = []
     for m in messages:
-        atts_out = await _build_attachments_out(m)
+        atts_out = await _build_attachments_out(m, public_base=derive_s3_public_base(request))
         messages_out.append(_message_to_out(m, atts_out))
 
     return MessageListOut(
@@ -258,6 +256,7 @@ async def get_messages(
 @router.post("/{chat_id}/messages", response_model=MessageOut, status_code=201)
 async def send_message(
     chat_id: uuid.UUID,
+    request: Request,
     body: MessageSendIn,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
@@ -371,7 +370,7 @@ async def send_message(
     await _ensure_personal_chat_visible(session, chat_id)
 
     full = await _load_message_full(session, message.id)
-    atts_out = await _build_attachments_out(full)
+    atts_out = await _build_attachments_out(full, public_base=derive_s3_public_base(request))
     message_out = _message_to_out(full, atts_out)
 
     try:
@@ -403,6 +402,7 @@ async def send_message(
 @router.patch("/{chat_id}/messages/{message_id}", response_model=MessageOut)
 async def edit_message(
     chat_id: uuid.UUID,
+    request: Request,
     message_id: uuid.UUID,
     body: MessageEditIn,
     current_user: User = Depends(get_current_user),
@@ -411,7 +411,7 @@ async def edit_message(
     await _check_membership(session, chat_id, current_user.id)
 
     msg = await _load_message_full(session, message_id)
-    atts_out = await _build_attachments_out(msg)
+    atts_out = await _build_attachments_out(msg, public_base=derive_s3_public_base(request))
     out = _message_to_out(msg, atts_out)
     if msg is None or msg.chat_id != chat_id:
         raise NotFoundException("Message not found")
@@ -603,6 +603,7 @@ async def bulk_delete_messages(
 @router.post("/forward", response_model=MessageOut, status_code=201)
 async def forward_message(
     body: ForwardMessageIn,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -651,7 +652,7 @@ async def forward_message(
     await _ensure_personal_chat_visible(session, body.target_chat_id)
 
     full = await _load_message_full(session, new_msg.id)
-    atts_out = await _build_attachments_out(full)
+    atts_out = await _build_attachments_out(full, public_base=derive_s3_public_base(request))
     out = _message_to_out(full, atts_out)
 
     try:

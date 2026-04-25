@@ -5,6 +5,7 @@ import io.ktor.client.call.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import io.ktor.client.plugins.auth.*
 import org.messenger.app.shared.data.model.*
 
 class ApiException(val statusCode: Int, val errorBody: String) :
@@ -70,6 +71,7 @@ class ApiService(private val client: HttpClient) {
         idempotencyKey: String,
         replyToMessageId: String? = null,
         forwardedFromMessageId: String? = null,
+        attachmentIds: List<String> = emptyList(),
     ): MessageDto =
         requestAndParse {
             client.post("api/v1/chats/$chatId/messages") {
@@ -79,6 +81,7 @@ class ApiService(private val client: HttpClient) {
                         idempotencyKey = idempotencyKey,
                         replyToMessageId = replyToMessageId,
                         forwardedFromMessageId = forwardedFromMessageId,
+                        attachmentIds = attachmentIds,
                     )
                 )
             }
@@ -239,4 +242,46 @@ class ApiService(private val client: HttpClient) {
                 setBody(CreateGroupChatBody(name = name, type = "group", memberIds = memberIds))
             }
         }
+
+    // ── Attachments ──
+    suspend fun presignUpload(body: PresignUploadBody): PresignUploadResponse =
+        requestAndParse {
+            client.post("api/v1/attachments/presign-upload") { setBody(body) }
+        }
+
+    suspend fun uploadToS3(url: String, data: ByteArray, contentType: String) {
+        val response = client.put(url) {
+            // Удаляем Authorization (presigned URL уже подписан)
+            headers.remove(HttpHeaders.Authorization)
+            // Помечаем как refresh-запрос, чтобы Auth-плагин не подставлял токен
+            attributes.put(io.ktor.client.plugins.auth.AuthCircuitBreaker, Unit)
+            contentType(ContentType.parse(contentType))
+            setBody(data)
+        }
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
+
+    suspend fun completeAttachment(attachmentId: String): AttachmentDto =
+        requestAndParse {
+            client.post("api/v1/attachments/$attachmentId/complete")
+        }
+
+    suspend fun getAttachment(attachmentId: String): AttachmentDto =
+        requestAndParse {
+            client.get("api/v1/attachments/$attachmentId")
+        }
+
+    suspend fun getAttachmentDownloadUrl(attachmentId: String): DownloadUrlResponse =
+        requestAndParse {
+            client.get("api/v1/attachments/$attachmentId/download-url")
+        }
+
+    suspend fun deleteAttachment(attachmentId: String) {
+        val response = client.delete("api/v1/attachments/$attachmentId")
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
 }

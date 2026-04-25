@@ -4,6 +4,7 @@ from typing import Any
 import aioboto3
 from botocore.config import Config as BotoConfig
 import structlog
+from urllib.parse import urlparse, urlunparse
 
 from app.config import settings
 
@@ -38,15 +39,30 @@ def build_storage_key(chat_id: uuid.UUID | str | None, attachment_id: uuid.UUID,
     return f"{prefix}/{attachment_id}_{safe}"
 
 
+def _client_kwargs_with_endpoint(endpoint: str) -> dict[str, Any]:
+    return {
+        "service_name": "s3",
+        "endpoint_url": endpoint,
+        "config": BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),
+    }
+
+
 async def generate_presigned_upload_url(
     storage_key: str,
     content_type: str,
     size_bytes: int,
     ttl_seconds: int | None = None,
+    public_base_override: str | None = None,
 ) -> str:
     ttl = ttl_seconds or settings.attachment_upload_url_ttl_seconds
+    # Парсим override: отделяем path-prefix (например /s3) от хоста
+    base = public_base_override or settings.s3_public_endpoint_url
+    parsed = urlparse(base)
+    path_prefix = parsed.path.rstrip("/")  # "/s3" или ""
+    endpoint_for_signing = urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+
     session = _get_session()
-    async with session.client(**_client_kwargs(public=True)) as s3:
+    async with session.client(**_client_kwargs_with_endpoint(endpoint_for_signing)) as s3:
         url = await s3.generate_presigned_url(
             ClientMethod="put_object",
             Params={
@@ -57,6 +73,9 @@ async def generate_presigned_upload_url(
             ExpiresIn=ttl,
             HttpMethod="PUT",
         )
+    # Вставляем path_prefix после хоста
+    if path_prefix:
+        url = url.replace(f"{parsed.scheme}://{parsed.netloc}/", f"{parsed.scheme}://{parsed.netloc}{path_prefix}/", 1)
     return url
 
 
@@ -64,17 +83,29 @@ async def generate_presigned_download_url(
     storage_key: str,
     filename: str | None = None,
     ttl_seconds: int | None = None,
+    public_base_override: str | None = None,
 ) -> str:
     ttl = ttl_seconds or settings.attachment_download_url_ttl_seconds
+    base = public_base_override or settings.s3_public_endpoint_url
+    parsed = urlparse(base)
+    path_prefix = parsed.path.rstrip("/")
+    endpoint_for_signing = urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+
     session = _get_session()
     params: dict[str, Any] = {"Bucket": settings.s3_bucket, "Key": storage_key}
     if filename:
         params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
-    async with session.client(**_client_kwargs(public=True)) as s3:
+    async with session.client(**_client_kwargs_with_endpoint(endpoint_for_signing)) as s3:
         url = await s3.generate_presigned_url(
             ClientMethod="get_object",
             Params=params,
             ExpiresIn=ttl,
+        )
+    if path_prefix:
+        url = url.replace(
+            f"{parsed.scheme}://{parsed.netloc}/",
+            f"{parsed.scheme}://{parsed.netloc}{path_prefix}/",
+            1,
         )
     return url
 
@@ -96,3 +127,4 @@ async def delete_object(storage_key: str) -> None:
             await s3.delete_object(Bucket=settings.s3_bucket, Key=storage_key)
     except Exception as e:
         logger.error("s3_delete_object_error", key=storage_key, error=str(e))
+        
