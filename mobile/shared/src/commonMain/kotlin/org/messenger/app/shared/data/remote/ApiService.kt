@@ -284,4 +284,38 @@ class ApiService(private val client: HttpClient) {
             throw ApiException(response.status.value, response.bodyAsText())
         }
     }
+
+    // ── Profile (me) ──
+    suspend fun getMe(): MeDto =
+        requestAndParse { client.get("api/v1/me") }
+
+    suspend fun getPublicUser(userId: String): PublicUserDto =
+        requestAndParse { client.get("api/v1/users/$userId") }
+
+    suspend fun updateMe(body: UpdateMeBody): MeDto =
+        requestAndParse {
+            client.patch("api/v1/me") { setBody(body) }
+        }
+
+    suspend fun listMyAvatars(): AvatarListResponse =
+        requestAndParse { client.get("api/v1/me/avatars") }
+
+    suspend fun createAvatar(body: CreateAvatarBody): AvatarDto =
+        requestAndParse {
+            client.post("api/v1/me/avatars") { setBody(body) }
+        }
+
+    suspend fun setPrimaryAvatar(avatarId: String): MeDto =
+        requestAndParse {
+            client.post("api/v1/me/avatars/set-primary") {
+                setBody(SetPrimaryAvatarBody(avatarId))
+            }
+        }
+
+    suspend fun deleteAvatar(avatarId: String) {
+        val response = client.delete("api/v1/me/avatars/$avatarId")
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
 }

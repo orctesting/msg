@@ -29,11 +29,26 @@ async def create_user(
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_async_session),
 ):
+    from app.utils.username import generate_unique_username
+
     existing = await session.execute(select(User).where(User.phone == phone))
     if existing.scalar_one_or_none():
         raise ConflictException("User with this phone already exists")
 
-    user = User(phone=phone, display_name=display_name, role=role)
+    parts = display_name.strip().split(maxsplit=1)
+    first = parts[0] if parts else None
+    last = parts[1] if len(parts) > 1 else None
+
+    username = await generate_unique_username(session, first, last, fallback_id=str(uuid.uuid4()))
+
+    user = User(
+        phone=phone,
+        display_name=display_name,
+        username=username,
+        first_name=first,
+        last_name=last,
+        role=role,
+    )
     session.add(user)
     await session.commit()
     await session.refresh(user)

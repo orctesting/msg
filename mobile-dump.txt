@@ -1,6 +1,6 @@
 ﻿======================================================================
 MOBILE PROJECT DUMP
-Generated: 2026-04-26 03:08:46
+Generated: 2026-04-27 00:28:32
 Root: D:\messenger_proj\source\mobile
 ======================================================================
 
@@ -44,6 +44,7 @@ Root: D:\messenger_proj\source\mobile
                           common/
                           contacts/
                           forward/
+                          profile/
                           settings/
                           theme/
                         util/
@@ -107,6 +108,7 @@ Root: D:\messenger_proj\source\mobile
                             chat/
                             chatlist/
                             contacts/
+                            profile/
                           util/
               commonTest/
                 kotlin/
@@ -1260,7 +1262,7 @@ SIZE: 1.5 KB
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\App.kt
-SIZE: 12.1 KB
+SIZE: 13.3 KB
 ----------------------------------------------------------------------
 package org.messenger.app
 
@@ -1290,6 +1292,9 @@ sealed class Screen {
     data object ChatList : Screen()
     data object Settings : Screen()
     data object Contacts : Screen()
+    data object Profile : Screen()
+    data object Avatars : Screen()
+    data class PeerProfile(val userId: String) : Screen()
     data class Chat(val chatId: String, val chatName: String) : Screen()
     data class ForwardPicker(
         val sourceChatId: String,
@@ -1405,14 +1410,13 @@ fun App(
                 }
 
                 is Screen.ChatList -> {
-                    // РќР° СЃРїРёСЃРєРµ С‡Р°С‚РѕРІ СЃРёСЃС‚РµРјРЅР°СЏ "РЅР°Р·Р°Рґ" РЅРµ РїРµСЂРµС…РІР°С‚С‹РІР°РµС‚СЃСЏ вЂ”
-                    // РїСѓСЃС‚СЊ Android СЃРІРѕСЂР°С‡РёРІР°РµС‚ РїСЂРёР»РѕР¶РµРЅРёРµ РєР°Рє РѕР±С‹С‡РЅРѕ
                     ChatListScreen(
                         appModule = currentAppModule,
                         onChatClick = { chatId, chatName ->
                             currentScreen = Screen.Chat(chatId, chatName)
                         },
-                        onOpenSettings = { currentScreen = Screen.Settings }
+                        onOpenSettings = { currentScreen = Screen.Settings },
+                        onOpenProfile = { currentScreen = Screen.Profile },
                     )
                 }
 
@@ -1426,6 +1430,7 @@ fun App(
                         appModule = currentAppModule,
                         onBack = { currentScreen = Screen.ChatList },
                         onOpenContacts = { currentScreen = Screen.Contacts },
+                        onOpenProfile = { currentScreen = Screen.Profile },
                         onLogout = {
                             currentAppModule.tokenStorage.clear()
                             currentAppModule.wsService.disconnect()
@@ -1456,13 +1461,42 @@ fun App(
                     )
                 }
 
+                is Screen.Profile -> {
+                    PlatformBackHandler(enabled = true) {
+                        currentScreen = Screen.Settings
+                    }
+                    org.messenger.app.ui.profile.ProfileScreen(
+                        appModule = currentAppModule,
+                        onBack = { currentScreen = Screen.Settings },
+                        onOpenAvatars = { currentScreen = Screen.Avatars },
+                    )
+                }
+
+                is Screen.Avatars -> {
+                    PlatformBackHandler(enabled = true) {
+                        currentScreen = Screen.Profile
+                    }
+                    org.messenger.app.ui.profile.AvatarsScreen(
+                        appModule = currentAppModule,
+                        onBack = { currentScreen = Screen.Profile },
+                    )
+                }
+
+                is Screen.PeerProfile -> {
+                    PlatformBackHandler(enabled = true) {
+                        currentScreen = Screen.ChatList
+                    }
+                    org.messenger.app.ui.profile.PeerProfileScreen(
+                        appModule = currentAppModule,
+                        userId = screen.userId,
+                        onBack = { /* РІРѕР·РІСЂР°С‰Р°РµРјСЃСЏ РєСѓРґР° Р±С‹Р»Рё вЂ” СѓРїСЂРѕС‰С‘РЅРЅРѕ РІ ChatList */
+                            currentScreen = Screen.ChatList
+                        },
+                    )
+                }
+
                 is Screen.Chat -> {
                     updateCurrentChatId(screen.chatId)
-                    // BackHandler РІРЅСѓС‚СЂРё СЃР°РјРѕРіРѕ ChatScreen СѓР¶Рµ РѕР±СЂР°Р±Р°С‚С‹РІР°РµС‚:
-                    // - Р·Р°РєСЂС‹С‚РёРµ actions sheet
-                    // - РІС‹С…РѕРґ РёР· selection mode
-                    // - РѕС‚РјРµРЅСѓ edit / reply
-                    // - Рё РІ РїРѕСЃР»РµРґРЅСЋСЋ РѕС‡РµСЂРµРґСЊ вЂ” РІС‹Р·РѕРІ onBack(), РєРѕС‚РѕСЂС‹Р№ Р·РґРµСЃСЊ РІРµРґС‘С‚ РІ ChatList
                     ChatScreen(
                         chatId = screen.chatId,
                         chatName = screen.chatName,
@@ -1477,7 +1511,10 @@ fun App(
                                 sourceChatName = screen.chatName,
                                 messageIds = messageIds,
                             )
-                        }
+                        },
+                        onOpenPeerProfile = { userId ->
+                            currentScreen = Screen.PeerProfile(userId)
+                        },
                     )
                 }
 
@@ -1921,7 +1958,7 @@ private fun AddContactInlineDialog(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chat\ChatComponents.kt
-SIZE: 37.6 KB
+SIZE: 39 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chat
 
@@ -2252,23 +2289,58 @@ private fun UploadingAttachmentChip(
     onRemove: () -> Unit,
 ) {
     val kind = detectKindByMime(item.mimeType)
+    val isImage = kind == "image"
+
     Surface(
         shape = MaterialTheme.shapes.small,
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 1.dp,
-        modifier = Modifier.widthIn(min = 140.dp, max = 220.dp),
+        modifier = Modifier.widthIn(min = if (isImage) 80.dp else 140.dp, max = 220.dp),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                imageVector = iconForKind(kind),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(28.dp),
-            )
+            // РРєРѕРЅРєР° РёР»Рё РїСЂРµРІСЊСЋ
+            val preview = item.previewBytes
+            if (isImage && preview != null) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(MaterialTheme.shapes.small),
+                ) {
+                    org.messenger.app.ui.common.LocalBytesImage(
+                        bytes = preview,
+                        cacheKey = item.localId,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    )
+                    if (item.isUploading) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.35f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = Color.White,
+                            )
+                        }
+                    }
+                }
+            } else {
+                Icon(
+                    imageVector = iconForKind(kind),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(28.dp),
+                )
+            }
+
             Spacer(Modifier.width(8.dp))
+
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = item.filename,
@@ -2304,12 +2376,12 @@ private fun UploadingAttachmentChip(
                 }
             }
             Spacer(Modifier.width(4.dp))
-            if (item.isUploading) {
+            if (item.isUploading && !isImage) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(18.dp),
                     strokeWidth = 2.dp,
                 )
-            } else {
+            } else if (!item.isUploading) {
                 IconButton(
                     onClick = onRemove,
                     modifier = Modifier.size(28.dp),
@@ -2973,7 +3045,7 @@ fun StickyDateHeader(label: String) {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chat\ChatScreen.kt
-SIZE: 19.4 KB
+SIZE: 20.1 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chat
 
@@ -2991,6 +3063,7 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.foundation.clickable
 import kotlinx.coroutines.launch
 import org.messenger.app.shared.data.model.MessageDto
 import org.messenger.app.shared.di.AppModule
@@ -3005,6 +3078,7 @@ fun ChatScreen(
     appModule: AppModule,
     onBack: () -> Unit,
     onPickForwardTarget: ((sourceChatId: String, messageIds: List<String>) -> Unit)? = null,
+    onOpenPeerProfile: ((userId: String) -> Unit)? = null,
 ) {
     val currentUserId = remember { appModule.tokenStorage.getUserId() }
     val currentUserRole = remember { null as String? }
@@ -3128,7 +3202,22 @@ fun ChatScreen(
                 )
             } else {
                 TopAppBar(
-                    title = { Text(chatName) },
+                    title = {
+                        val peer = state.peerUser
+                        val isPersonalClickable = state.chatType == "personal" &&
+                                peer != null &&
+                                onOpenPeerProfile != null
+                        if (isPersonalClickable) {
+                            Text(
+                                text = chatName,
+                                modifier = Modifier.clickable {
+                                    onOpenPeerProfile!!(peer!!.id)
+                                }
+                            )
+                        } else {
+                            Text(chatName)
+                        }
+                    },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "РќР°Р·Р°Рґ")
@@ -3577,7 +3666,7 @@ private fun androidx.compose.ui.graphics.Color.takeOrDefault(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chatlist\ChatListScreen.kt
-SIZE: 8.7 KB
+SIZE: 9 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chatlist
 
@@ -3600,6 +3689,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.filled.AccountCircle
 import org.messenger.app.shared.data.model.ChatDto
 import org.messenger.app.shared.di.AppModule
 import org.messenger.app.shared.ui.chatlist.ChatListViewModel
@@ -3616,6 +3706,7 @@ fun ChatListScreen(
     appModule: AppModule,
     onChatClick: (chatId: String, chatName: String) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenProfile: () -> Unit,
 ) {
     val viewModel = remember {
         ChatListViewModel(
@@ -3637,6 +3728,9 @@ fun ChatListScreen(
             TopAppBar(
                 title = { Text("Р§Р°С‚С‹") },
                 actions = {
+                    IconButton(onClick = onOpenProfile) {
+                        Icon(Icons.Default.AccountCircle, contentDescription = "РџСЂРѕС„РёР»СЊ")
+                    }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "РќР°СЃС‚СЂРѕР№РєРё")
                     }
@@ -4936,8 +5030,1243 @@ private fun ForwardTargetRow(chat: ChatDto, onClick: () -> Unit) {
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\profile\AvatarsScreen.kt
+SIZE: 12.1 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.profile
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.dp
+import org.messenger.app.shared.data.model.AvatarDto
+import org.messenger.app.shared.di.AppModule
+import org.messenger.app.shared.ui.profile.AvatarsViewModel
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AvatarsScreen(
+    appModule: AppModule,
+    onBack: () -> Unit,
+) {
+    val viewModel = remember {
+        AvatarsViewModel(
+            profileRepository = appModule.profileRepository,
+            attachmentsRepository = appModule.attachmentsRepository,
+        )
+    }
+    val state by viewModel.state.collectAsState()
+
+    val filePicker = org.messenger.app.util.rememberFilePicker { picked ->
+        if (picked.mimeType.startsWith("image/", ignoreCase = true)) {
+            viewModel.pickSourceImage(picked.name, picked.mimeType, picked.bytes)
+        }
+    }
+
+    var deletingAvatar by remember { mutableStateOf<AvatarDto?>(null) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("РђРІР°С‚Р°СЂС‹") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "РќР°Р·Р°Рґ")
+                    }
+                }
+            )
+        },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = { filePicker.launch("image/*") },
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Р—Р°РіСЂСѓР·РёС‚СЊ РЅРѕРІС‹Р№")
+            }
+        }
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            when {
+                state.isLoading && state.avatars.isEmpty() -> {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                }
+                state.avatars.isEmpty() -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Icon(
+                            Icons.Default.Person,
+                            contentDescription = null,
+                            modifier = Modifier.size(64.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text("РќРµС‚ Р°РІР°С‚Р°СЂРѕРІ", style = MaterialTheme.typography.bodyLarge)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "РќР°Р¶РјРёС‚Рµ + С‡С‚РѕР±С‹ Р·Р°РіСЂСѓР·РёС‚СЊ",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                else -> {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        contentPadding = PaddingValues(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        items(state.avatars, key = { it.id }) { avatar ->
+                            AvatarTile(
+                                avatar = avatar,
+                                isPrimary = avatar.id == state.primaryAvatarId,
+                                attachmentsRepository = appModule.attachmentsRepository,
+                                onClick = { viewModel.setPrimary(avatar.id) },
+                                onDelete = { deletingAvatar = avatar },
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (state.isUploading) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(enabled = false) {},
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+                        tonalElevation = 4.dp,
+                        shape = MaterialTheme.shapes.medium,
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(12.dp))
+                            Text("Р—Р°РіСЂСѓР·РєР°...")
+                        }
+                    }
+                }
+            }
+
+            state.error?.let { err ->
+                Snackbar(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(16.dp),
+                    action = {
+                        TextButton(onClick = { viewModel.clearError() }) { Text("OK") }
+                    }
+                ) { Text(err) }
+            }
+        }
+
+        // Crop-РґРёР°Р»РѕРі
+        val pendingSource = state.pendingSource
+        val pendingBytes = state.pendingSourceBytes
+        if (pendingSource != null && pendingBytes != null) {
+            CropAvatarDialog(
+                imageBytes = pendingBytes,
+                originalWidth = pendingSource.width ?: 0,
+                originalHeight = pendingSource.height ?: 0,
+                onCancel = { viewModel.cancelPendingSource() },
+                onConfirm = { x, y, size ->
+                    viewModel.confirmCrop(x, y, size)
+                },
+            )
+        }
+
+        deletingAvatar?.let { avatar ->
+            AlertDialog(
+                onDismissRequest = { deletingAvatar = null },
+                title = { Text("РЈРґР°Р»РёС‚СЊ Р°РІР°С‚Р°СЂ?") },
+                text = { Text("РђРІР°С‚Р°СЂ Р±СѓРґРµС‚ СѓРґР°Р»С‘РЅ Р±РµР· РІРѕР·РјРѕР¶РЅРѕСЃС‚Рё РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёСЏ.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        viewModel.deleteAvatar(avatar.id)
+                        deletingAvatar = null
+                    }) { Text("РЈРґР°Р»РёС‚СЊ") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { deletingAvatar = null }) { Text("РћС‚РјРµРЅР°") }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun AvatarTile(
+    avatar: AvatarDto,
+    isPrimary: Boolean,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f),
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(MaterialTheme.shapes.medium)
+                .clickable(onClick = onClick),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = MaterialTheme.shapes.medium,
+        ) {
+            val cropUrl = avatar.cropUrl
+            if (cropUrl != null) {
+                AvatarCropImage(
+                    avatarId = avatar.crop_attachment_id_safe(),
+                    cropUrl = cropUrl,
+                    attachmentsRepository = attachmentsRepository,
+                )
+            } else {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Default.Person,
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        if (isPrimary) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(4.dp)
+                    .size(24.dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primary,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = "РћСЃРЅРѕРІРЅРѕР№",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+        }
+
+        IconButton(
+            onClick = onDelete,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .size(32.dp),
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = Color.Black.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "РЈРґР°Р»РёС‚СЊ",
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AvatarCropImage(
+    avatarId: String,
+    cropUrl: String,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
+) {
+    var bitmap by remember(avatarId) {
+        mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null)
+    }
+    LaunchedEffect(avatarId) {
+        val cacheKey = "avatar_${avatarId}_crop"
+        val cached = org.messenger.app.shared.util.ImageCache.get(cacheKey)
+        if (cached != null) {
+            bitmap = org.messenger.app.ui.common.decodeImageBitmap(cached)
+            return@LaunchedEffect
+        }
+        val bytes = attachmentsRepository.loadImageBytes(
+            attachmentId = avatarId,
+            thumbnailUrl = cropUrl,
+            downloadUrl = cropUrl,
+            thumb = true,
+        )
+        if (bytes != null) {
+            org.messenger.app.shared.util.ImageCache.put(cacheKey, bytes)
+            bitmap = org.messenger.app.ui.common.decodeImageBitmap(bytes)
+        }
+    }
+    val bm = bitmap
+    if (bm != null) {
+        androidx.compose.foundation.Image(
+            painter = androidx.compose.ui.graphics.painter.BitmapPainter(bm),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop,
+        )
+    } else {
+        Box(
+            Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center,
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+        }
+    }
+}
+
+private fun AvatarDto.crop_attachment_id_safe(): String = this.cropAttachmentId
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\profile\CropAvatarDialog.kt
+SIZE: 8.9 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.profile
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import org.messenger.app.ui.common.decodeImageBitmap
+import kotlin.math.min
+
+/**
+ * Р”РёР°Р»РѕРі РѕР±СЂРµР·РєРё Р°РІР°С‚Р°СЂР°. Р’ С†РµРЅС‚СЂРµ СЌРєСЂР°РЅР° вЂ” С„РёРєСЃРёСЂРѕРІР°РЅРЅС‹Р№ РєСЂСѓРіР»С‹Р№ "РІСЊСЋРїРѕСЂС‚".
+ * РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РґРІРёРіР°РµС‚/РјР°СЃС€С‚Р°Р±РёСЂСѓРµС‚ РёР·РѕР±СЂР°Р¶РµРЅРёРµ РїРѕРґ РєСЂСѓРіРѕРј.
+ * РџСЂРё РїРѕРґС‚РІРµСЂР¶РґРµРЅРёРё РІС‹С‡РёСЃР»СЏСЋС‚СЃСЏ РєРѕРѕСЂРґРёРЅР°С‚С‹ (x, y, size) РІ РїРёРєСЃРµР»СЏС… РѕСЂРёРіРёРЅР°Р»Р°.
+ */
+@Composable
+fun CropAvatarDialog(
+    imageBytes: ByteArray,
+    originalWidth: Int,
+    originalHeight: Int,
+    onCancel: () -> Unit,
+    onConfirm: (cropX: Int, cropY: Int, cropSize: Int) -> Unit,
+) {
+    val bitmap: ImageBitmap? = remember(imageBytes) { decodeImageBitmap(imageBytes) }
+
+    Dialog(
+        onDismissRequest = onCancel,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false,
+        ),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+        ) {
+            if (bitmap == null) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(color = Color.White)
+                }
+            } else {
+                CropEditor(
+                    bitmap = bitmap,
+                    onCancel = onCancel,
+                    onConfirm = onConfirm,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CropEditor(
+    bitmap: ImageBitmap,
+    onCancel: () -> Unit,
+    onConfirm: (cropX: Int, cropY: Int, cropSize: Int) -> Unit,
+) {
+    val imgW = bitmap.width.toFloat()
+    val imgH = bitmap.height.toFloat()
+
+    var containerSize by remember { mutableStateOf(IntSize.Zero) }
+
+    var scale by remember { mutableStateOf(1f) }
+    var offsetX by remember { mutableStateOf(0f) }
+    var offsetY by remember { mutableStateOf(0f) }
+    var initialized by remember { mutableStateOf(false) }
+
+    val viewportSize: Float = if (containerSize.width > 0 && containerSize.height > 0) {
+        min(containerSize.width, containerSize.height) * 0.8f
+    } else 0f
+
+    // baseScale: РјРµРЅСЊС€Р°СЏ СЃС‚РѕСЂРѕРЅР° РёР·РѕР±СЂР°Р¶РµРЅРёСЏ РїРѕРјРµС‰Р°РµС‚СЃСЏ РІ РІСЊСЋРїРѕСЂС‚.
+    val baseScale: Float = if (imgW > 0 && imgH > 0 && viewportSize > 0) {
+        viewportSize / min(imgW, imgH)
+    } else 1f
+
+    val minScale = 1f
+    val maxScale = 5f
+
+    LaunchedEffect(containerSize, imgW, imgH, viewportSize) {
+        if (!initialized && containerSize.width > 0 && containerSize.height > 0
+            && imgW > 0 && imgH > 0 && viewportSize > 0
+        ) {
+            scale = 1f
+            val drawW = imgW * baseScale * scale
+            val drawH = imgH * baseScale * scale
+            offsetX = (containerSize.width - drawW) / 2f
+            offsetY = (containerSize.height - drawH) / 2f
+            initialized = true
+        }
+    }
+
+    fun clampOffsets() {
+        if (viewportSize <= 0f || containerSize.width == 0) return
+        val drawW = imgW * baseScale * scale
+        val drawH = imgH * baseScale * scale
+        val viewportLeft = (containerSize.width - viewportSize) / 2f
+        val viewportTop = (containerSize.height - viewportSize) / 2f
+        val viewportRight = viewportLeft + viewportSize
+        val viewportBottom = viewportTop + viewportSize
+
+        val maxOffX = viewportLeft
+        val minOffX = viewportRight - drawW
+        val maxOffY = viewportTop
+        val minOffY = viewportBottom - drawH
+
+        offsetX = if (minOffX > maxOffX) (maxOffX + minOffX) / 2f
+        else offsetX.coerceIn(minOffX, maxOffX)
+        offsetY = if (minOffY > maxOffY) (maxOffY + minOffY) / 2f
+        else offsetY.coerceIn(minOffY, maxOffY)
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onSizeChanged { containerSize = it },
+    ) {
+        // РР·РѕР±СЂР°Р¶РµРЅРёРµ СЃ Р¶РµСЃС‚Р°РјРё
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clipToBounds()
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        val newScale = (scale * zoom).coerceIn(minScale, maxScale)
+                        scale = newScale
+                        offsetX += pan.x
+                        offsetY += pan.y
+                        clampOffsets()
+                    }
+                },
+        ) {
+            if (containerSize.width > 0 && initialized) {
+                val drawW = imgW * baseScale * scale
+                val drawH = imgH * baseScale * scale
+                val density = LocalDensity.current
+
+                androidx.compose.foundation.Image(
+                    painter = BitmapPainter(bitmap),
+                    contentDescription = null,
+                    contentScale = ContentScale.FillBounds,
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(offsetX.toInt(), offsetY.toInt())
+                        }
+                        .size(
+                            width = with(density) { drawW.toDp() },
+                            height = with(density) { drawH.toDp() },
+                        ),
+                )
+            }
+        }
+
+        // Р—Р°С‚РµРјРЅРµРЅРёРµ + РєСЂСѓРіР»С‹Р№ РІС‹СЂРµР·
+        if (viewportSize > 0) {
+            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                drawRect(color = Color.Black.copy(alpha = 0.55f))
+                drawCircle(
+                    color = Color.Transparent,
+                    radius = viewportSize / 2f,
+                    center = Offset(size.width / 2f, size.height / 2f),
+                    blendMode = BlendMode.Clear,
+                )
+                drawCircle(
+                    color = Color.White,
+                    radius = viewportSize / 2f,
+                    center = Offset(size.width / 2f, size.height / 2f),
+                    style = Stroke(width = 2f),
+                )
+            }
+        }
+
+        // РљРЅРѕРїРєРё
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            OutlinedButton(
+                onClick = onCancel,
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+            ) { Text("РћС‚РјРµРЅР°") }
+
+            Button(
+                onClick = {
+                    if (containerSize.width == 0 || viewportSize <= 0f) return@Button
+                    val viewportLeft = (containerSize.width - viewportSize) / 2f
+                    val viewportTop = (containerSize.height - viewportSize) / 2f
+
+                    val totalScale = baseScale * scale
+                    val cropXf = (viewportLeft - offsetX) / totalScale
+                    val cropYf = (viewportTop - offsetY) / totalScale
+                    val cropSizef = viewportSize / totalScale
+
+                    val cx = cropXf.coerceIn(0f, (imgW - 1).coerceAtLeast(0f)).toInt()
+                    val cy = cropYf.coerceIn(0f, (imgH - 1).coerceAtLeast(0f)).toInt()
+                    val maxSide = min(imgW - cx, imgH - cy).coerceAtLeast(1f)
+                    val cs = cropSizef.coerceIn(1f, maxSide).toInt().coerceAtLeast(1)
+
+                    onConfirm(cx, cy, cs)
+                },
+                modifier = Modifier.weight(1f),
+            ) { Text("Р“РѕС‚РѕРІРѕ") }
+        }
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\profile\PeerProfileScreen.kt
+SIZE: 7.3 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.profile
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import org.messenger.app.shared.data.model.PublicUserDto
+import org.messenger.app.shared.di.AppModule
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PeerProfileScreen(
+    appModule: AppModule,
+    userId: String,
+    onBack: () -> Unit,
+) {
+    var user by remember { mutableStateOf<PublicUserDto?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = remember { CoroutineScope(SupervisorJob() + Dispatchers.Main) }
+
+    LaunchedEffect(userId) {
+        scope.launch {
+            try {
+                user = appModule.profileRepository.getPublicUser(userId)
+            } catch (e: Exception) {
+                error = e.message ?: "РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё"
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("РџСЂРѕС„РёР»СЊ") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "РќР°Р·Р°Рґ")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            when {
+                isLoading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                user != null -> PeerContent(
+                    user = user!!,
+                    attachmentsRepository = appModule.attachmentsRepository,
+                )
+                error != null -> Text(
+                    error ?: "",
+                    modifier = Modifier.align(Alignment.Center),
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PeerContent(
+    user: PublicUserDto,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(120.dp)
+                .clip(CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            val thumbUrl = user.primaryAvatarThumbUrl
+            if (thumbUrl != null) {
+                PeerAvatarImage(
+                    userId = user.id,
+                    thumbnailUrl = thumbUrl,
+                    downloadUrl = user.primaryAvatarUrl,
+                    attachmentsRepository = attachmentsRepository,
+                )
+            } else {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = CircleShape,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.Person,
+                            contentDescription = null,
+                            modifier = Modifier.size(64.dp),
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        Text(user.displayName, style = MaterialTheme.typography.headlineSmall)
+        Text(
+            "@${user.username}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Spacer(Modifier.height(24.dp))
+
+        val firstName = user.firstName
+        val lastName = user.lastName
+        if (!firstName.isNullOrBlank() || !lastName.isNullOrBlank()) {
+            InfoRow(
+                label = "РРјСЏ",
+                value = listOfNotNull(firstName, lastName).joinToString(" "),
+            )
+        }
+
+        val bio = user.bio
+        if (!bio.isNullOrBlank()) {
+            InfoRow(label = "Рћ СЃРµР±Рµ", value = bio)
+        }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(value, style = MaterialTheme.typography.bodyLarge)
+    }
+    HorizontalDivider()
+}
+
+@Composable
+private fun PeerAvatarImage(
+    userId: String,
+    thumbnailUrl: String,
+    downloadUrl: String?,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
+) {
+    var bitmap by remember(userId) {
+        mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null)
+    }
+    LaunchedEffect(userId) {
+        val cacheKey = "peer_${userId}_thumb"
+        val cached = org.messenger.app.shared.util.ImageCache.get(cacheKey)
+        if (cached != null) {
+            bitmap = org.messenger.app.ui.common.decodeImageBitmap(cached)
+            return@LaunchedEffect
+        }
+        val bytes = attachmentsRepository.loadImageBytes(
+            attachmentId = userId,
+            thumbnailUrl = thumbnailUrl,
+            downloadUrl = downloadUrl,
+            thumb = true,
+        )
+        if (bytes != null) {
+            org.messenger.app.shared.util.ImageCache.put(cacheKey, bytes)
+            bitmap = org.messenger.app.ui.common.decodeImageBitmap(bytes)
+        }
+    }
+    val bm = bitmap
+    if (bm != null) {
+        androidx.compose.foundation.Image(
+            painter = androidx.compose.ui.graphics.painter.BitmapPainter(bm),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize().clip(CircleShape),
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+        )
+    } else {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shape = CircleShape,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+            }
+        }
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\profile\ProfileScreen.kt
+SIZE: 15.9 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.profile
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import org.messenger.app.shared.data.model.MeDto
+import org.messenger.app.shared.di.AppModule
+import org.messenger.app.shared.ui.profile.ProfileViewModel
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ProfileScreen(
+    appModule: AppModule,
+    onBack: () -> Unit,
+    onOpenAvatars: () -> Unit,
+) {
+    val viewModel = remember {
+        ProfileViewModel(
+            repository = appModule.profileRepository,
+            tokenStorage = appModule.tokenStorage,
+        )
+    }
+    val state by viewModel.state.collectAsState()
+
+    var editing by remember { mutableStateOf(false) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("РџСЂРѕС„РёР»СЊ") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "РќР°Р·Р°Рґ")
+                    }
+                },
+                actions = {
+                    if (state.me != null && !editing) {
+                        IconButton(onClick = { editing = true }) {
+                            Icon(Icons.Default.Edit, contentDescription = "Р РµРґР°РєС‚РёСЂРѕРІР°С‚СЊ")
+                        }
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            when {
+                state.isLoading && state.me == null -> {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                }
+                state.me != null -> {
+                    val me = state.me!!
+                    if (editing) {
+                        ProfileEditContent(
+                            me = me,
+                            isSaving = state.isSaving,
+                            error = state.error,
+                            onSave = { username, displayName, firstName, lastName, birthDate, bio, email ->
+                                viewModel.updateProfile(
+                                    username = username.takeIf { it != me.username },
+                                    displayName = displayName.takeIf { it != me.displayName },
+                                    firstName = firstName.takeIf { it != (me.firstName ?: "") },
+                                    lastName = lastName.takeIf { it != (me.lastName ?: "") },
+                                    birthDate = birthDate.takeIf { it != (me.birthDate ?: "") },
+                                    bio = bio.takeIf { it != (me.bio ?: "") },
+                                    email = email.takeIf { it != (me.email ?: "") },
+                                    onSuccess = { editing = false },
+                                )
+                            },
+                            onCancel = {
+                                editing = false
+                                viewModel.clearError()
+                            },
+                            onClearError = viewModel::clearError,
+                        )
+                    } else {
+                        ProfileViewContent(
+                            me = me,
+                            attachmentsRepository = appModule.attachmentsRepository,
+                            onOpenAvatars = onOpenAvatars,
+                        )
+                    }
+                }
+                state.error != null -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(state.error ?: "РћС€РёР±РєР°")
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { viewModel.loadProfile() }) { Text("РџРѕРІС‚РѕСЂРёС‚СЊ") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileViewContent(
+    me: MeDto,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
+    onOpenAvatars: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        // РђРІР°С‚Р°СЂ
+        Box(
+            modifier = Modifier
+                .size(120.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onOpenAvatars),
+            contentAlignment = Alignment.Center,
+        ) {
+            val thumbUrl = me.primaryAvatarThumbUrl
+            val thumbId = me.primaryAvatarThumbAttachmentId
+            if (thumbUrl != null && thumbId != null) {
+                ProfileAvatarImage(
+                    attachmentId = thumbId,
+                    thumbnailUrl = thumbUrl,
+                    downloadUrl = me.primaryAvatarUrl,
+                    attachmentsRepository = attachmentsRepository,
+                )
+            } else {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = CircleShape,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.Person,
+                            contentDescription = null,
+                            modifier = Modifier.size(64.dp),
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+                }
+            }
+            // РРєРѕРЅРєР° РєР°РјРµСЂС‹ РІ СѓРіР»Сѓ
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .size(36.dp)
+                    .clip(CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = CircleShape,
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.PhotoCamera,
+                            contentDescription = "РР·РјРµРЅРёС‚СЊ",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        Text(me.displayName, style = MaterialTheme.typography.headlineSmall)
+        Text(
+            "@${me.username}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Spacer(Modifier.height(24.dp))
+
+        ProfileInfoRow(label = "РўРµР»РµС„РѕРЅ", value = me.phone)
+
+        val firstName = me.firstName
+        val lastName = me.lastName
+        if (!firstName.isNullOrBlank() || !lastName.isNullOrBlank()) {
+            ProfileInfoRow(
+                label = "РРјСЏ",
+                value = listOfNotNull(firstName, lastName).joinToString(" "),
+            )
+        }
+
+        val birthDate = me.birthDate
+        if (!birthDate.isNullOrBlank()) {
+            ProfileInfoRow(label = "Р”Р°С‚Р° СЂРѕР¶РґРµРЅРёСЏ", value = birthDate)
+        }
+
+        val email = me.email
+        if (!email.isNullOrBlank()) {
+            ProfileInfoRow(label = "Email", value = email)
+        }
+
+        val bio = me.bio
+        if (!bio.isNullOrBlank()) {
+            ProfileInfoRow(label = "Рћ СЃРµР±Рµ", value = bio)
+        }
+    }
+}
+
+@Composable
+private fun ProfileInfoRow(label: String, value: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(value, style = MaterialTheme.typography.bodyLarge)
+    }
+    HorizontalDivider()
+}
+
+@Composable
+private fun ProfileEditContent(
+    me: MeDto,
+    isSaving: Boolean,
+    error: String?,
+    onSave: (
+        username: String,
+        displayName: String,
+        firstName: String,
+        lastName: String,
+        birthDate: String,
+        bio: String,
+        email: String,
+    ) -> Unit,
+    onCancel: () -> Unit,
+    onClearError: () -> Unit,
+) {
+    var username by remember { mutableStateOf(me.username) }
+    var displayName by remember { mutableStateOf(me.displayName) }
+    var firstName by remember { mutableStateOf(me.firstName ?: "") }
+    var lastName by remember { mutableStateOf(me.lastName ?: "") }
+    var birthDate by remember { mutableStateOf(me.birthDate ?: "") }
+    var bio by remember { mutableStateOf(me.bio ?: "") }
+    var email by remember { mutableStateOf(me.email ?: "") }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+    ) {
+        OutlinedTextField(
+            value = username,
+            onValueChange = { username = it.lowercase() },
+            label = { Text("Username") },
+            supportingText = { Text("a-z, 0-9, _, -, ., #") },
+            singleLine = true,
+            enabled = !isSaving,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = displayName,
+            onValueChange = { displayName = it },
+            label = { Text("РћС‚РѕР±СЂР°Р¶Р°РµРјРѕРµ РёРјСЏ") },
+            singleLine = true,
+            enabled = !isSaving,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = firstName,
+            onValueChange = { firstName = it },
+            label = { Text("РРјСЏ") },
+            singleLine = true,
+            enabled = !isSaving,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = lastName,
+            onValueChange = { lastName = it },
+            label = { Text("Р¤Р°РјРёР»РёСЏ") },
+            singleLine = true,
+            enabled = !isSaving,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = birthDate,
+            onValueChange = { birthDate = it },
+            label = { Text("Р”Р°С‚Р° СЂРѕР¶РґРµРЅРёСЏ") },
+            placeholder = { Text("YYYY-MM-DD") },
+            singleLine = true,
+            enabled = !isSaving,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = email,
+            onValueChange = { email = it },
+            label = { Text("Email") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            singleLine = true,
+            enabled = !isSaving,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = bio,
+            onValueChange = { bio = it },
+            label = { Text("Рћ СЃРµР±Рµ") },
+            minLines = 3,
+            maxLines = 6,
+            enabled = !isSaving,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        if (error != null) {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                error,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
+        Spacer(Modifier.height(20.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            OutlinedButton(
+                onClick = onCancel,
+                enabled = !isSaving,
+                modifier = Modifier.weight(1f),
+            ) { Text("РћС‚РјРµРЅР°") }
+
+            Button(
+                onClick = {
+                    onClearError()
+                    onSave(
+                        username.trim(),
+                        displayName.trim(),
+                        firstName.trim(),
+                        lastName.trim(),
+                        birthDate.trim(),
+                        bio.trim(),
+                        email.trim(),
+                    )
+                },
+                enabled = !isSaving && username.isNotBlank() && displayName.isNotBlank(),
+                modifier = Modifier.weight(1f),
+            ) {
+                if (isSaving) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Text("РЎРѕС…СЂР°РЅРёС‚СЊ")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileAvatarImage(
+    attachmentId: String,
+    thumbnailUrl: String,
+    downloadUrl: String?,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
+) {
+    var bitmap by remember(attachmentId) {
+        mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null)
+    }
+    LaunchedEffect(attachmentId) {
+        val cacheKey = "avatar_${attachmentId}_thumb"
+        val cached = org.messenger.app.shared.util.ImageCache.get(cacheKey)
+        if (cached != null) {
+            bitmap = org.messenger.app.ui.common.decodeImageBitmap(cached)
+            return@LaunchedEffect
+        }
+        val bytes = attachmentsRepository.loadImageBytes(
+            attachmentId = attachmentId,
+            thumbnailUrl = thumbnailUrl,
+            downloadUrl = downloadUrl,
+            thumb = true,
+        )
+        if (bytes != null) {
+            org.messenger.app.shared.util.ImageCache.put(cacheKey, bytes)
+            bitmap = org.messenger.app.ui.common.decodeImageBitmap(bytes)
+        }
+    }
+    val bm = bitmap
+    if (bm != null) {
+        androidx.compose.foundation.Image(
+            painter = androidx.compose.ui.graphics.painter.BitmapPainter(bm),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize().clip(CircleShape),
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+        )
+    } else {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shape = CircleShape,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+            }
+        }
+    }
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\settings\SettingsScreen.kt
-SIZE: 3.9 KB
+SIZE: 4.5 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.settings
 
@@ -4952,6 +6281,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.filled.Person
 import org.messenger.app.shared.di.AppModule
 
 const val APP_NAME = "Messenger Oreshnik"
@@ -4963,6 +6293,7 @@ fun SettingsScreen(
     appModule: AppModule,
     onBack: () -> Unit,
     onOpenContacts: () -> Unit,
+    onOpenProfile: () -> Unit,
     onLogout: () -> Unit
 ) {
     val phone = appModule.tokenStorage.getUserPhone()
@@ -5003,6 +6334,18 @@ fun SettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
+
+                ListItem(
+                    modifier = Modifier.clickable(onClick = onOpenProfile),
+                    headlineContent = { Text("РџСЂРѕС„РёР»СЊ") },
+                    leadingContent = {
+                        Icon(
+                            androidx.compose.material.icons.Icons.Default.Person,
+                            contentDescription = null,
+                        )
+                    }
+                )
+                HorizontalDivider()
 
                 ListItem(
                     modifier = Modifier.clickable(onClick = onOpenContacts),
@@ -6653,6 +7996,117 @@ data class MarkReadBody(
 )
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\model\ProfileModels.kt
+SIZE: 2.9 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.data.model
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+@Serializable
+data class MeDto(
+    val id: String,
+    val phone: String,
+    val username: String,
+    @SerialName("display_name")
+    val displayName: String,
+    @SerialName("first_name")
+    val firstName: String? = null,
+    @SerialName("last_name")
+    val lastName: String? = null,
+    @SerialName("birth_date")
+    val birthDate: String? = null,
+    val bio: String? = null,
+    val email: String? = null,
+    val role: String,
+    @SerialName("primary_avatar_attachment_id")
+    val primaryAvatarAttachmentId: String? = null,
+    @SerialName("primary_avatar_thumb_attachment_id")
+    val primaryAvatarThumbAttachmentId: String? = null,
+    @SerialName("primary_avatar_url")
+    val primaryAvatarUrl: String? = null,
+    @SerialName("primary_avatar_thumb_url")
+    val primaryAvatarThumbUrl: String? = null,
+    @SerialName("created_at")
+    val createdAt: String,
+)
+
+@Serializable
+data class UpdateMeBody(
+    val username: String? = null,
+    @SerialName("display_name")
+    val displayName: String? = null,
+    @SerialName("first_name")
+    val firstName: String? = null,
+    @SerialName("last_name")
+    val lastName: String? = null,
+    @SerialName("birth_date")
+    val birthDate: String? = null,
+    val bio: String? = null,
+    val email: String? = null,
+)
+
+@Serializable
+data class AvatarDto(
+    val id: String,
+    @SerialName("full_attachment_id")
+    val fullAttachmentId: String,
+    @SerialName("crop_attachment_id")
+    val cropAttachmentId: String,
+    @SerialName("full_url")
+    val fullUrl: String? = null,
+    @SerialName("crop_url")
+    val cropUrl: String? = null,
+    @SerialName("created_at")
+    val createdAt: String,
+)
+
+@Serializable
+data class AvatarListResponse(
+    val avatars: List<AvatarDto>,
+    @SerialName("primary_avatar_id")
+    val primaryAvatarId: String? = null,
+)
+
+@Serializable
+data class CreateAvatarBody(
+    @SerialName("source_attachment_id")
+    val sourceAttachmentId: String,
+    @SerialName("crop_x")
+    val cropX: Int,
+    @SerialName("crop_y")
+    val cropY: Int,
+    @SerialName("crop_size")
+    val cropSize: Int,
+)
+
+@Serializable
+data class SetPrimaryAvatarBody(
+    @SerialName("avatar_id")
+    val avatarId: String,
+)
+
+@Serializable
+data class PublicUserDto(
+    val id: String,
+    val username: String,
+    @SerialName("display_name")
+    val displayName: String,
+    @SerialName("first_name")
+    val firstName: String? = null,
+    @SerialName("last_name")
+    val lastName: String? = null,
+    val bio: String? = null,
+    @SerialName("primary_avatar_url")
+    val primaryAvatarUrl: String? = null,
+    @SerialName("primary_avatar_thumb_url")
+    val primaryAvatarThumbUrl: String? = null,
+    @SerialName("created_at")
+    val createdAt: String,
+)
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\model\WsModels.kt
 SIZE: 2 KB
 ----------------------------------------------------------------------
@@ -6750,7 +8204,7 @@ data class WsAttachmentReady(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\remote\ApiService.kt
-SIZE: 10.3 KB
+SIZE: 11.5 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.remote
 
@@ -7034,6 +8488,40 @@ class ApiService(private val client: HttpClient) {
 
     suspend fun deleteAttachment(attachmentId: String) {
         val response = client.delete("api/v1/attachments/$attachmentId")
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
+
+    // в”Ђв”Ђ Profile (me) в”Ђв”Ђ
+    suspend fun getMe(): MeDto =
+        requestAndParse { client.get("api/v1/me") }
+
+    suspend fun getPublicUser(userId: String): PublicUserDto =
+        requestAndParse { client.get("api/v1/users/$userId") }
+
+    suspend fun updateMe(body: UpdateMeBody): MeDto =
+        requestAndParse {
+            client.patch("api/v1/me") { setBody(body) }
+        }
+
+    suspend fun listMyAvatars(): AvatarListResponse =
+        requestAndParse { client.get("api/v1/me/avatars") }
+
+    suspend fun createAvatar(body: CreateAvatarBody): AvatarDto =
+        requestAndParse {
+            client.post("api/v1/me/avatars") { setBody(body) }
+        }
+
+    suspend fun setPrimaryAvatar(avatarId: String): MeDto =
+        requestAndParse {
+            client.post("api/v1/me/avatars/set-primary") {
+                setBody(SetPrimaryAvatarBody(avatarId))
+            }
+        }
+
+    suspend fun deleteAvatar(avatarId: String) {
+        val response = client.delete("api/v1/me/avatars/$avatarId")
         if (!response.status.isSuccess()) {
             throw ApiException(response.status.value, response.bodyAsText())
         }
@@ -7328,7 +8816,7 @@ class WsService(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\di\AppModule.kt
-SIZE: 2.4 KB
+SIZE: 2.5 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.di
 
@@ -7377,6 +8865,10 @@ class AppModule(
 
     val attachmentsRepository by lazy {
         org.messenger.app.shared.domain.repository.AttachmentsRepository(apiService, httpClient)
+    }
+
+    val profileRepository by lazy {
+        org.messenger.app.shared.domain.repository.ProfileRepository(apiService)
     }
 
     companion object {
@@ -7652,6 +9144,69 @@ class ContactsRepository(private val api: ApiService) {
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\domain\repository\ProfileRepository.kt
+SIZE: 1.8 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.domain.repository
+
+import org.messenger.app.shared.data.model.AvatarDto
+import org.messenger.app.shared.data.model.AvatarListResponse
+import org.messenger.app.shared.data.model.CreateAvatarBody
+import org.messenger.app.shared.data.model.MeDto
+import org.messenger.app.shared.data.model.UpdateMeBody
+import org.messenger.app.shared.data.remote.ApiService
+
+class ProfileRepository(private val api: ApiService) {
+
+    suspend fun getMe(): MeDto = api.getMe()
+
+    suspend fun updateMe(
+        username: String? = null,
+        displayName: String? = null,
+        firstName: String? = null,
+        lastName: String? = null,
+        birthDate: String? = null,
+        bio: String? = null,
+        email: String? = null,
+    ): MeDto = api.updateMe(
+        UpdateMeBody(
+            username = username,
+            displayName = displayName,
+            firstName = firstName,
+            lastName = lastName,
+            birthDate = birthDate,
+            bio = bio,
+            email = email,
+        )
+    )
+
+    suspend fun listAvatars(): AvatarListResponse = api.listMyAvatars()
+
+    suspend fun createAvatar(
+        sourceAttachmentId: String,
+        cropX: Int,
+        cropY: Int,
+        cropSize: Int,
+    ): AvatarDto = api.createAvatar(
+        CreateAvatarBody(
+            sourceAttachmentId = sourceAttachmentId,
+            cropX = cropX,
+            cropY = cropY,
+            cropSize = cropSize,
+        )
+    )
+
+    suspend fun setPrimaryAvatar(avatarId: String): MeDto =
+        api.setPrimaryAvatar(avatarId)
+
+    suspend fun deleteAvatar(avatarId: String) =
+        api.deleteAvatar(avatarId)
+
+    suspend fun getPublicUser(userId: String): org.messenger.app.shared.data.model.PublicUserDto =
+        api.getPublicUser(userId)
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\admin\CreateGroupChatViewModel.kt
 SIZE: 4.4 KB
 ----------------------------------------------------------------------
@@ -7918,7 +9473,7 @@ class AuthViewModel(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\chat\ChatViewModel.kt
-SIZE: 20.8 KB
+SIZE: 21 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.ui.chat
 
@@ -7947,6 +9502,7 @@ data class UploadingAttachment(
     val isUploading: Boolean = true,
     val error: String? = null,
     val attachment: AttachmentDto? = null,
+    val previewBytes: ByteArray? = null,
 )
 
 data class ChatUiState(
@@ -8132,11 +9688,16 @@ class ChatViewModel(
             return
         }
         val localId = "local-${++localIdCounter}"
+        val previewBytes = if (mimeType.startsWith("image/", ignoreCase = true) && bytes.size <= 10 * 1024 * 1024) {
+            bytes
+        } else null
+
         val placeholder = UploadingAttachment(
             localId = localId,
             filename = filename,
             mimeType = mimeType,
             sizeBytes = bytes.size.toLong(),
+            previewBytes = previewBytes,
         )
         _state.update { it.copy(uploadingAttachments = it.uploadingAttachments + placeholder) }
 
@@ -8710,6 +10271,294 @@ class ContactsViewModel(
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\profile\AvatarsViewModel.kt
+SIZE: 5.6 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.ui.profile
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import org.messenger.app.shared.data.model.AttachmentDto
+import org.messenger.app.shared.data.model.AvatarDto
+import org.messenger.app.shared.domain.repository.AttachmentsRepository
+import org.messenger.app.shared.domain.repository.ProfileRepository
+
+data class AvatarsUiState(
+    val avatars: List<AvatarDto> = emptyList(),
+    val primaryAvatarId: String? = null,
+    val isLoading: Boolean = false,
+    val isUploading: Boolean = false,
+    val pendingSource: AttachmentDto? = null,
+    val pendingSourceBytes: ByteArray? = null,
+    val error: String? = null,
+)
+
+class AvatarsViewModel(
+    private val profileRepository: ProfileRepository,
+    private val attachmentsRepository: AttachmentsRepository,
+) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    private val _state = MutableStateFlow(AvatarsUiState())
+    val state: StateFlow<AvatarsUiState> = _state.asStateFlow()
+
+    init {
+        loadAvatars()
+    }
+
+    fun loadAvatars() {
+        scope.launch {
+            _state.update { it.copy(isLoading = true, error = null) }
+            try {
+                val list = profileRepository.listAvatars()
+                _state.update {
+                    it.copy(
+                        avatars = list.avatars,
+                        primaryAvatarId = list.primaryAvatarId,
+                        isLoading = false,
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(isLoading = false, error = e.message ?: "РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё")
+                }
+            }
+        }
+    }
+
+    /**
+     * Р­С‚Р°Рї 1 Р·Р°РіСЂСѓР·РєРё РЅРѕРІРѕРіРѕ Р°РІР°С‚Р°СЂР°: РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ РІС‹Р±СЂР°Р» С„Р°Р№Р» РёР·РѕР±СЂР°Р¶РµРЅРёСЏ,
+     * РјС‹ Р·Р°РіСЂСѓР¶Р°РµРј РµРіРѕ РІ S3 РєР°Рє РѕР±С‹С‡РЅРѕРµ РІР»РѕР¶РµРЅРёРµ Рё СЃРѕС…СЂР°РЅСЏРµРј РІРѕ РІСЂРµРјРµРЅРЅРѕРµ СЃРѕСЃС‚РѕСЏРЅРёРµ,
+     * С‡С‚РѕР±С‹ UI РѕС‚РєСЂС‹Р» РґРёР°Р»РѕРі crop'Р°.
+     */
+    fun pickSourceImage(filename: String, mimeType: String, bytes: ByteArray) {
+        if (!mimeType.startsWith("image/", ignoreCase = true)) {
+            _state.update { it.copy(error = "Р¤Р°Р№Р» РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ РёР·РѕР±СЂР°Р¶РµРЅРёРµРј") }
+            return
+        }
+        scope.launch {
+            _state.update { it.copy(isUploading = true, error = null) }
+            try {
+                val att = attachmentsRepository.uploadFile(
+                    filename = filename,
+                    mimeType = mimeType,
+                    data = bytes,
+                    chatId = null,
+                )
+                _state.update {
+                    it.copy(
+                        isUploading = false,
+                        pendingSource = att,
+                        pendingSourceBytes = bytes,
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(isUploading = false, error = e.message ?: "РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё С„Р°Р№Р»Р°")
+                }
+            }
+        }
+    }
+
+    fun cancelPendingSource() {
+        _state.update { it.copy(pendingSource = null, pendingSourceBytes = null) }
+    }
+
+    /**
+     * Р­С‚Р°Рї 2: РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ РїРѕРґС‚РІРµСЂРґРёР» СЂР°РјРєСѓ crop'Р° (РІ РєРѕРѕСЂРґРёРЅР°С‚Р°С… РёСЃС…РѕРґРЅРѕРіРѕ РёР·РѕР±СЂР°Р¶РµРЅРёСЏ).
+     */
+    fun confirmCrop(cropX: Int, cropY: Int, cropSize: Int, onSuccess: () -> Unit = {}) {
+        val source = _state.value.pendingSource ?: return
+        scope.launch {
+            _state.update { it.copy(isUploading = true, error = null) }
+            try {
+                profileRepository.createAvatar(
+                    sourceAttachmentId = source.id,
+                    cropX = cropX,
+                    cropY = cropY,
+                    cropSize = cropSize,
+                )
+                _state.update {
+                    it.copy(
+                        isUploading = false,
+                        pendingSource = null,
+                        pendingSourceBytes = null,
+                    )
+                }
+                loadAvatars()
+                onSuccess()
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(isUploading = false, error = e.message ?: "РћС€РёР±РєР° РѕР±СЂРµР·РєРё")
+                }
+            }
+        }
+    }
+
+    fun setPrimary(avatarId: String) {
+        scope.launch {
+            try {
+                profileRepository.setPrimaryAvatar(avatarId)
+                loadAvatars()
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "РћС€РёР±РєР° СѓСЃС‚Р°РЅРѕРІРєРё") }
+            }
+        }
+    }
+
+    fun deleteAvatar(avatarId: String) {
+        scope.launch {
+            try {
+                profileRepository.deleteAvatar(avatarId)
+                _state.update { st ->
+                    st.copy(avatars = st.avatars.filterNot { it.id == avatarId })
+                }
+                loadAvatars()
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "РћС€РёР±РєР° СѓРґР°Р»РµРЅРёСЏ") }
+            }
+        }
+    }
+
+    fun clearError() {
+        _state.update { it.copy(error = null) }
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\profile\ProfileViewModel.kt
+SIZE: 4 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.ui.profile
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import org.messenger.app.shared.data.local.TokenStorage
+import org.messenger.app.shared.data.model.MeDto
+import org.messenger.app.shared.data.remote.ApiException
+import org.messenger.app.shared.domain.repository.ProfileRepository
+
+data class ProfileUiState(
+    val me: MeDto? = null,
+    val isLoading: Boolean = false,
+    val isSaving: Boolean = false,
+    val error: String? = null,
+    val savedSuccess: Boolean = false,
+)
+
+class ProfileViewModel(
+    private val repository: ProfileRepository,
+    private val tokenStorage: TokenStorage? = null,
+) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    private val _state = MutableStateFlow(ProfileUiState())
+    val state: StateFlow<ProfileUiState> = _state.asStateFlow()
+
+    init {
+        loadProfile()
+    }
+
+    fun loadProfile() {
+        scope.launch {
+            _state.update { it.copy(isLoading = true, error = null) }
+            try {
+                val me = repository.getMe()
+                _state.update { it.copy(me = me, isLoading = false) }
+                syncTokenStorage(me)
+            } catch (e: ApiException) {
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        error = "РћС€РёР±РєР° ${e.statusCode}: ${e.errorBody}",
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(isLoading = false, error = e.message ?: "РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё")
+                }
+            }
+        }
+    }
+
+    fun updateProfile(
+        username: String? = null,
+        displayName: String? = null,
+        firstName: String? = null,
+        lastName: String? = null,
+        birthDate: String? = null,
+        bio: String? = null,
+        email: String? = null,
+        onSuccess: () -> Unit = {},
+    ) {
+        scope.launch {
+            _state.update { it.copy(isSaving = true, error = null, savedSuccess = false) }
+            try {
+                val me = repository.updateMe(
+                    username = username,
+                    displayName = displayName,
+                    firstName = firstName,
+                    lastName = lastName,
+                    birthDate = birthDate,
+                    bio = bio,
+                    email = email,
+                )
+                _state.update { it.copy(me = me, isSaving = false, savedSuccess = true) }
+                syncTokenStorage(me)
+                onSuccess()
+            } catch (e: ApiException) {
+                val msg = parseErrorMessage(e.errorBody) ?: "РћС€РёР±РєР° ${e.statusCode}"
+                _state.update { it.copy(isSaving = false, error = msg) }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(isSaving = false, error = e.message ?: "РћС€РёР±РєР° СЃРѕС…СЂР°РЅРµРЅРёСЏ")
+                }
+            }
+        }
+    }
+
+    fun refreshAfterAvatarChange() {
+        loadProfile()
+    }
+
+    fun clearError() {
+        _state.update { it.copy(error = null) }
+    }
+
+    fun clearSavedFlag() {
+        _state.update { it.copy(savedSuccess = false) }
+    }
+
+    private fun syncTokenStorage(me: MeDto) {
+        tokenStorage?.saveUser(
+            id = me.id,
+            phone = me.phone,
+            displayName = me.displayName,
+            role = me.role,
+        )
+    }
+
+    private fun parseErrorMessage(body: String): String? {
+        return try {
+            val detailRegex = """"detail"\s*:\s*"([^"]+)"""".toRegex()
+            detailRegex.find(body)?.groupValues?.getOrNull(1)
+        } catch (_: Exception) { null }
+    }
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\util\Clipboard.kt
 SIZE: 0.1 KB
 ----------------------------------------------------------------------
@@ -9097,6 +10946,6 @@ SIZE: 0.2 KB
 }
 
 ======================================================================
-Total files dumped: 122
+Total files dumped: 130
 ======================================================================
 

@@ -58,11 +58,12 @@ class Message(Base):
     )
     attachments = relationship(
         "Attachment",
-        back_populates="message",
-        foreign_keys="Attachment.message_id",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )    
+        secondary="message_attachment_links",
+        primaryjoin="Message.id == foreign(MessageAttachmentLink.message_id)",
+        secondaryjoin="foreign(MessageAttachmentLink.attachment_id) == Attachment.id",
+        viewonly=True,
+        lazy="selectin",
+    )
 
 
 class MessageRead(Base):

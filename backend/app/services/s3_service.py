@@ -128,3 +128,22 @@ async def delete_object(storage_key: str) -> None:
     except Exception as e:
         logger.error("s3_delete_object_error", key=storage_key, error=str(e))
         
+        
+async def move_to_deleted(storage_key: str) -> str | None:
+    """Soft-delete: copy object to deleted/<key> then delete original. Returns new key or None."""
+    if storage_key.startswith("deleted/"):
+        return storage_key
+    new_key = f"deleted/{storage_key}"
+    session = _get_session()
+    try:
+        async with session.client(**_client_kwargs(public=False)) as s3:
+            await s3.copy_object(
+                Bucket=settings.s3_bucket,
+                CopySource={"Bucket": settings.s3_bucket, "Key": storage_key},
+                Key=new_key,
+            )
+            await s3.delete_object(Bucket=settings.s3_bucket, Key=storage_key)
+        return new_key
+    except Exception as e:
+        logger.error("s3_move_to_deleted_error", key=storage_key, error=str(e))
+        return None

@@ -14,6 +14,7 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.foundation.clickable
 import kotlinx.coroutines.launch
 import org.messenger.app.shared.data.model.MessageDto
 import org.messenger.app.shared.di.AppModule
@@ -28,6 +29,7 @@ fun ChatScreen(
     appModule: AppModule,
     onBack: () -> Unit,
     onPickForwardTarget: ((sourceChatId: String, messageIds: List<String>) -> Unit)? = null,
+    onOpenPeerProfile: ((userId: String) -> Unit)? = null,
 ) {
     val currentUserId = remember { appModule.tokenStorage.getUserId() }
     val currentUserRole = remember { null as String? }
@@ -151,7 +153,22 @@ fun ChatScreen(
                 )
             } else {
                 TopAppBar(
-                    title = { Text(chatName) },
+                    title = {
+                        val peer = state.peerUser
+                        val isPersonalClickable = state.chatType == "personal" &&
+                                peer != null &&
+                                onOpenPeerProfile != null
+                        if (isPersonalClickable) {
+                            Text(
+                                text = chatName,
+                                modifier = Modifier.clickable {
+                                    onOpenPeerProfile!!(peer!!.id)
+                                }
+                            )
+                        } else {
+                            Text(chatName)
+                        }
+                    },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")

@@ -26,6 +26,9 @@ sealed class Screen {
     data object ChatList : Screen()
     data object Settings : Screen()
     data object Contacts : Screen()
+    data object Profile : Screen()
+    data object Avatars : Screen()
+    data class PeerProfile(val userId: String) : Screen()
     data class Chat(val chatId: String, val chatName: String) : Screen()
     data class ForwardPicker(
         val sourceChatId: String,
@@ -141,14 +144,13 @@ fun App(
                 }
 
                 is Screen.ChatList -> {
-                    // На списке чатов системная "назад" не перехватывается —
-                    // пусть Android сворачивает приложение как обычно
                     ChatListScreen(
                         appModule = currentAppModule,
                         onChatClick = { chatId, chatName ->
                             currentScreen = Screen.Chat(chatId, chatName)
                         },
-                        onOpenSettings = { currentScreen = Screen.Settings }
+                        onOpenSettings = { currentScreen = Screen.Settings },
+                        onOpenProfile = { currentScreen = Screen.Profile },
                     )
                 }
 
@@ -162,6 +164,7 @@ fun App(
                         appModule = currentAppModule,
                         onBack = { currentScreen = Screen.ChatList },
                         onOpenContacts = { currentScreen = Screen.Contacts },
+                        onOpenProfile = { currentScreen = Screen.Profile },
                         onLogout = {
                             currentAppModule.tokenStorage.clear()
                             currentAppModule.wsService.disconnect()
@@ -192,13 +195,42 @@ fun App(
                     )
                 }
 
+                is Screen.Profile -> {
+                    PlatformBackHandler(enabled = true) {
+                        currentScreen = Screen.Settings
+                    }
+                    org.messenger.app.ui.profile.ProfileScreen(
+                        appModule = currentAppModule,
+                        onBack = { currentScreen = Screen.Settings },
+                        onOpenAvatars = { currentScreen = Screen.Avatars },
+                    )
+                }
+
+                is Screen.Avatars -> {
+                    PlatformBackHandler(enabled = true) {
+                        currentScreen = Screen.Profile
+                    }
+                    org.messenger.app.ui.profile.AvatarsScreen(
+                        appModule = currentAppModule,
+                        onBack = { currentScreen = Screen.Profile },
+                    )
+                }
+
+                is Screen.PeerProfile -> {
+                    PlatformBackHandler(enabled = true) {
+                        currentScreen = Screen.ChatList
+                    }
+                    org.messenger.app.ui.profile.PeerProfileScreen(
+                        appModule = currentAppModule,
+                        userId = screen.userId,
+                        onBack = { /* возвращаемся куда были — упрощённо в ChatList */
+                            currentScreen = Screen.ChatList
+                        },
+                    )
+                }
+
                 is Screen.Chat -> {
                     updateCurrentChatId(screen.chatId)
-                    // BackHandler внутри самого ChatScreen уже обрабатывает:
-                    // - закрытие actions sheet
-                    // - выход из selection mode
-                    // - отмену edit / reply
-                    // - и в последнюю очередь — вызов onBack(), который здесь ведёт в ChatList
                     ChatScreen(
                         chatId = screen.chatId,
                         chatName = screen.chatName,
@@ -213,7 +245,10 @@ fun App(
                                 sourceChatName = screen.chatName,
                                 messageIds = messageIds,
                             )
-                        }
+                        },
+                        onOpenPeerProfile = { userId ->
+                            currentScreen = Screen.PeerProfile(userId)
+                        },
                     )
                 }
 

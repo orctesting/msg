@@ -34,6 +34,8 @@ from app.services.ws_manager import ws_manager
 from app.utils.idempotency import acquire_message_idempotency
 from fastapi import APIRouter, Depends, Query, Request
 from app.utils.public_url import derive_s3_public_base
+from app.db.models.message_attachment_link import MessageAttachmentLink
+from app.services.attachment_cleanup import cleanup_attachments_for_messages, soft_delete_attachment_if_orphan
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/chats", tags=["messages"])
@@ -324,8 +326,14 @@ async def send_message(
         for a in atts:
             if a.uploader_user_id != current_user.id:
                 raise ForbiddenException("Attachment belongs to another user")
-            if a.message_id is not None:
-                raise ConflictException("Attachment already linked to another message")
+            # Проверяем нет ли уже привязки к другому сообщению через links
+            existing_link = await session.execute(
+                select(MessageAttachmentLink).where(
+                    MessageAttachmentLink.attachment_id == a.id
+                ).limit(1)
+            )
+            if existing_link.scalar_one_or_none() is not None:
+                raise ConflictException("Attachment already linked to a message")
             if a.status not in ("uploaded", "ready"):
                 raise ConflictException(f"Attachment {a.id} is not ready")
         validated_attachments = atts
@@ -349,11 +357,12 @@ async def send_message(
 
     need_thumb_ids: list[uuid.UUID] = []
     for a in validated_attachments:
-        a.message_id = message.id
+        # Создаём связь через links вместо прямой записи message_id
+        session.add(MessageAttachmentLink(message_id=message.id, attachment_id=a.id))
+        a.message_id = message.id  # primary owner для backward-compat
         a.chat_id = chat_id
         if a.status == "uploaded":
             a.status = "ready"
-        # Если превью ещё не было сгенерировано для image — перегенерим
         if a.file_kind == "image" and a.thumbnail_key is None:
             need_thumb_ids.append(a.id)
 
@@ -497,7 +506,10 @@ async def delete_message(
         chat.pinned_by_user_id = None
         chat.pinned_at = None
 
-    # Вручную удаляем зависимости, чтобы SQLAlchemy не пытался их "осиротить"
+    # Cleanup attachments через links + soft-delete осиротевших
+    await cleanup_attachments_for_messages(session, [msg.id])
+
+    # Вручную удаляем зависимости
     await session.execute(delete(MessageRead).where(MessageRead.message_id == msg.id))
     await session.execute(delete(PushLog).where(PushLog.message_id == msg.id))
     await session.flush()
@@ -575,7 +587,9 @@ async def bulk_delete_messages(
     if not deleted_ids:
         raise ForbiddenException("Nothing you can delete")
 
-    # Вручную удаляем зависимости перед удалением сообщений
+    # Cleanup attachments через links + soft-delete осиротевших
+    await cleanup_attachments_for_messages(session, deleted_ids)
+
     await session.execute(delete(MessageRead).where(MessageRead.message_id.in_(deleted_ids)))
     await session.execute(delete(PushLog).where(PushLog.message_id.in_(deleted_ids)))
     await session.flush()
@@ -612,7 +626,7 @@ async def forward_message(
 
     src_res = await session.execute(
         select(Message)
-        .options(joinedload(Message.sender))
+        .options(joinedload(Message.sender), joinedload(Message.attachments))
         .where(Message.id == body.message_id, Message.chat_id == body.source_chat_id)
     )
     src = src_res.scalars().unique().one_or_none()
@@ -647,8 +661,14 @@ async def forward_message(
         forwarded_from_sender_name=src.sender.display_name if src.sender else "Admin",
     )
     session.add(new_msg)
+    await session.flush()
+
+    # Копируем links на те же attachments — без копирования файлов в S3
+    for att in (src.attachments or []):
+        session.add(MessageAttachmentLink(message_id=new_msg.id, attachment_id=att.id))
+
     await session.commit()
-    
+
     await _ensure_personal_chat_visible(session, body.target_chat_id)
 
     full = await _load_message_full(session, new_msg.id)

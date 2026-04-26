@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.filled.Person
 import org.messenger.app.shared.di.AppModule
 
 const val APP_NAME = "Messenger Oreshnik"
@@ -22,6 +23,7 @@ fun SettingsScreen(
     appModule: AppModule,
     onBack: () -> Unit,
     onOpenContacts: () -> Unit,
+    onOpenProfile: () -> Unit,
     onLogout: () -> Unit
 ) {
     val phone = appModule.tokenStorage.getUserPhone()
@@ -62,6 +64,18 @@ fun SettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
+
+                ListItem(
+                    modifier = Modifier.clickable(onClick = onOpenProfile),
+                    headlineContent = { Text("Профиль") },
+                    leadingContent = {
+                        Icon(
+                            androidx.compose.material.icons.Icons.Default.Person,
+                            contentDescription = null,
+                        )
+                    }
+                )
+                HorizontalDivider()
 
                 ListItem(
                     modifier = Modifier.clickable(onClick = onOpenContacts),

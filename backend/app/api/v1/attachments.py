@@ -277,16 +277,31 @@ async def delete_attachment(
         raise NotFoundException("Attachment not found")
     if att.uploader_user_id != current_user.id and current_user.role != "admin":
         raise ForbiddenException("Not your attachment")
-    if att.message_id is not None:
-        raise ConflictException("Attachment is linked to a message; delete the message instead")
 
+    # Проверяем, есть ли links на это вложение
+    from app.db.models.message_attachment_link import MessageAttachmentLink
+    from sqlalchemy import func
+    count_res = await session.execute(
+        select(func.count(MessageAttachmentLink.id)).where(
+            MessageAttachmentLink.attachment_id == attachment_id
+        )
+    )
+    if (count_res.scalar() or 0) > 0:
+        raise ConflictException("Attachment is linked to message(s); delete the message instead")
+
+    # Не привязано — soft-delete файл в S3
     try:
-        await s3_service.delete_object(att.storage_key)
+        from app.services import s3_service
+        new_key = await s3_service.move_to_deleted(att.storage_key)
+        if new_key:
+            att.storage_key = new_key
         if att.thumbnail_key:
-            await s3_service.delete_object(att.thumbnail_key)
+            new_thumb = await s3_service.move_to_deleted(att.thumbnail_key)
+            if new_thumb:
+                att.thumbnail_key = new_thumb
     except Exception as e:
-        logger.error("s3_delete_error", error=str(e))
+        logger.error("s3_soft_delete_error", error=str(e))
 
-    await session.delete(att)
+    att.status = "deleted"
     await session.commit()
     return OkResponse(detail="Deleted")

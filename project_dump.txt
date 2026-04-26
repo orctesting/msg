@@ -783,6 +783,68 @@ def downgrade() -> None:
 
 
 ================================================================================
+FILE: backend/alembic/versions/b8c9d0e1f2a3_add_message_attachment_links.py
+================================================================================
+"""add message_attachment_links table
+
+Revision ID: b8c9d0e1f2a3
+Revises: a7b8c9d0e1f2
+Create Date: 2026-04-27 00:00:00.000000
+"""
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+
+revision = "b8c9d0e1f2a3"
+down_revision = "a7b8c9d0e1f2"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    op.create_table(
+        "message_attachment_links",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "message_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("messages.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "attachment_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("attachments.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.UniqueConstraint("message_id", "attachment_id", name="uq_message_attachment_link"),
+    )
+    op.create_index("ix_message_attachment_links_message_id", "message_attachment_links", ["message_id"])
+    op.create_index("ix_message_attachment_links_attachment_id", "message_attachment_links", ["attachment_id"])
+
+    # Backfill: для каждого attachment с message_id создаём link
+    op.execute(sa.text("""
+        INSERT INTO message_attachment_links (id, message_id, attachment_id, created_at)
+        SELECT gen_random_uuid(), message_id, id, created_at
+        FROM attachments
+        WHERE message_id IS NOT NULL
+        ON CONFLICT DO NOTHING
+    """))
+
+
+def downgrade() -> None:
+    op.drop_index("ix_message_attachment_links_attachment_id", table_name="message_attachment_links")
+    op.drop_index("ix_message_attachment_links_message_id", table_name="message_attachment_links")
+    op.drop_table("message_attachment_links")
+
+
+================================================================================
 FILE: backend/alembic/versions/c3d4e5f6a7b8_message_edit_reply_forward_pin.py
 ================================================================================
 """message edit/reply/forward + pin + deleted_messages + user_pinned_dismissals
@@ -914,6 +976,149 @@ def downgrade() -> None:
         batch_op.drop_column("forwarded_from_message_id")
         batch_op.drop_column("reply_to_message_id")
         batch_op.drop_column("edited_at")
+
+
+================================================================================
+FILE: backend/alembic/versions/c9d0e1f2a3b4_user_profile_and_avatars.py
+================================================================================
+"""user profile fields + user_avatars
+
+Revision ID: c9d0e1f2a3b4
+Revises: b8c9d0e1f2a3
+Create Date: 2026-04-28 00:00:00.000000
+"""
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+
+revision = "c9d0e1f2a3b4"
+down_revision = "b8c9d0e1f2a3"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    with op.batch_alter_table("users") as batch_op:
+        batch_op.add_column(sa.Column("username", sa.String(length=64), nullable=True))
+        batch_op.add_column(sa.Column("first_name", sa.String(length=100), nullable=True))
+        batch_op.add_column(sa.Column("last_name", sa.String(length=100), nullable=True))
+        batch_op.add_column(sa.Column("birth_date", sa.Date(), nullable=True))
+        batch_op.add_column(sa.Column("bio", sa.String(length=1000), nullable=True))
+        batch_op.add_column(sa.Column("email", sa.String(length=255), nullable=True))
+        batch_op.add_column(
+            sa.Column(
+                "primary_avatar_attachment_id",
+                postgresql.UUID(as_uuid=True),
+                nullable=True,
+            )
+        )
+        batch_op.add_column(
+            sa.Column(
+                "primary_avatar_thumb_attachment_id",
+                postgresql.UUID(as_uuid=True),
+                nullable=True,
+            )
+        )
+
+    op.create_foreign_key(
+        "fk_users_primary_avatar",
+        "users",
+        "attachments",
+        ["primary_avatar_attachment_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
+    op.create_foreign_key(
+        "fk_users_primary_avatar_thumb",
+        "users",
+        "attachments",
+        ["primary_avatar_thumb_attachment_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
+
+    op.create_table(
+        "user_avatars",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "user_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("users.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "full_attachment_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("attachments.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "crop_attachment_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("attachments.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+    )
+    op.create_index("ix_user_avatars_user_id", "user_avatars", ["user_id"])
+
+    # Backfill username для существующих пользователей через транслитерацию
+    op.execute(sa.text("""
+        DO $$
+        DECLARE
+            r RECORD;
+            base_un TEXT;
+            try_un TEXT;
+            counter INT;
+        BEGIN
+            FOR r IN SELECT id, display_name FROM users WHERE username IS NULL LOOP
+                -- Простой ASCII-фолбэк: оставляем только латиницу/цифры/_/./-/#
+                base_un := lower(regexp_replace(coalesce(r.display_name, ''), '[^a-zA-Z0-9_\-.#]+', '_', 'g'));
+                base_un := regexp_replace(base_un, '^_+|_+$', '', 'g');
+                IF base_un = '' OR base_un IS NULL THEN
+                    base_un := 'user_' || substr(r.id::text, 1, 8);
+                END IF;
+                try_un := base_un;
+                counter := 0;
+                WHILE EXISTS(SELECT 1 FROM users WHERE username = try_un) LOOP
+                    counter := counter + 1;
+                    try_un := base_un || '#' || lpad(counter::text, 3, '0');
+                END LOOP;
+                UPDATE users SET username = try_un WHERE id = r.id;
+            END LOOP;
+        END $$;
+    """))
+
+    # Делаем username NOT NULL и unique
+    with op.batch_alter_table("users") as batch_op:
+        batch_op.alter_column("username", existing_type=sa.String(length=64), nullable=False)
+        batch_op.create_unique_constraint("uq_users_username", ["username"])
+
+
+def downgrade() -> None:
+    with op.batch_alter_table("users") as batch_op:
+        batch_op.drop_constraint("uq_users_username", type_="unique")
+
+    op.drop_index("ix_user_avatars_user_id", table_name="user_avatars")
+    op.drop_table("user_avatars")
+
+    op.drop_constraint("fk_users_primary_avatar_thumb", "users", type_="foreignkey")
+    op.drop_constraint("fk_users_primary_avatar", "users", type_="foreignkey")
+
+    with op.batch_alter_table("users") as batch_op:
+        batch_op.drop_column("primary_avatar_thumb_attachment_id")
+        batch_op.drop_column("primary_avatar_attachment_id")
+        batch_op.drop_column("email")
+        batch_op.drop_column("bio")
+        batch_op.drop_column("birth_date")
+        batch_op.drop_column("last_name")
+        batch_op.drop_column("first_name")
+        batch_op.drop_column("username")
 
 
 ================================================================================
@@ -1539,6 +1744,99 @@ class ForwardMessageIn(BaseModel):
 
 
 ================================================================================
+FILE: backend/app/api/schemas/profile.py
+================================================================================
+import re
+import uuid
+from datetime import datetime, date
+from pydantic import BaseModel, Field, EmailStr, field_validator
+
+from app.utils.username import USERNAME_PATTERN
+
+
+class AvatarOut(BaseModel):
+    id: uuid.UUID
+    full_attachment_id: uuid.UUID
+    crop_attachment_id: uuid.UUID
+    full_url: str | None = None
+    crop_url: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class MeOut(BaseModel):
+    id: uuid.UUID
+    phone: str
+    username: str
+    display_name: str
+    first_name: str | None = None
+    last_name: str | None = None
+    birth_date: date | None = None
+    bio: str | None = None
+    email: str | None = None
+    role: str
+    primary_avatar_attachment_id: uuid.UUID | None = None
+    primary_avatar_thumb_attachment_id: uuid.UUID | None = None
+    primary_avatar_url: str | None = None
+    primary_avatar_thumb_url: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class MeUpdateIn(BaseModel):
+    username: str | None = Field(None, min_length=1, max_length=64)
+    display_name: str | None = Field(None, min_length=1, max_length=255)
+    first_name: str | None = Field(None, max_length=100)
+    last_name: str | None = Field(None, max_length=100)
+    birth_date: date | None = None
+    bio: str | None = Field(None, max_length=1000)
+    email: EmailStr | None = None
+
+    @field_validator("username")
+    @classmethod
+    def _validate_username(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        v = v.strip().lower()
+        if not USERNAME_PATTERN.match(v):
+            raise ValueError("Invalid username: only a-z, 0-9, _, -, ., # allowed (1..64)")
+        return v
+
+
+class AvatarCreateIn(BaseModel):
+    """Загрузить уже готовый файл-исходник (attachment_id) и координаты crop'а."""
+    source_attachment_id: uuid.UUID
+    crop_x: int = Field(..., ge=0)
+    crop_y: int = Field(..., ge=0)
+    crop_size: int = Field(..., gt=0)
+
+
+class AvatarListOut(BaseModel):
+    avatars: list[AvatarOut]
+    primary_avatar_id: uuid.UUID | None = None
+
+
+class SetPrimaryAvatarIn(BaseModel):
+    avatar_id: uuid.UUID
+    
+
+class PublicUserOut(BaseModel):
+    id: uuid.UUID
+    username: str
+    display_name: str
+    first_name: str | None = None
+    last_name: str | None = None
+    bio: str | None = None
+    primary_avatar_url: str | None = None
+    primary_avatar_thumb_url: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+================================================================================
 FILE: backend/app/api/schemas/push.py
 ================================================================================
 import uuid
@@ -1635,11 +1933,26 @@ async def create_user(
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_async_session),
 ):
+    from app.utils.username import generate_unique_username
+
     existing = await session.execute(select(User).where(User.phone == phone))
     if existing.scalar_one_or_none():
         raise ConflictException("User with this phone already exists")
 
-    user = User(phone=phone, display_name=display_name, role=role)
+    parts = display_name.strip().split(maxsplit=1)
+    first = parts[0] if parts else None
+    last = parts[1] if len(parts) > 1 else None
+
+    username = await generate_unique_username(session, first, last, fallback_id=str(uuid.uuid4()))
+
+    user = User(
+        phone=phone,
+        display_name=display_name,
+        username=username,
+        first_name=first,
+        last_name=last,
+        role=role,
+    )
     session.add(user)
     await session.commit()
     await session.refresh(user)
@@ -2157,17 +2470,32 @@ async def delete_attachment(
         raise NotFoundException("Attachment not found")
     if att.uploader_user_id != current_user.id and current_user.role != "admin":
         raise ForbiddenException("Not your attachment")
-    if att.message_id is not None:
-        raise ConflictException("Attachment is linked to a message; delete the message instead")
 
+    # Проверяем, есть ли links на это вложение
+    from app.db.models.message_attachment_link import MessageAttachmentLink
+    from sqlalchemy import func
+    count_res = await session.execute(
+        select(func.count(MessageAttachmentLink.id)).where(
+            MessageAttachmentLink.attachment_id == attachment_id
+        )
+    )
+    if (count_res.scalar() or 0) > 0:
+        raise ConflictException("Attachment is linked to message(s); delete the message instead")
+
+    # Не привязано — soft-delete файл в S3
     try:
-        await s3_service.delete_object(att.storage_key)
+        from app.services import s3_service
+        new_key = await s3_service.move_to_deleted(att.storage_key)
+        if new_key:
+            att.storage_key = new_key
         if att.thumbnail_key:
-            await s3_service.delete_object(att.thumbnail_key)
+            new_thumb = await s3_service.move_to_deleted(att.thumbnail_key)
+            if new_thumb:
+                att.thumbnail_key = new_thumb
     except Exception as e:
-        logger.error("s3_delete_error", error=str(e))
+        logger.error("s3_soft_delete_error", error=str(e))
 
-    await session.delete(att)
+    att.status = "deleted"
     await session.commit()
     return OkResponse(detail="Deleted")
 
@@ -3157,6 +3485,380 @@ async def unregister_push_token(
 
 
 ================================================================================
+FILE: backend/app/api/v1/me.py
+================================================================================
+import uuid
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy import select, desc
+from sqlalchemy.ext.asyncio import AsyncSession
+import structlog
+
+from app.db.session import get_async_session
+from app.db.models.user import User
+from app.db.models.user_avatar import UserAvatar
+from app.db.models.attachment import Attachment
+from app.core.dependencies import get_current_user
+from app.core.exceptions import NotFoundException, ConflictException, ForbiddenException
+from app.api.schemas.profile import (
+    MeOut,
+    MeUpdateIn,
+    AvatarOut,
+    AvatarListOut,
+    AvatarCreateIn,
+    SetPrimaryAvatarIn,
+)
+from app.api.schemas.base import OkResponse
+from app.services import s3_service, avatar_service
+from app.utils.public_url import derive_s3_public_base
+
+logger = structlog.get_logger()
+router = APIRouter(prefix="/me", tags=["me"])
+
+
+async def _build_me_out(
+    user: User,
+    session: AsyncSession,
+    public_base: str | None = None,
+) -> MeOut:
+    primary_url = None
+    primary_thumb_url = None
+    if user.primary_avatar_attachment_id:
+        att_res = await session.execute(
+            select(Attachment).where(Attachment.id == user.primary_avatar_attachment_id)
+        )
+        att = att_res.scalar_one_or_none()
+        if att and att.status in ("uploaded", "ready"):
+            try:
+                primary_url = await s3_service.generate_presigned_download_url(
+                    att.storage_key, public_base_override=public_base
+                )
+            except Exception:
+                pass
+    if user.primary_avatar_thumb_attachment_id:
+        att_res = await session.execute(
+            select(Attachment).where(Attachment.id == user.primary_avatar_thumb_attachment_id)
+        )
+        att = att_res.scalar_one_or_none()
+        if att and att.status in ("uploaded", "ready"):
+            try:
+                primary_thumb_url = await s3_service.generate_presigned_download_url(
+                    att.storage_key, public_base_override=public_base
+                )
+            except Exception:
+                pass
+
+    return MeOut(
+        id=user.id,
+        phone=user.phone,
+        username=user.username,
+        display_name=user.display_name,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        birth_date=user.birth_date,
+        bio=user.bio,
+        email=user.email,
+        role=user.role,
+        primary_avatar_attachment_id=user.primary_avatar_attachment_id,
+        primary_avatar_thumb_attachment_id=user.primary_avatar_thumb_attachment_id,
+        primary_avatar_url=primary_url,
+        primary_avatar_thumb_url=primary_thumb_url,
+        created_at=user.created_at,
+    )
+
+
+async def _build_avatar_out(
+    avatar: UserAvatar,
+    session: AsyncSession,
+    public_base: str | None = None,
+) -> AvatarOut:
+    full_url = None
+    crop_url = None
+    full_res = await session.execute(
+        select(Attachment).where(Attachment.id == avatar.full_attachment_id)
+    )
+    full_att = full_res.scalar_one_or_none()
+    if full_att and full_att.status in ("uploaded", "ready"):
+        try:
+            full_url = await s3_service.generate_presigned_download_url(
+                full_att.storage_key, public_base_override=public_base
+            )
+        except Exception:
+            pass
+
+    crop_res = await session.execute(
+        select(Attachment).where(Attachment.id == avatar.crop_attachment_id)
+    )
+    crop_att = crop_res.scalar_one_or_none()
+    if crop_att and crop_att.status in ("uploaded", "ready"):
+        try:
+            crop_url = await s3_service.generate_presigned_download_url(
+                crop_att.storage_key, public_base_override=public_base
+            )
+        except Exception:
+            pass
+
+    return AvatarOut(
+        id=avatar.id,
+        full_attachment_id=avatar.full_attachment_id,
+        crop_attachment_id=avatar.crop_attachment_id,
+        full_url=full_url,
+        crop_url=crop_url,
+        created_at=avatar.created_at,
+    )
+
+
+@router.get("", response_model=MeOut)
+async def get_me(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    return await _build_me_out(current_user, session, public_base=derive_s3_public_base(request))
+
+
+@router.patch("", response_model=MeOut)
+async def update_me(
+    body: MeUpdateIn,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    if body.username is not None and body.username != current_user.username:
+        existing = await session.execute(
+            select(User).where(User.username == body.username, User.id != current_user.id)
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise ConflictException("Username already taken")
+        current_user.username = body.username
+
+    if body.display_name is not None:
+        current_user.display_name = body.display_name.strip()
+    if body.first_name is not None:
+        current_user.first_name = body.first_name.strip() or None
+    if body.last_name is not None:
+        current_user.last_name = body.last_name.strip() or None
+    if body.birth_date is not None:
+        current_user.birth_date = body.birth_date
+    if body.bio is not None:
+        current_user.bio = body.bio.strip() or None
+    if body.email is not None:
+        current_user.email = str(body.email).strip() or None
+
+    current_user.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+    await session.refresh(current_user)
+    return await _build_me_out(current_user, session, public_base=derive_s3_public_base(request))
+
+
+@router.get("/avatars", response_model=AvatarListOut)
+async def list_my_avatars(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    res = await session.execute(
+        select(UserAvatar)
+        .where(UserAvatar.user_id == current_user.id)
+        .order_by(desc(UserAvatar.created_at))
+    )
+    avatars = list(res.scalars().all())
+    public_base = derive_s3_public_base(request)
+    out_items = [await _build_avatar_out(a, session, public_base=public_base) for a in avatars]
+
+    primary_id: uuid.UUID | None = None
+    if current_user.primary_avatar_attachment_id:
+        for a in avatars:
+            if a.crop_attachment_id == current_user.primary_avatar_thumb_attachment_id:
+                primary_id = a.id
+                break
+
+    return AvatarListOut(avatars=out_items, primary_avatar_id=primary_id)
+
+
+@router.post("/avatars", response_model=AvatarOut, status_code=201)
+async def create_avatar(
+    body: AvatarCreateIn,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    src_res = await session.execute(
+        select(Attachment).where(Attachment.id == body.source_attachment_id)
+    )
+    source_att = src_res.scalar_one_or_none()
+    if source_att is None:
+        raise NotFoundException("Source attachment not found")
+    if source_att.uploader_user_id != current_user.id:
+        raise ForbiddenException("Not your attachment")
+    if source_att.file_kind != "image":
+        raise ConflictException("Source must be an image")
+    if source_att.status not in ("uploaded", "ready"):
+        raise ConflictException("Source attachment is not ready")
+
+    # Создаём crop attachment
+    try:
+        crop_att = await avatar_service.create_crop_attachment(
+            session=session,
+            user_id=current_user.id,
+            source_att=source_att,
+            crop_x=body.crop_x,
+            crop_y=body.crop_y,
+            crop_size=body.crop_size,
+        )
+    except ValueError as e:
+        raise ConflictException(str(e))
+
+    # source становится "ready" (если был uploaded)
+    if source_att.status == "uploaded":
+        source_att.status = "ready"
+
+    avatar = UserAvatar(
+        user_id=current_user.id,
+        full_attachment_id=source_att.id,
+        crop_attachment_id=crop_att.id,
+    )
+    session.add(avatar)
+    await session.flush()
+
+    # Этот аватар становится primary (последний загруженный)
+    current_user.primary_avatar_attachment_id = source_att.id
+    current_user.primary_avatar_thumb_attachment_id = crop_att.id
+    current_user.updated_at = datetime.now(timezone.utc)
+
+    await session.commit()
+    await session.refresh(avatar)
+
+    return await _build_avatar_out(avatar, session, public_base=derive_s3_public_base(request))
+
+
+@router.post("/avatars/set-primary", response_model=MeOut)
+async def set_primary_avatar(
+    body: SetPrimaryAvatarIn,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    res = await session.execute(
+        select(UserAvatar).where(
+            UserAvatar.id == body.avatar_id,
+            UserAvatar.user_id == current_user.id,
+        )
+    )
+    avatar = res.scalar_one_or_none()
+    if avatar is None:
+        raise NotFoundException("Avatar not found")
+
+    current_user.primary_avatar_attachment_id = avatar.full_attachment_id
+    current_user.primary_avatar_thumb_attachment_id = avatar.crop_attachment_id
+    current_user.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+    await session.refresh(current_user)
+    return await _build_me_out(current_user, session, public_base=derive_s3_public_base(request))
+
+
+@router.delete("/avatars/{avatar_id}", response_model=OkResponse)
+async def delete_avatar(
+    avatar_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    from app.services.attachment_cleanup import soft_delete_attachment_if_orphan
+    from app.db.models.message_attachment_link import MessageAttachmentLink
+    from sqlalchemy import func, delete as sa_delete
+
+    res = await session.execute(
+        select(UserAvatar).where(
+            UserAvatar.id == avatar_id,
+            UserAvatar.user_id == current_user.id,
+        )
+    )
+    avatar = res.scalar_one_or_none()
+    if avatar is None:
+        raise NotFoundException("Avatar not found")
+
+    full_id = avatar.full_attachment_id
+    crop_id = avatar.crop_attachment_id
+    was_primary = (
+        current_user.primary_avatar_attachment_id == full_id
+        or current_user.primary_avatar_thumb_attachment_id == crop_id
+    )
+
+    # Снимаем primary, если этот аватар был primary
+    if was_primary:
+        current_user.primary_avatar_attachment_id = None
+        current_user.primary_avatar_thumb_attachment_id = None
+
+    # Удаляем UserAvatar
+    await session.delete(avatar)
+    await session.flush()
+
+    # Для каждого attachment проверяем: используется ли где-то ещё (в других UserAvatar или в сообщениях)
+    for att_id in (full_id, crop_id):
+        # Другой UserAvatar ссылается?
+        ua_res = await session.execute(
+            select(func.count(UserAvatar.id)).where(
+                (UserAvatar.full_attachment_id == att_id)
+                | (UserAvatar.crop_attachment_id == att_id)
+            )
+        )
+        ua_count = ua_res.scalar() or 0
+        if ua_count > 0:
+            continue
+
+        # Ссылка из сообщения?
+        link_res = await session.execute(
+            select(func.count(MessageAttachmentLink.id)).where(
+                MessageAttachmentLink.attachment_id == att_id
+            )
+        )
+        link_count = link_res.scalar() or 0
+        if link_count > 0:
+            continue
+
+        # Используется как primary у другого пользователя? (на всякий)
+        u_res = await session.execute(
+            select(func.count(User.id)).where(
+                (User.primary_avatar_attachment_id == att_id)
+                | (User.primary_avatar_thumb_attachment_id == att_id)
+            )
+        )
+        u_count = u_res.scalar() or 0
+        if u_count > 0:
+            continue
+
+        # Сирота — soft-delete в S3 и пометить attachment
+        att_obj = await session.get(Attachment, att_id)
+        if att_obj is not None and att_obj.status != "deleted":
+            new_key = await s3_service.move_to_deleted(att_obj.storage_key)
+            if new_key:
+                att_obj.storage_key = new_key
+            if att_obj.thumbnail_key:
+                new_thumb = await s3_service.move_to_deleted(att_obj.thumbnail_key)
+                if new_thumb:
+                    att_obj.thumbnail_key = new_thumb
+            att_obj.status = "deleted"
+
+    # Если удалили primary — назначаем primary последний оставшийся аватар (по дате)
+    if was_primary:
+        last_res = await session.execute(
+            select(UserAvatar)
+            .where(UserAvatar.user_id == current_user.id)
+            .order_by(desc(UserAvatar.created_at))
+            .limit(1)
+        )
+        last_av = last_res.scalar_one_or_none()
+        if last_av is not None:
+            current_user.primary_avatar_attachment_id = last_av.full_attachment_id
+            current_user.primary_avatar_thumb_attachment_id = last_av.crop_attachment_id
+
+    current_user.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+    return OkResponse(detail="Deleted")
+
+
+================================================================================
 FILE: backend/app/api/v1/messages.py
 ================================================================================
 import uuid
@@ -3195,6 +3897,8 @@ from app.services.ws_manager import ws_manager
 from app.utils.idempotency import acquire_message_idempotency
 from fastapi import APIRouter, Depends, Query, Request
 from app.utils.public_url import derive_s3_public_base
+from app.db.models.message_attachment_link import MessageAttachmentLink
+from app.services.attachment_cleanup import cleanup_attachments_for_messages, soft_delete_attachment_if_orphan
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/chats", tags=["messages"])
@@ -3485,8 +4189,14 @@ async def send_message(
         for a in atts:
             if a.uploader_user_id != current_user.id:
                 raise ForbiddenException("Attachment belongs to another user")
-            if a.message_id is not None:
-                raise ConflictException("Attachment already linked to another message")
+            # Проверяем нет ли уже привязки к другому сообщению через links
+            existing_link = await session.execute(
+                select(MessageAttachmentLink).where(
+                    MessageAttachmentLink.attachment_id == a.id
+                ).limit(1)
+            )
+            if existing_link.scalar_one_or_none() is not None:
+                raise ConflictException("Attachment already linked to a message")
             if a.status not in ("uploaded", "ready"):
                 raise ConflictException(f"Attachment {a.id} is not ready")
         validated_attachments = atts
@@ -3510,11 +4220,12 @@ async def send_message(
 
     need_thumb_ids: list[uuid.UUID] = []
     for a in validated_attachments:
-        a.message_id = message.id
+        # Создаём связь через links вместо прямой записи message_id
+        session.add(MessageAttachmentLink(message_id=message.id, attachment_id=a.id))
+        a.message_id = message.id  # primary owner для backward-compat
         a.chat_id = chat_id
         if a.status == "uploaded":
             a.status = "ready"
-        # Если превью ещё не было сгенерировано для image — перегенерим
         if a.file_kind == "image" and a.thumbnail_key is None:
             need_thumb_ids.append(a.id)
 
@@ -3658,7 +4369,10 @@ async def delete_message(
         chat.pinned_by_user_id = None
         chat.pinned_at = None
 
-    # Вручную удаляем зависимости, чтобы SQLAlchemy не пытался их "осиротить"
+    # Cleanup attachments через links + soft-delete осиротевших
+    await cleanup_attachments_for_messages(session, [msg.id])
+
+    # Вручную удаляем зависимости
     await session.execute(delete(MessageRead).where(MessageRead.message_id == msg.id))
     await session.execute(delete(PushLog).where(PushLog.message_id == msg.id))
     await session.flush()
@@ -3736,7 +4450,9 @@ async def bulk_delete_messages(
     if not deleted_ids:
         raise ForbiddenException("Nothing you can delete")
 
-    # Вручную удаляем зависимости перед удалением сообщений
+    # Cleanup attachments через links + soft-delete осиротевших
+    await cleanup_attachments_for_messages(session, deleted_ids)
+
     await session.execute(delete(MessageRead).where(MessageRead.message_id.in_(deleted_ids)))
     await session.execute(delete(PushLog).where(PushLog.message_id.in_(deleted_ids)))
     await session.flush()
@@ -3773,7 +4489,7 @@ async def forward_message(
 
     src_res = await session.execute(
         select(Message)
-        .options(joinedload(Message.sender))
+        .options(joinedload(Message.sender), joinedload(Message.attachments))
         .where(Message.id == body.message_id, Message.chat_id == body.source_chat_id)
     )
     src = src_res.scalars().unique().one_or_none()
@@ -3808,8 +4524,14 @@ async def forward_message(
         forwarded_from_sender_name=src.sender.display_name if src.sender else "Admin",
     )
     session.add(new_msg)
+    await session.flush()
+
+    # Копируем links на те же attachments — без копирования файлов в S3
+    for att in (src.attachments or []):
+        session.add(MessageAttachmentLink(message_id=new_msg.id, attachment_id=att.id))
+
     await session.commit()
-    
+
     await _ensure_personal_chat_visible(session, body.target_chat_id)
 
     full = await _load_message_full(session, new_msg.id)
@@ -4111,7 +4833,7 @@ FILE: backend/app/api/v1/router.py
 ================================================================================
 from fastapi import APIRouter
 
-from app.api.v1 import auth, chats, messages, admin, push, ws, devices, contacts, attachments
+from app.api.v1 import auth, chats, messages, admin, push, ws, devices, contacts, attachments, me, users
 
 api_v1_router = APIRouter()
 
@@ -4124,11 +4846,90 @@ api_v1_router.include_router(devices.router)
 api_v1_router.include_router(ws.router)
 api_v1_router.include_router(contacts.router)
 api_v1_router.include_router(attachments.router)
+api_v1_router.include_router(me.router)
+api_v1_router.include_router(users.router)
 
 
 @api_v1_router.get("/ping")
 async def ping():
     return {"message": "pong"}
+
+
+================================================================================
+FILE: backend/app/api/v1/users.py
+================================================================================
+import uuid
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.session import get_async_session
+from app.db.models.user import User
+from app.db.models.attachment import Attachment
+from app.core.dependencies import get_current_user
+from app.core.exceptions import NotFoundException
+from app.api.schemas.profile import PublicUserOut
+from app.services import s3_service
+from app.utils.public_url import derive_s3_public_base
+
+router = APIRouter(prefix="/users", tags=["users"])
+
+
+@router.get("/{user_id}", response_model=PublicUserOut)
+async def get_public_user(
+    user_id: uuid.UUID,
+    request: Request,
+    _: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_async_session),
+):
+    res = await session.execute(
+        select(User).where(User.id == user_id, User.is_active == True)
+    )
+    user = res.scalar_one_or_none()
+    if user is None:
+        raise NotFoundException("User not found")
+
+    public_base = derive_s3_public_base(request)
+    primary_url = None
+    primary_thumb_url = None
+
+    if user.primary_avatar_attachment_id:
+        att_res = await session.execute(
+            select(Attachment).where(Attachment.id == user.primary_avatar_attachment_id)
+        )
+        att = att_res.scalar_one_or_none()
+        if att and att.status in ("uploaded", "ready"):
+            try:
+                primary_url = await s3_service.generate_presigned_download_url(
+                    att.storage_key, public_base_override=public_base
+                )
+            except Exception:
+                pass
+
+    if user.primary_avatar_thumb_attachment_id:
+        att_res = await session.execute(
+            select(Attachment).where(Attachment.id == user.primary_avatar_thumb_attachment_id)
+        )
+        att = att_res.scalar_one_or_none()
+        if att and att.status in ("uploaded", "ready"):
+            try:
+                primary_thumb_url = await s3_service.generate_presigned_download_url(
+                    att.storage_key, public_base_override=public_base
+                )
+            except Exception:
+                pass
+
+    return PublicUserOut(
+        id=user.id,
+        username=user.username,
+        display_name=user.display_name,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        bio=user.bio,
+        primary_avatar_url=primary_url,
+        primary_avatar_thumb_url=primary_thumb_url,
+        created_at=user.created_at,
+    )
 
 
 ================================================================================
@@ -4479,6 +5280,8 @@ from app.db.models.refresh_token import RefreshToken  # noqa
 from app.db.models.contact import Contact  # noqa
 from app.db.models.user_contact_dismissal import UserContactDismissal  # noqa
 from app.db.models.attachment import Attachment  # noqa
+from app.db.models.message_attachment_link import MessageAttachmentLink  # noqa
+from app.db.models.user_avatar import UserAvatar  # noqa
 
 __all__ = [
     "User",
@@ -4496,6 +5299,8 @@ __all__ = [
     "Contact",
     "UserContactDismissal",
     "Attachment",
+    "MessageAttachmentLink",
+    "UserAvatar",
 ]
 
 
@@ -4567,7 +5372,7 @@ class Attachment(Base):
     message = relationship(
         "Message",
         foreign_keys=[message_id],
-        back_populates="attachments",
+        viewonly=True,
     )
 
 
@@ -4828,11 +5633,12 @@ class Message(Base):
     )
     attachments = relationship(
         "Attachment",
-        back_populates="message",
-        foreign_keys="Attachment.message_id",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )    
+        secondary="message_attachment_links",
+        primaryjoin="Message.id == foreign(MessageAttachmentLink.message_id)",
+        secondaryjoin="foreign(MessageAttachmentLink.attachment_id) == Attachment.id",
+        viewonly=True,
+        lazy="selectin",
+    )
 
 
 class MessageRead(Base):
@@ -4857,6 +5663,43 @@ class MessageRead(Base):
 
     message = relationship("Message", back_populates="reads", foreign_keys=[message_id])
     user = relationship("User")
+
+
+================================================================================
+FILE: backend/app/db/models/message_attachment_link.py
+================================================================================
+import uuid
+from datetime import datetime
+
+from sqlalchemy import DateTime, ForeignKey, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.db.base import Base
+
+
+class MessageAttachmentLink(Base):
+    __tablename__ = "message_attachment_links"
+    __table_args__ = (
+        UniqueConstraint("message_id", "attachment_id", name="uq_message_attachment_link"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("messages.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    attachment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("attachments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 ================================================================================
@@ -5017,9 +5860,9 @@ class RefreshToken(Base):
 FILE: backend/app/db/models/user.py
 ================================================================================
 import uuid
-from datetime import datetime
+from datetime import datetime, date
 
-from sqlalchemy import String, Boolean, DateTime, func
+from sqlalchemy import String, Boolean, DateTime, Date, ForeignKey, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -5034,6 +5877,24 @@ class User(Base):
     )
     phone: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    first_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    bio: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    primary_avatar_attachment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("attachments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    primary_avatar_thumb_attachment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("attachments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -5045,6 +5906,50 @@ class User(Base):
 
     devices: Mapped[list["Device"]] = relationship("Device", back_populates="user")
     chat_memberships: Mapped[list["ChatMember"]] = relationship("ChatMember", back_populates="user")
+
+    primary_avatar = relationship("Attachment", foreign_keys=[primary_avatar_attachment_id])
+    primary_avatar_thumb = relationship("Attachment", foreign_keys=[primary_avatar_thumb_attachment_id])
+
+
+================================================================================
+FILE: backend/app/db/models/user_avatar.py
+================================================================================
+import uuid
+from datetime import datetime
+
+from sqlalchemy import DateTime, ForeignKey, func
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.base import Base
+
+
+class UserAvatar(Base):
+    __tablename__ = "user_avatars"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    full_attachment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("attachments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    crop_attachment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("attachments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    full_attachment = relationship("Attachment", foreign_keys=[full_attachment_id])
+    crop_attachment = relationship("Attachment", foreign_keys=[crop_attachment_id])
 
 
 ================================================================================
@@ -5136,6 +6041,8 @@ logger = structlog.get_logger()
 
 
 async def seed_admin():
+    from app.utils.username import generate_unique_username
+
     async with async_session_factory() as session:
         result = await session.execute(
             select(User).where(User.phone == settings.admin_phone)
@@ -5143,14 +6050,18 @@ async def seed_admin():
         admin = result.scalar_one_or_none()
 
         if admin is None:
+            username = await generate_unique_username(
+                session, settings.admin_display_name, None, fallback_id="admin"
+            )
             admin = User(
                 phone=settings.admin_phone,
                 display_name=settings.admin_display_name,
+                username=username,
                 role="admin",
             )
             session.add(admin)
             await session.commit()
-            logger.info("admin_seeded", phone=settings.admin_phone)
+            logger.info("admin_seeded", phone=settings.admin_phone, username=username)
         else:
             logger.info("admin_already_exists", phone=settings.admin_phone)
 
@@ -5278,6 +6189,237 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
             duration=elapsed,
         )
         return response
+
+
+================================================================================
+FILE: backend/app/services/attachment_cleanup.py
+================================================================================
+import uuid
+import structlog
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models.attachment import Attachment
+from app.db.models.message_attachment_link import MessageAttachmentLink
+from app.services import s3_service
+
+logger = structlog.get_logger()
+
+
+async def soft_delete_attachment_if_orphan(
+    session: AsyncSession,
+    attachment_id: uuid.UUID,
+) -> bool:
+    """
+    Если на attachment больше нет ни одной ссылки в message_attachment_links —
+    переносит файлы в S3 в папку deleted/ и помечает attachment как 'deleted'.
+    Возвращает True, если файл был перемещён.
+    """
+    count_res = await session.execute(
+        select(func.count(MessageAttachmentLink.id)).where(
+            MessageAttachmentLink.attachment_id == attachment_id
+        )
+    )
+    if (count_res.scalar() or 0) > 0:
+        return False
+
+    att_res = await session.execute(
+        select(Attachment).where(Attachment.id == attachment_id)
+    )
+    att = att_res.scalar_one_or_none()
+    if att is None:
+        return False
+    if att.status == "deleted":
+        return False
+
+    new_key = await s3_service.move_to_deleted(att.storage_key)
+    if new_key:
+        att.storage_key = new_key
+    if att.thumbnail_key:
+        new_thumb = await s3_service.move_to_deleted(att.thumbnail_key)
+        if new_thumb:
+            att.thumbnail_key = new_thumb
+
+    att.status = "deleted"
+    att.message_id = None
+    logger.info("attachment_soft_deleted", attachment_id=str(attachment_id))
+    return True
+
+
+async def cleanup_attachments_for_messages(
+    session: AsyncSession,
+    message_ids: list[uuid.UUID],
+) -> None:
+    """
+    Удаляет links для указанных сообщений и soft-delete'ит attachments,
+    которые остались без ссылок.
+    """
+    if not message_ids:
+        return
+
+    affected_res = await session.execute(
+        select(MessageAttachmentLink.attachment_id).where(
+            MessageAttachmentLink.message_id.in_(message_ids)
+        ).distinct()
+    )
+    attachment_ids = [row[0] for row in affected_res.all()]
+
+    # links удалятся каскадом при delete сообщения, но мы делаем явно
+    from sqlalchemy import delete as sa_delete
+    await session.execute(
+        sa_delete(MessageAttachmentLink).where(
+            MessageAttachmentLink.message_id.in_(message_ids)
+        )
+    )
+    await session.flush()
+
+    for aid in attachment_ids:
+        await soft_delete_attachment_if_orphan(session, aid)
+
+
+================================================================================
+FILE: backend/app/services/avatar_service.py
+================================================================================
+import io
+import uuid
+from typing import Tuple
+
+from PIL import Image
+import structlog
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models.attachment import Attachment
+from app.services import s3_service
+from app.config import settings
+
+logger = structlog.get_logger()
+
+CROP_OUTPUT_SIZE = 512  # финальный размер квадратной обрезки
+CROP_QUALITY = 88
+
+
+async def fetch_object_bytes(storage_key: str) -> bytes | None:
+    """Скачивает объект из S3 (через async клиент)."""
+    import aioboto3
+    from botocore.config import Config as BotoConfig
+
+    session = aioboto3.Session(
+        aws_access_key_id=settings.s3_access_key,
+        aws_secret_access_key=settings.s3_secret_key,
+        region_name=settings.s3_region,
+    )
+    try:
+        async with session.client(
+            "s3",
+            endpoint_url=settings.s3_endpoint_url,
+            config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),
+        ) as s3:
+            obj = await s3.get_object(Bucket=settings.s3_bucket, Key=storage_key)
+            body = obj["Body"]
+            data = await body.read()
+            return data
+    except Exception as e:
+        logger.error("avatar_fetch_object_error", key=storage_key, error=str(e))
+        return None
+
+
+async def upload_bytes_to_s3(storage_key: str, data: bytes, content_type: str) -> bool:
+    import aioboto3
+    from botocore.config import Config as BotoConfig
+
+    session = aioboto3.Session(
+        aws_access_key_id=settings.s3_access_key,
+        aws_secret_access_key=settings.s3_secret_key,
+        region_name=settings.s3_region,
+    )
+    try:
+        async with session.client(
+            "s3",
+            endpoint_url=settings.s3_endpoint_url,
+            config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),
+        ) as s3:
+            await s3.put_object(
+                Bucket=settings.s3_bucket,
+                Key=storage_key,
+                Body=data,
+                ContentType=content_type,
+            )
+        return True
+    except Exception as e:
+        logger.error("avatar_upload_error", key=storage_key, error=str(e))
+        return False
+
+
+def crop_image_square(
+    image_bytes: bytes,
+    x: int,
+    y: int,
+    size: int,
+    output_size: int = CROP_OUTPUT_SIZE,
+) -> Tuple[bytes, int, int]:
+    """Берёт квадратную область (x,y,size) из исходного изображения и ресайзит до output_size."""
+    img = Image.open(io.BytesIO(image_bytes))
+    img = img.convert("RGB")
+    w, h = img.size
+
+    # Ограничиваем рамки
+    x = max(0, min(x, w - 1))
+    y = max(0, min(y, h - 1))
+    right = min(x + size, w)
+    bottom = min(y + size, h)
+    actual_size = min(right - x, bottom - y)
+    if actual_size <= 0:
+        raise ValueError("Invalid crop region")
+
+    box = (x, y, x + actual_size, y + actual_size)
+    cropped = img.crop(box)
+    cropped = cropped.resize((output_size, output_size), Image.Resampling.LANCZOS)
+
+    buf = io.BytesIO()
+    cropped.save(buf, format="JPEG", quality=CROP_QUALITY, optimize=True)
+    return buf.getvalue(), output_size, output_size
+
+
+async def create_crop_attachment(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    source_att: Attachment,
+    crop_x: int,
+    crop_y: int,
+    crop_size: int,
+) -> Attachment:
+    """
+    Скачивает source_att, делает квадратный crop, заливает в S3, создаёт новый Attachment.
+    """
+    src_bytes = await fetch_object_bytes(source_att.storage_key)
+    if src_bytes is None:
+        raise ValueError("Cannot read source attachment")
+
+    crop_bytes, w, h = crop_image_square(src_bytes, crop_x, crop_y, crop_size)
+
+    new_att_id = uuid.uuid4()
+    storage_key = f"avatars/{user_id}/{new_att_id}_crop.jpg"
+    ok = await upload_bytes_to_s3(storage_key, crop_bytes, "image/jpeg")
+    if not ok:
+        raise ValueError("Failed to upload crop to S3")
+
+    crop_att = Attachment(
+        id=new_att_id,
+        uploader_user_id=user_id,
+        chat_id=None,
+        message_id=None,
+        storage_key=storage_key,
+        original_filename="avatar_crop.jpg",
+        mime_type="image/jpeg",
+        size_bytes=len(crop_bytes),
+        file_kind="image",
+        width=w,
+        height=h,
+        status="ready",
+    )
+    session.add(crop_att)
+    await session.flush()
+    return crop_att
 
 
 ================================================================================
@@ -5601,6 +6743,25 @@ async def delete_object(storage_key: str) -> None:
     except Exception as e:
         logger.error("s3_delete_object_error", key=storage_key, error=str(e))
         
+        
+async def move_to_deleted(storage_key: str) -> str | None:
+    """Soft-delete: copy object to deleted/<key> then delete original. Returns new key or None."""
+    if storage_key.startswith("deleted/"):
+        return storage_key
+    new_key = f"deleted/{storage_key}"
+    session = _get_session()
+    try:
+        async with session.client(**_client_kwargs(public=False)) as s3:
+            await s3.copy_object(
+                Bucket=settings.s3_bucket,
+                CopySource={"Bucket": settings.s3_bucket, "Key": storage_key},
+                Key=new_key,
+            )
+            await s3.delete_object(Bucket=settings.s3_bucket, Key=storage_key)
+        return new_key
+    except Exception as e:
+        logger.error("s3_move_to_deleted_error", key=storage_key, error=str(e))
+        return None
 
 
 ================================================================================
@@ -5661,6 +6822,24 @@ def head_object(storage_key: str) -> dict | None:
     try:
         return _get_client().head_object(Bucket=settings.s3_bucket, Key=storage_key)
     except Exception:
+        return None
+        
+        
+def move_to_deleted(storage_key: str) -> str | None:
+    if storage_key.startswith("deleted/"):
+        return storage_key
+    new_key = f"deleted/{storage_key}"
+    try:
+        client = _get_client()
+        client.copy_object(
+            Bucket=settings.s3_bucket,
+            CopySource={"Bucket": settings.s3_bucket, "Key": storage_key},
+            Key=new_key,
+        )
+        client.delete_object(Bucket=settings.s3_bucket, Key=storage_key)
+        return new_key
+    except Exception as e:
+        logger.error("s3_sync_move_to_deleted_error", key=storage_key, error=str(e))
         return None
 
 
@@ -5926,6 +7105,74 @@ def derive_s3_public_base(request: Request) -> str:
     if not host:
         return configured or ""
     return f"{scheme}://{host}/s3"
+
+
+================================================================================
+FILE: backend/app/utils/username.py
+================================================================================
+import re
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models.user import User
+
+_RU_TO_EN = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+USERNAME_PATTERN = re.compile(r"^[a-z0-9_\-.#]{1,64}$")
+_ALLOWED_CHARS = re.compile(r"[^a-z0-9_\-.#]+")
+
+
+def transliterate(text: str) -> str:
+    text = (text or "").strip().lower()
+    out = []
+    for ch in text:
+        if ch in _RU_TO_EN:
+            out.append(_RU_TO_EN[ch])
+        elif ch == " ":
+            out.append("_")
+        else:
+            out.append(ch)
+    result = "".join(out)
+    result = _ALLOWED_CHARS.sub("_", result)
+    result = re.sub(r"_+", "_", result).strip("_")
+    return result
+
+
+def is_valid_username(value: str) -> bool:
+    return bool(USERNAME_PATTERN.match(value or ""))
+
+
+async def generate_unique_username(
+    session: AsyncSession,
+    first_name: str | None,
+    last_name: str | None,
+    fallback_id: str = "",
+) -> str:
+    base_parts = [transliterate(first_name or ""), transliterate(last_name or "")]
+    base = "_".join([p for p in base_parts if p])
+    if not base:
+        base = f"user_{fallback_id[:8]}" if fallback_id else "user"
+    base = base[:60]
+
+    candidate = base
+    counter = 0
+    while True:
+        existing = await session.execute(
+            select(User).where(User.username == candidate)
+        )
+        if existing.scalar_one_or_none() is None:
+            return candidate
+        counter += 1
+        candidate = f"{base}#{counter:03d}"
+        if counter > 999:
+            candidate = f"{base}#{fallback_id[:8]}"
+            return candidate
 
 
 ================================================================================
@@ -6450,6 +7697,7 @@ aioboto3==13.2.0
 Pillow==11.0.0
 boto3==1.35.36
 botocore==1.35.36
+email-validator==2.2.0
 
 
 ================================================================================
@@ -7783,7 +9031,7 @@ FILE: mobile-dump.txt
 ================================================================================
 ======================================================================
 MOBILE PROJECT DUMP
-Generated: 2026-04-26 01:22:16
+Generated: 2026-04-27 00:12:28
 Root: D:\messenger_proj\source\mobile
 ======================================================================
 
@@ -7798,6 +9046,8 @@ Root: D:\messenger_proj\source\mobile
                     messenger/
                       app/
                         service/
+                        ui/
+                          common/
                         util/
                 res/
                   drawable/
@@ -7822,8 +9072,10 @@ Root: D:\messenger_proj\source\mobile
                           auth/
                           chat/
                           chatlist/
+                          common/
                           contacts/
                           forward/
+                          profile/
                           settings/
                           theme/
                         util/
@@ -7837,23 +9089,13 @@ Root: D:\messenger_proj\source\mobile
                   org/
                     messenger/
                       app/
-              iosMain/
-                kotlin/
-                  org/
-                    messenger/
-                      app/
-                        util/
               jvmMain/
                 kotlin/
                   org/
                     messenger/
                       app/
-                        util/
-              wasmJsMain/
-                kotlin/
-                  org/
-                    messenger/
-                      app/
+                        ui/
+                          common/
                         util/
           gradle/
             wrapper/
@@ -7897,6 +9139,7 @@ Root: D:\messenger_proj\source\mobile
                             chat/
                             chatlist/
                             contacts/
+                            profile/
                           util/
               commonTest/
                 kotlin/
@@ -8653,6 +9896,22 @@ object PendingTokenStore {
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\ui\common\CachedAsyncImage.android.kt
+SIZE: 0.4 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.common
+
+import android.graphics.BitmapFactory
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+
+actual fun decodeImageBitmap(bytes: ByteArray): ImageBitmap? {
+    return try {
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+    } catch (_: Exception) { null }
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\util\BackHandler.android.kt
 SIZE: 0.3 KB
 ----------------------------------------------------------------------
@@ -9034,7 +10293,7 @@ SIZE: 1.5 KB
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\App.kt
-SIZE: 12.1 KB
+SIZE: 13.7 KB
 ----------------------------------------------------------------------
 package org.messenger.app
 
@@ -9064,6 +10323,9 @@ sealed class Screen {
     data object ChatList : Screen()
     data object Settings : Screen()
     data object Contacts : Screen()
+    data object Profile : Screen()
+    data object Avatars : Screen()
+    data class PeerProfile(val userId: String) : Screen()
     data class Chat(val chatId: String, val chatName: String) : Screen()
     data class ForwardPicker(
         val sourceChatId: String,
@@ -9200,6 +10462,7 @@ fun App(
                         appModule = currentAppModule,
                         onBack = { currentScreen = Screen.ChatList },
                         onOpenContacts = { currentScreen = Screen.Contacts },
+                        onOpenProfile = { currentScreen = Screen.Profile },
                         onLogout = {
                             currentAppModule.tokenStorage.clear()
                             currentAppModule.wsService.disconnect()
@@ -9227,6 +10490,40 @@ fun App(
                                 }
                             }
                         }
+                    )
+                }
+
+                is Screen.Profile -> {
+                    PlatformBackHandler(enabled = true) {
+                        currentScreen = Screen.Settings
+                    }
+                    org.messenger.app.ui.profile.ProfileScreen(
+                        appModule = currentAppModule,
+                        onBack = { currentScreen = Screen.Settings },
+                        onOpenAvatars = { currentScreen = Screen.Avatars },
+                    )
+                }
+
+                is Screen.Avatars -> {
+                    PlatformBackHandler(enabled = true) {
+                        currentScreen = Screen.Profile
+                    }
+                    org.messenger.app.ui.profile.AvatarsScreen(
+                        appModule = currentAppModule,
+                        onBack = { currentScreen = Screen.Profile },
+                    )
+                }
+
+                is Screen.PeerProfile -> {
+                    PlatformBackHandler(enabled = true) {
+                        currentScreen = Screen.ChatList
+                    }
+                    org.messenger.app.ui.profile.PeerProfileScreen(
+                        appModule = currentAppModule,
+                        userId = screen.userId,
+                        onBack = { /* РІРѕР·РІСЂР°С‰Р°РµРјСЃСЏ РєСѓРґР° Р±С‹Р»Рё вЂ” СѓРїСЂРѕС‰С‘РЅРЅРѕ РІ ChatList */
+                            currentScreen = Screen.ChatList
+                        },
                     )
                 }
 
@@ -9695,7 +10992,7 @@ private fun AddContactInlineDialog(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chat\ChatComponents.kt
-SIZE: 35.5 KB
+SIZE: 39 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chat
 
@@ -9719,6 +11016,10 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -9745,6 +11046,7 @@ import androidx.compose.ui.platform.LocalDensity
 import org.messenger.app.shared.data.model.MessageDto
 import org.messenger.app.shared.data.model.PinnedMessageDto
 import org.messenger.app.shared.data.model.ReplyPreviewDto
+import androidx.compose.foundation.layout.aspectRatio
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -10021,23 +11323,58 @@ private fun UploadingAttachmentChip(
     onRemove: () -> Unit,
 ) {
     val kind = detectKindByMime(item.mimeType)
+    val isImage = kind == "image"
+
     Surface(
         shape = MaterialTheme.shapes.small,
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 1.dp,
-        modifier = Modifier.widthIn(min = 140.dp, max = 220.dp),
+        modifier = Modifier.widthIn(min = if (isImage) 80.dp else 140.dp, max = 220.dp),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                imageVector = iconForKind(kind),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(28.dp),
-            )
+            // РРєРѕРЅРєР° РёР»Рё РїСЂРµРІСЊСЋ
+            val preview = item.previewBytes
+            if (isImage && preview != null) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(MaterialTheme.shapes.small),
+                ) {
+                    org.messenger.app.ui.common.LocalBytesImage(
+                        bytes = preview,
+                        cacheKey = item.localId,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    )
+                    if (item.isUploading) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.35f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = Color.White,
+                            )
+                        }
+                    }
+                }
+            } else {
+                Icon(
+                    imageVector = iconForKind(kind),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(28.dp),
+                )
+            }
+
             Spacer(Modifier.width(8.dp))
+
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = item.filename,
@@ -10073,12 +11410,12 @@ private fun UploadingAttachmentChip(
                 }
             }
             Spacer(Modifier.width(4.dp))
-            if (item.isUploading) {
+            if (item.isUploading && !isImage) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(18.dp),
                     strokeWidth = 2.dp,
                 )
-            } else {
+            } else if (!item.isUploading) {
                 IconButton(
                     onClick = onRemove,
                     modifier = Modifier.size(28.dp),
@@ -10097,9 +11434,18 @@ private fun UploadingAttachmentChip(
 @Composable
 fun AttachmentChip(
     attachment: AttachmentDto,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
     onClick: () -> Unit,
 ) {
     val kind = attachment.fileKind.lowercase()
+    if (kind == "image") {
+        ImageAttachmentPreview(
+            attachment = attachment,
+            attachmentsRepository = attachmentsRepository,
+            onClick = onClick,
+        )
+        return
+    }
     Surface(
         shape = MaterialTheme.shapes.small,
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
@@ -10132,6 +11478,49 @@ fun AttachmentChip(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun ImageAttachmentPreview(
+    attachment: AttachmentDto,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
+    onClick: () -> Unit,
+) {
+    val w = attachment.width ?: 1
+    val h = attachment.height ?: 1
+    val aspect = if (w > 0 && h > 0) w.toFloat() / h.toFloat() else 1f
+
+    var showViewer by remember { mutableStateOf(false) }
+
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+        modifier = Modifier
+            .widthIn(min = 180.dp, max = 260.dp)
+            .clickable { showViewer = true },
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(aspect.coerceIn(0.5f, 2.0f)),
+        ) {
+            org.messenger.app.ui.common.CachedAttachmentImage(
+                attachment = attachment,
+                attachmentsRepository = attachmentsRepository,
+                variant = org.messenger.app.ui.common.ImageVariant.THUMB,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+            )
+        }
+    }
+
+    if (showViewer) {
+        org.messenger.app.ui.common.ImageViewerDialog(
+            attachment = attachment,
+            attachmentsRepository = attachmentsRepository,
+            onDismiss = { showViewer = false },
+        )
     }
 }
 
@@ -10211,6 +11600,7 @@ fun MessageBubble(
     isReadByOthers: Boolean,
     isSelected: Boolean,
     selectionMode: Boolean,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
@@ -10345,6 +11735,7 @@ fun MessageBubble(
                         message.attachments.forEach { att ->
                             AttachmentChip(
                                 attachment = att,
+                                attachmentsRepository = attachmentsRepository,
                                 onClick = {
                                     att.downloadUrl?.let { url ->
                                         org.messenger.app.shared.util.openUrl(url)
@@ -10688,7 +12079,7 @@ fun StickyDateHeader(label: String) {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chat\ChatScreen.kt
-SIZE: 19.3 KB
+SIZE: 19.4 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chat
 
@@ -10979,6 +12370,7 @@ fun ChatScreen(
                                             isReadByOthers = isRead,
                                             isSelected = isSelected,
                                             selectionMode = state.selectionMode,
+                                            attachmentsRepository = appModule.attachmentsRepository,
                                             onClick = {
                                                 if (state.selectionMode) {
                                                     viewModel.toggleSelection(message.id)
@@ -11962,6 +13354,267 @@ private fun PickContactRow(
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\common\CachedAsyncImage.kt
+SIZE: 3 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.common
+
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.dp
+import org.messenger.app.shared.data.model.AttachmentDto
+import org.messenger.app.shared.domain.repository.AttachmentsRepository
+import org.messenger.app.shared.util.ImageCache
+
+expect fun decodeImageBitmap(bytes: ByteArray): ImageBitmap?
+
+enum class ImageVariant { THUMB, FULL }
+
+@Composable
+fun CachedAttachmentImage(
+    attachment: AttachmentDto,
+    attachmentsRepository: AttachmentsRepository,
+    variant: ImageVariant = ImageVariant.THUMB,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+    placeholder: @Composable () -> Unit = { DefaultPlaceholder() },
+) {
+    val cacheKey = "${attachment.id}_${variant.name.lowercase()}"
+    var bitmap by remember(cacheKey) { mutableStateOf<ImageBitmap?>(null) }
+    var loading by remember(cacheKey) { mutableStateOf(true) }
+
+    LaunchedEffect(cacheKey) {
+        loading = true
+        try {
+            val cached = ImageCache.get(cacheKey)
+            if (cached != null) {
+                bitmap = decodeImageBitmap(cached)
+                loading = false
+                return@LaunchedEffect
+            }
+
+            val bytes = attachmentsRepository.loadImageBytes(
+                attachmentId = attachment.id,
+                thumbnailUrl = attachment.thumbnailUrl,
+                downloadUrl = attachment.downloadUrl,
+                thumb = (variant == ImageVariant.THUMB),
+            )
+
+            if (bytes != null) {
+                ImageCache.put(cacheKey, bytes)
+                bitmap = decodeImageBitmap(bytes)
+            }
+        } finally {
+            loading = false
+        }
+    }
+
+    Box(modifier) {
+        val bm = bitmap
+        when {
+            bm != null -> Image(
+                painter = BitmapPainter(bm),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = contentScale,
+            )
+            loading -> Box(
+                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant),
+                Alignment.Center,
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            }
+            else -> placeholder()
+        }
+    }
+}
+
+@Composable
+private fun DefaultPlaceholder() {
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant))
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\common\ImageViewerDialog.kt
+SIZE: 4.7 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.common
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import org.messenger.app.shared.data.model.AttachmentDto
+import org.messenger.app.shared.domain.repository.AttachmentsRepository
+import org.messenger.app.shared.util.openUrl
+
+@Composable
+fun ImageViewerDialog(
+    attachment: AttachmentDto,
+    attachmentsRepository: AttachmentsRepository,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false,
+        ),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+        ) {
+            var scale by remember { mutableStateOf(1f) }
+            var offsetX by remember { mutableStateOf(0f) }
+            var offsetY by remember { mutableStateOf(0f) }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            scale = (scale * zoom).coerceIn(1f, 5f)
+                            if (scale > 1f) {
+                                offsetX += pan.x
+                                offsetY += pan.y
+                            } else {
+                                offsetX = 0f
+                                offsetY = 0f
+                            }
+                        }
+                    }
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onDoubleTap = {
+                                if (scale > 1f) {
+                                    scale = 1f; offsetX = 0f; offsetY = 0f
+                                } else {
+                                    scale = 2.5f
+                                }
+                            },
+                            onTap = { onDismiss() },
+                        )
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                CachedAttachmentImage(
+                    attachment = attachment,
+                    attachmentsRepository = attachmentsRepository,
+                    variant = ImageVariant.FULL,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer(
+                            scaleX = scale,
+                            scaleY = scale,
+                            translationX = offsetX,
+                            translationY = offsetY,
+                        ),
+                    contentScale = ContentScale.Fit,
+                )
+            }
+
+            // Top bar
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(
+                    onClick = onDismiss,
+                    colors = IconButtonDefaults.iconButtonColors(contentColor = Color.White),
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = "Close")
+                }
+                IconButton(
+                    onClick = {
+                        attachment.downloadUrl?.let { openUrl(it) }
+                    },
+                    colors = IconButtonDefaults.iconButtonColors(contentColor = Color.White),
+                ) {
+                    Icon(Icons.Default.Download, contentDescription = "Open")
+                }
+            }
+        }
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\common\LocalImagePreview.kt
+SIZE: 1.2 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.common
+
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.layout.ContentScale
+
+@Composable
+fun LocalBytesImage(
+    bytes: ByteArray,
+    cacheKey: String,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+) {
+    var bitmap by remember(cacheKey) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(cacheKey) {
+        bitmap = decodeImageBitmap(bytes)
+    }
+    Box(modifier) {
+        val bm = bitmap
+        if (bm != null) {
+            Image(
+                painter = BitmapPainter(bm),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = contentScale,
+            )
+        } else {
+            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant))
+        }
+    }
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\contacts\ContactsScreen.kt
 SIZE: 10.4 KB
 ----------------------------------------------------------------------
@@ -12389,8 +14042,1243 @@ private fun ForwardTargetRow(chat: ChatDto, onClick: () -> Unit) {
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\profile\AvatarsScreen.kt
+SIZE: 12.1 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.profile
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.dp
+import org.messenger.app.shared.data.model.AvatarDto
+import org.messenger.app.shared.di.AppModule
+import org.messenger.app.shared.ui.profile.AvatarsViewModel
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AvatarsScreen(
+    appModule: AppModule,
+    onBack: () -> Unit,
+) {
+    val viewModel = remember {
+        AvatarsViewModel(
+            profileRepository = appModule.profileRepository,
+            attachmentsRepository = appModule.attachmentsRepository,
+        )
+    }
+    val state by viewModel.state.collectAsState()
+
+    val filePicker = org.messenger.app.util.rememberFilePicker { picked ->
+        if (picked.mimeType.startsWith("image/", ignoreCase = true)) {
+            viewModel.pickSourceImage(picked.name, picked.mimeType, picked.bytes)
+        }
+    }
+
+    var deletingAvatar by remember { mutableStateOf<AvatarDto?>(null) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("РђРІР°С‚Р°СЂС‹") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "РќР°Р·Р°Рґ")
+                    }
+                }
+            )
+        },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = { filePicker.launch("image/*") },
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Р—Р°РіСЂСѓР·РёС‚СЊ РЅРѕРІС‹Р№")
+            }
+        }
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            when {
+                state.isLoading && state.avatars.isEmpty() -> {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                }
+                state.avatars.isEmpty() -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Icon(
+                            Icons.Default.Person,
+                            contentDescription = null,
+                            modifier = Modifier.size(64.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text("РќРµС‚ Р°РІР°С‚Р°СЂРѕРІ", style = MaterialTheme.typography.bodyLarge)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "РќР°Р¶РјРёС‚Рµ + С‡С‚РѕР±С‹ Р·Р°РіСЂСѓР·РёС‚СЊ",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                else -> {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        contentPadding = PaddingValues(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        items(state.avatars, key = { it.id }) { avatar ->
+                            AvatarTile(
+                                avatar = avatar,
+                                isPrimary = avatar.id == state.primaryAvatarId,
+                                attachmentsRepository = appModule.attachmentsRepository,
+                                onClick = { viewModel.setPrimary(avatar.id) },
+                                onDelete = { deletingAvatar = avatar },
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (state.isUploading) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(enabled = false) {},
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+                        tonalElevation = 4.dp,
+                        shape = MaterialTheme.shapes.medium,
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(12.dp))
+                            Text("Р—Р°РіСЂСѓР·РєР°...")
+                        }
+                    }
+                }
+            }
+
+            state.error?.let { err ->
+                Snackbar(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(16.dp),
+                    action = {
+                        TextButton(onClick = { viewModel.clearError() }) { Text("OK") }
+                    }
+                ) { Text(err) }
+            }
+        }
+
+        // Crop-РґРёР°Р»РѕРі
+        val pendingSource = state.pendingSource
+        val pendingBytes = state.pendingSourceBytes
+        if (pendingSource != null && pendingBytes != null) {
+            CropAvatarDialog(
+                imageBytes = pendingBytes,
+                originalWidth = pendingSource.width ?: 0,
+                originalHeight = pendingSource.height ?: 0,
+                onCancel = { viewModel.cancelPendingSource() },
+                onConfirm = { x, y, size ->
+                    viewModel.confirmCrop(x, y, size)
+                },
+            )
+        }
+
+        deletingAvatar?.let { avatar ->
+            AlertDialog(
+                onDismissRequest = { deletingAvatar = null },
+                title = { Text("РЈРґР°Р»РёС‚СЊ Р°РІР°С‚Р°СЂ?") },
+                text = { Text("РђРІР°С‚Р°СЂ Р±СѓРґРµС‚ СѓРґР°Р»С‘РЅ Р±РµР· РІРѕР·РјРѕР¶РЅРѕСЃС‚Рё РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёСЏ.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        viewModel.deleteAvatar(avatar.id)
+                        deletingAvatar = null
+                    }) { Text("РЈРґР°Р»РёС‚СЊ") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { deletingAvatar = null }) { Text("РћС‚РјРµРЅР°") }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun AvatarTile(
+    avatar: AvatarDto,
+    isPrimary: Boolean,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f),
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(MaterialTheme.shapes.medium)
+                .clickable(onClick = onClick),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = MaterialTheme.shapes.medium,
+        ) {
+            val cropUrl = avatar.cropUrl
+            if (cropUrl != null) {
+                AvatarCropImage(
+                    avatarId = avatar.crop_attachment_id_safe(),
+                    cropUrl = cropUrl,
+                    attachmentsRepository = attachmentsRepository,
+                )
+            } else {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Default.Person,
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        if (isPrimary) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(4.dp)
+                    .size(24.dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primary,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = "РћСЃРЅРѕРІРЅРѕР№",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+        }
+
+        IconButton(
+            onClick = onDelete,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .size(32.dp),
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = Color.Black.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "РЈРґР°Р»РёС‚СЊ",
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AvatarCropImage(
+    avatarId: String,
+    cropUrl: String,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
+) {
+    var bitmap by remember(avatarId) {
+        mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null)
+    }
+    LaunchedEffect(avatarId) {
+        val cacheKey = "avatar_${avatarId}_crop"
+        val cached = org.messenger.app.shared.util.ImageCache.get(cacheKey)
+        if (cached != null) {
+            bitmap = org.messenger.app.ui.common.decodeImageBitmap(cached)
+            return@LaunchedEffect
+        }
+        val bytes = attachmentsRepository.loadImageBytes(
+            attachmentId = avatarId,
+            thumbnailUrl = cropUrl,
+            downloadUrl = cropUrl,
+            thumb = true,
+        )
+        if (bytes != null) {
+            org.messenger.app.shared.util.ImageCache.put(cacheKey, bytes)
+            bitmap = org.messenger.app.ui.common.decodeImageBitmap(bytes)
+        }
+    }
+    val bm = bitmap
+    if (bm != null) {
+        androidx.compose.foundation.Image(
+            painter = androidx.compose.ui.graphics.painter.BitmapPainter(bm),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop,
+        )
+    } else {
+        Box(
+            Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center,
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+        }
+    }
+}
+
+private fun AvatarDto.crop_attachment_id_safe(): String = this.cropAttachmentId
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\profile\CropAvatarDialog.kt
+SIZE: 8.9 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.profile
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import org.messenger.app.ui.common.decodeImageBitmap
+import kotlin.math.min
+
+/**
+ * Р”РёР°Р»РѕРі РѕР±СЂРµР·РєРё Р°РІР°С‚Р°СЂР°. Р’ С†РµРЅС‚СЂРµ СЌРєСЂР°РЅР° вЂ” С„РёРєСЃРёСЂРѕРІР°РЅРЅС‹Р№ РєСЂСѓРіР»С‹Р№ "РІСЊСЋРїРѕСЂС‚".
+ * РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РґРІРёРіР°РµС‚/РјР°СЃС€С‚Р°Р±РёСЂСѓРµС‚ РёР·РѕР±СЂР°Р¶РµРЅРёРµ РїРѕРґ РєСЂСѓРіРѕРј.
+ * РџСЂРё РїРѕРґС‚РІРµСЂР¶РґРµРЅРёРё РІС‹С‡РёСЃР»СЏСЋС‚СЃСЏ РєРѕРѕСЂРґРёРЅР°С‚С‹ (x, y, size) РІ РїРёРєСЃРµР»СЏС… РѕСЂРёРіРёРЅР°Р»Р°.
+ */
+@Composable
+fun CropAvatarDialog(
+    imageBytes: ByteArray,
+    originalWidth: Int,
+    originalHeight: Int,
+    onCancel: () -> Unit,
+    onConfirm: (cropX: Int, cropY: Int, cropSize: Int) -> Unit,
+) {
+    val bitmap: ImageBitmap? = remember(imageBytes) { decodeImageBitmap(imageBytes) }
+
+    Dialog(
+        onDismissRequest = onCancel,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false,
+        ),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+        ) {
+            if (bitmap == null) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(color = Color.White)
+                }
+            } else {
+                CropEditor(
+                    bitmap = bitmap,
+                    onCancel = onCancel,
+                    onConfirm = onConfirm,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CropEditor(
+    bitmap: ImageBitmap,
+    onCancel: () -> Unit,
+    onConfirm: (cropX: Int, cropY: Int, cropSize: Int) -> Unit,
+) {
+    val imgW = bitmap.width.toFloat()
+    val imgH = bitmap.height.toFloat()
+
+    var containerSize by remember { mutableStateOf(IntSize.Zero) }
+
+    var scale by remember { mutableStateOf(1f) }
+    var offsetX by remember { mutableStateOf(0f) }
+    var offsetY by remember { mutableStateOf(0f) }
+    var initialized by remember { mutableStateOf(false) }
+
+    val viewportSize: Float = if (containerSize.width > 0 && containerSize.height > 0) {
+        min(containerSize.width, containerSize.height) * 0.8f
+    } else 0f
+
+    // baseScale: РјРµРЅСЊС€Р°СЏ СЃС‚РѕСЂРѕРЅР° РёР·РѕР±СЂР°Р¶РµРЅРёСЏ РїРѕРјРµС‰Р°РµС‚СЃСЏ РІ РІСЊСЋРїРѕСЂС‚.
+    val baseScale: Float = if (imgW > 0 && imgH > 0 && viewportSize > 0) {
+        viewportSize / min(imgW, imgH)
+    } else 1f
+
+    val minScale = 1f
+    val maxScale = 5f
+
+    LaunchedEffect(containerSize, imgW, imgH, viewportSize) {
+        if (!initialized && containerSize.width > 0 && containerSize.height > 0
+            && imgW > 0 && imgH > 0 && viewportSize > 0
+        ) {
+            scale = 1f
+            val drawW = imgW * baseScale * scale
+            val drawH = imgH * baseScale * scale
+            offsetX = (containerSize.width - drawW) / 2f
+            offsetY = (containerSize.height - drawH) / 2f
+            initialized = true
+        }
+    }
+
+    fun clampOffsets() {
+        if (viewportSize <= 0f || containerSize.width == 0) return
+        val drawW = imgW * baseScale * scale
+        val drawH = imgH * baseScale * scale
+        val viewportLeft = (containerSize.width - viewportSize) / 2f
+        val viewportTop = (containerSize.height - viewportSize) / 2f
+        val viewportRight = viewportLeft + viewportSize
+        val viewportBottom = viewportTop + viewportSize
+
+        val maxOffX = viewportLeft
+        val minOffX = viewportRight - drawW
+        val maxOffY = viewportTop
+        val minOffY = viewportBottom - drawH
+
+        offsetX = if (minOffX > maxOffX) (maxOffX + minOffX) / 2f
+        else offsetX.coerceIn(minOffX, maxOffX)
+        offsetY = if (minOffY > maxOffY) (maxOffY + minOffY) / 2f
+        else offsetY.coerceIn(minOffY, maxOffY)
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onSizeChanged { containerSize = it },
+    ) {
+        // РР·РѕР±СЂР°Р¶РµРЅРёРµ СЃ Р¶РµСЃС‚Р°РјРё
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clipToBounds()
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        val newScale = (scale * zoom).coerceIn(minScale, maxScale)
+                        scale = newScale
+                        offsetX += pan.x
+                        offsetY += pan.y
+                        clampOffsets()
+                    }
+                },
+        ) {
+            if (containerSize.width > 0 && initialized) {
+                val drawW = imgW * baseScale * scale
+                val drawH = imgH * baseScale * scale
+                val density = LocalDensity.current
+
+                androidx.compose.foundation.Image(
+                    painter = BitmapPainter(bitmap),
+                    contentDescription = null,
+                    contentScale = ContentScale.FillBounds,
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(offsetX.toInt(), offsetY.toInt())
+                        }
+                        .size(
+                            width = with(density) { drawW.toDp() },
+                            height = with(density) { drawH.toDp() },
+                        ),
+                )
+            }
+        }
+
+        // Р—Р°С‚РµРјРЅРµРЅРёРµ + РєСЂСѓРіР»С‹Р№ РІС‹СЂРµР·
+        if (viewportSize > 0) {
+            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                drawRect(color = Color.Black.copy(alpha = 0.55f))
+                drawCircle(
+                    color = Color.Transparent,
+                    radius = viewportSize / 2f,
+                    center = Offset(size.width / 2f, size.height / 2f),
+                    blendMode = BlendMode.Clear,
+                )
+                drawCircle(
+                    color = Color.White,
+                    radius = viewportSize / 2f,
+                    center = Offset(size.width / 2f, size.height / 2f),
+                    style = Stroke(width = 2f),
+                )
+            }
+        }
+
+        // РљРЅРѕРїРєРё
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            OutlinedButton(
+                onClick = onCancel,
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+            ) { Text("РћС‚РјРµРЅР°") }
+
+            Button(
+                onClick = {
+                    if (containerSize.width == 0 || viewportSize <= 0f) return@Button
+                    val viewportLeft = (containerSize.width - viewportSize) / 2f
+                    val viewportTop = (containerSize.height - viewportSize) / 2f
+
+                    val totalScale = baseScale * scale
+                    val cropXf = (viewportLeft - offsetX) / totalScale
+                    val cropYf = (viewportTop - offsetY) / totalScale
+                    val cropSizef = viewportSize / totalScale
+
+                    val cx = cropXf.coerceIn(0f, (imgW - 1).coerceAtLeast(0f)).toInt()
+                    val cy = cropYf.coerceIn(0f, (imgH - 1).coerceAtLeast(0f)).toInt()
+                    val maxSide = min(imgW - cx, imgH - cy).coerceAtLeast(1f)
+                    val cs = cropSizef.coerceIn(1f, maxSide).toInt().coerceAtLeast(1)
+
+                    onConfirm(cx, cy, cs)
+                },
+                modifier = Modifier.weight(1f),
+            ) { Text("Р“РѕС‚РѕРІРѕ") }
+        }
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\profile\PeerProfileScreen.kt
+SIZE: 7.3 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.profile
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import org.messenger.app.shared.data.model.PublicUserDto
+import org.messenger.app.shared.di.AppModule
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PeerProfileScreen(
+    appModule: AppModule,
+    userId: String,
+    onBack: () -> Unit,
+) {
+    var user by remember { mutableStateOf<PublicUserDto?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = remember { CoroutineScope(SupervisorJob() + Dispatchers.Main) }
+
+    LaunchedEffect(userId) {
+        scope.launch {
+            try {
+                user = appModule.profileRepository.getPublicUser(userId)
+            } catch (e: Exception) {
+                error = e.message ?: "РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё"
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("РџСЂРѕС„РёР»СЊ") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "РќР°Р·Р°Рґ")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            when {
+                isLoading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                user != null -> PeerContent(
+                    user = user!!,
+                    attachmentsRepository = appModule.attachmentsRepository,
+                )
+                error != null -> Text(
+                    error ?: "",
+                    modifier = Modifier.align(Alignment.Center),
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PeerContent(
+    user: PublicUserDto,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(120.dp)
+                .clip(CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            val thumbUrl = user.primaryAvatarThumbUrl
+            if (thumbUrl != null) {
+                PeerAvatarImage(
+                    userId = user.id,
+                    thumbnailUrl = thumbUrl,
+                    downloadUrl = user.primaryAvatarUrl,
+                    attachmentsRepository = attachmentsRepository,
+                )
+            } else {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = CircleShape,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.Person,
+                            contentDescription = null,
+                            modifier = Modifier.size(64.dp),
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        Text(user.displayName, style = MaterialTheme.typography.headlineSmall)
+        Text(
+            "@${user.username}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Spacer(Modifier.height(24.dp))
+
+        val firstName = user.firstName
+        val lastName = user.lastName
+        if (!firstName.isNullOrBlank() || !lastName.isNullOrBlank()) {
+            InfoRow(
+                label = "РРјСЏ",
+                value = listOfNotNull(firstName, lastName).joinToString(" "),
+            )
+        }
+
+        val bio = user.bio
+        if (!bio.isNullOrBlank()) {
+            InfoRow(label = "Рћ СЃРµР±Рµ", value = bio)
+        }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(value, style = MaterialTheme.typography.bodyLarge)
+    }
+    HorizontalDivider()
+}
+
+@Composable
+private fun PeerAvatarImage(
+    userId: String,
+    thumbnailUrl: String,
+    downloadUrl: String?,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
+) {
+    var bitmap by remember(userId) {
+        mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null)
+    }
+    LaunchedEffect(userId) {
+        val cacheKey = "peer_${userId}_thumb"
+        val cached = org.messenger.app.shared.util.ImageCache.get(cacheKey)
+        if (cached != null) {
+            bitmap = org.messenger.app.ui.common.decodeImageBitmap(cached)
+            return@LaunchedEffect
+        }
+        val bytes = attachmentsRepository.loadImageBytes(
+            attachmentId = userId,
+            thumbnailUrl = thumbnailUrl,
+            downloadUrl = downloadUrl,
+            thumb = true,
+        )
+        if (bytes != null) {
+            org.messenger.app.shared.util.ImageCache.put(cacheKey, bytes)
+            bitmap = org.messenger.app.ui.common.decodeImageBitmap(bytes)
+        }
+    }
+    val bm = bitmap
+    if (bm != null) {
+        androidx.compose.foundation.Image(
+            painter = androidx.compose.ui.graphics.painter.BitmapPainter(bm),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize().clip(CircleShape),
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+        )
+    } else {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shape = CircleShape,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+            }
+        }
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\profile\ProfileScreen.kt
+SIZE: 15.9 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.profile
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import org.messenger.app.shared.data.model.MeDto
+import org.messenger.app.shared.di.AppModule
+import org.messenger.app.shared.ui.profile.ProfileViewModel
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ProfileScreen(
+    appModule: AppModule,
+    onBack: () -> Unit,
+    onOpenAvatars: () -> Unit,
+) {
+    val viewModel = remember {
+        ProfileViewModel(
+            repository = appModule.profileRepository,
+            tokenStorage = appModule.tokenStorage,
+        )
+    }
+    val state by viewModel.state.collectAsState()
+
+    var editing by remember { mutableStateOf(false) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("РџСЂРѕС„РёР»СЊ") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "РќР°Р·Р°Рґ")
+                    }
+                },
+                actions = {
+                    if (state.me != null && !editing) {
+                        IconButton(onClick = { editing = true }) {
+                            Icon(Icons.Default.Edit, contentDescription = "Р РµРґР°РєС‚РёСЂРѕРІР°С‚СЊ")
+                        }
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            when {
+                state.isLoading && state.me == null -> {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                }
+                state.me != null -> {
+                    val me = state.me!!
+                    if (editing) {
+                        ProfileEditContent(
+                            me = me,
+                            isSaving = state.isSaving,
+                            error = state.error,
+                            onSave = { username, displayName, firstName, lastName, birthDate, bio, email ->
+                                viewModel.updateProfile(
+                                    username = username.takeIf { it != me.username },
+                                    displayName = displayName.takeIf { it != me.displayName },
+                                    firstName = firstName.takeIf { it != (me.firstName ?: "") },
+                                    lastName = lastName.takeIf { it != (me.lastName ?: "") },
+                                    birthDate = birthDate.takeIf { it != (me.birthDate ?: "") },
+                                    bio = bio.takeIf { it != (me.bio ?: "") },
+                                    email = email.takeIf { it != (me.email ?: "") },
+                                    onSuccess = { editing = false },
+                                )
+                            },
+                            onCancel = {
+                                editing = false
+                                viewModel.clearError()
+                            },
+                            onClearError = viewModel::clearError,
+                        )
+                    } else {
+                        ProfileViewContent(
+                            me = me,
+                            attachmentsRepository = appModule.attachmentsRepository,
+                            onOpenAvatars = onOpenAvatars,
+                        )
+                    }
+                }
+                state.error != null -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(state.error ?: "РћС€РёР±РєР°")
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { viewModel.loadProfile() }) { Text("РџРѕРІС‚РѕСЂРёС‚СЊ") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileViewContent(
+    me: MeDto,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
+    onOpenAvatars: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        // РђРІР°С‚Р°СЂ
+        Box(
+            modifier = Modifier
+                .size(120.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onOpenAvatars),
+            contentAlignment = Alignment.Center,
+        ) {
+            val thumbUrl = me.primaryAvatarThumbUrl
+            val thumbId = me.primaryAvatarThumbAttachmentId
+            if (thumbUrl != null && thumbId != null) {
+                ProfileAvatarImage(
+                    attachmentId = thumbId,
+                    thumbnailUrl = thumbUrl,
+                    downloadUrl = me.primaryAvatarUrl,
+                    attachmentsRepository = attachmentsRepository,
+                )
+            } else {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = CircleShape,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.Person,
+                            contentDescription = null,
+                            modifier = Modifier.size(64.dp),
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+                }
+            }
+            // РРєРѕРЅРєР° РєР°РјРµСЂС‹ РІ СѓРіР»Сѓ
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .size(36.dp)
+                    .clip(CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = CircleShape,
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.PhotoCamera,
+                            contentDescription = "РР·РјРµРЅРёС‚СЊ",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        Text(me.displayName, style = MaterialTheme.typography.headlineSmall)
+        Text(
+            "@${me.username}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Spacer(Modifier.height(24.dp))
+
+        ProfileInfoRow(label = "РўРµР»РµС„РѕРЅ", value = me.phone)
+
+        val firstName = me.firstName
+        val lastName = me.lastName
+        if (!firstName.isNullOrBlank() || !lastName.isNullOrBlank()) {
+            ProfileInfoRow(
+                label = "РРјСЏ",
+                value = listOfNotNull(firstName, lastName).joinToString(" "),
+            )
+        }
+
+        val birthDate = me.birthDate
+        if (!birthDate.isNullOrBlank()) {
+            ProfileInfoRow(label = "Р”Р°С‚Р° СЂРѕР¶РґРµРЅРёСЏ", value = birthDate)
+        }
+
+        val email = me.email
+        if (!email.isNullOrBlank()) {
+            ProfileInfoRow(label = "Email", value = email)
+        }
+
+        val bio = me.bio
+        if (!bio.isNullOrBlank()) {
+            ProfileInfoRow(label = "Рћ СЃРµР±Рµ", value = bio)
+        }
+    }
+}
+
+@Composable
+private fun ProfileInfoRow(label: String, value: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(value, style = MaterialTheme.typography.bodyLarge)
+    }
+    HorizontalDivider()
+}
+
+@Composable
+private fun ProfileEditContent(
+    me: MeDto,
+    isSaving: Boolean,
+    error: String?,
+    onSave: (
+        username: String,
+        displayName: String,
+        firstName: String,
+        lastName: String,
+        birthDate: String,
+        bio: String,
+        email: String,
+    ) -> Unit,
+    onCancel: () -> Unit,
+    onClearError: () -> Unit,
+) {
+    var username by remember { mutableStateOf(me.username) }
+    var displayName by remember { mutableStateOf(me.displayName) }
+    var firstName by remember { mutableStateOf(me.firstName ?: "") }
+    var lastName by remember { mutableStateOf(me.lastName ?: "") }
+    var birthDate by remember { mutableStateOf(me.birthDate ?: "") }
+    var bio by remember { mutableStateOf(me.bio ?: "") }
+    var email by remember { mutableStateOf(me.email ?: "") }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+    ) {
+        OutlinedTextField(
+            value = username,
+            onValueChange = { username = it.lowercase() },
+            label = { Text("Username") },
+            supportingText = { Text("a-z, 0-9, _, -, ., #") },
+            singleLine = true,
+            enabled = !isSaving,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = displayName,
+            onValueChange = { displayName = it },
+            label = { Text("РћС‚РѕР±СЂР°Р¶Р°РµРјРѕРµ РёРјСЏ") },
+            singleLine = true,
+            enabled = !isSaving,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = firstName,
+            onValueChange = { firstName = it },
+            label = { Text("РРјСЏ") },
+            singleLine = true,
+            enabled = !isSaving,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = lastName,
+            onValueChange = { lastName = it },
+            label = { Text("Р¤Р°РјРёР»РёСЏ") },
+            singleLine = true,
+            enabled = !isSaving,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = birthDate,
+            onValueChange = { birthDate = it },
+            label = { Text("Р”Р°С‚Р° СЂРѕР¶РґРµРЅРёСЏ") },
+            placeholder = { Text("YYYY-MM-DD") },
+            singleLine = true,
+            enabled = !isSaving,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = email,
+            onValueChange = { email = it },
+            label = { Text("Email") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            singleLine = true,
+            enabled = !isSaving,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = bio,
+            onValueChange = { bio = it },
+            label = { Text("Рћ СЃРµР±Рµ") },
+            minLines = 3,
+            maxLines = 6,
+            enabled = !isSaving,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        if (error != null) {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                error,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
+        Spacer(Modifier.height(20.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            OutlinedButton(
+                onClick = onCancel,
+                enabled = !isSaving,
+                modifier = Modifier.weight(1f),
+            ) { Text("РћС‚РјРµРЅР°") }
+
+            Button(
+                onClick = {
+                    onClearError()
+                    onSave(
+                        username.trim(),
+                        displayName.trim(),
+                        firstName.trim(),
+                        lastName.trim(),
+                        birthDate.trim(),
+                        bio.trim(),
+                        email.trim(),
+                    )
+                },
+                enabled = !isSaving && username.isNotBlank() && displayName.isNotBlank(),
+                modifier = Modifier.weight(1f),
+            ) {
+                if (isSaving) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Text("РЎРѕС…СЂР°РЅРёС‚СЊ")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProfileAvatarImage(
+    attachmentId: String,
+    thumbnailUrl: String,
+    downloadUrl: String?,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
+) {
+    var bitmap by remember(attachmentId) {
+        mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null)
+    }
+    LaunchedEffect(attachmentId) {
+        val cacheKey = "avatar_${attachmentId}_thumb"
+        val cached = org.messenger.app.shared.util.ImageCache.get(cacheKey)
+        if (cached != null) {
+            bitmap = org.messenger.app.ui.common.decodeImageBitmap(cached)
+            return@LaunchedEffect
+        }
+        val bytes = attachmentsRepository.loadImageBytes(
+            attachmentId = attachmentId,
+            thumbnailUrl = thumbnailUrl,
+            downloadUrl = downloadUrl,
+            thumb = true,
+        )
+        if (bytes != null) {
+            org.messenger.app.shared.util.ImageCache.put(cacheKey, bytes)
+            bitmap = org.messenger.app.ui.common.decodeImageBitmap(bytes)
+        }
+    }
+    val bm = bitmap
+    if (bm != null) {
+        androidx.compose.foundation.Image(
+            painter = androidx.compose.ui.graphics.painter.BitmapPainter(bm),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize().clip(CircleShape),
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+        )
+    } else {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shape = CircleShape,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+            }
+        }
+    }
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\settings\SettingsScreen.kt
-SIZE: 3.9 KB
+SIZE: 4.5 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.settings
 
@@ -12405,6 +15293,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.filled.Person
 import org.messenger.app.shared.di.AppModule
 
 const val APP_NAME = "Messenger Oreshnik"
@@ -12416,6 +15305,7 @@ fun SettingsScreen(
     appModule: AppModule,
     onBack: () -> Unit,
     onOpenContacts: () -> Unit,
+    onOpenProfile: () -> Unit,
     onLogout: () -> Unit
 ) {
     val phone = appModule.tokenStorage.getUserPhone()
@@ -12456,6 +15346,18 @@ fun SettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
+
+                ListItem(
+                    modifier = Modifier.clickable(onClick = onOpenProfile),
+                    headlineContent = { Text("РџСЂРѕС„РёР»СЊ") },
+                    leadingContent = {
+                        Icon(
+                            androidx.compose.material.icons.Icons.Default.Person,
+                            contentDescription = null,
+                        )
+                    }
+                )
+                HorizontalDivider()
 
                 ListItem(
                     modifier = Modifier.clickable(onClick = onOpenContacts),
@@ -12587,59 +15489,6 @@ package org.messenger.app
 actual fun getPlatformName(): String = "desktop"
 
 ----------------------------------------------------------------------
-FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\AppPlatform.ios.kt
-SIZE: 0.3 KB
-----------------------------------------------------------------------
-package org.messenger.app
-
-import org.messenger.app.shared.di.AppModule
-
-actual fun updateCurrentChatId(chatId: String?) {}
-actual fun onLoginSuccessCallback(appModule: AppModule) {}
-actual fun syncAppModule(appModule: AppModule) {}
-
-actual fun observeDeepLinks(): kotlinx.coroutines.flow.Flow<Pair<String, String>>? = null
-
-----------------------------------------------------------------------
-FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\PlatformName.ios.kt
-SIZE: 0.1 KB
-----------------------------------------------------------------------
-package org.messenger.app
-
-actual fun getPlatformName(): String = "ios"
-
-----------------------------------------------------------------------
-FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\util\BackHandler.ios.kt
-SIZE: 0.2 KB
-----------------------------------------------------------------------
-package org.messenger.app.util
-
-import androidx.compose.runtime.Composable
-
-@Composable
-actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {}
-
-
-
-----------------------------------------------------------------------
-FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\util\FilePicker.ios.kt
-SIZE: 0.3 KB
-----------------------------------------------------------------------
-package org.messenger.app.util
-
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
-
-@Composable
-actual fun rememberFilePicker(
-    onPicked: (PickedFile) -> Unit,
-): FilePickerLauncher = remember {
-    object : FilePickerLauncher {
-        override fun launch(mimeFilter: String) {}
-    }
-}
-
-----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\AppPlatform.jvm.kt
 SIZE: 0.3 KB
 ----------------------------------------------------------------------
@@ -12674,6 +15523,22 @@ fun main() = application {
     ) {
         App(appModule = appModule)
     }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\ui\common\CachedAsyncImage.jvm.kt
+SIZE: 0.4 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.common
+
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
+import org.jetbrains.skia.Image
+
+actual fun decodeImageBitmap(bytes: ByteArray): ImageBitmap? {
+    return try {
+        Image.makeFromEncoded(bytes).toComposeImageBitmap()
+    } catch (_: Exception) { null }
 }
 
 ----------------------------------------------------------------------
@@ -12723,59 +15588,6 @@ actual fun rememberFilePicker(
                 }
             } catch (_: Exception) {}
         }
-    }
-}
-
-----------------------------------------------------------------------
-FILE: D:\messenger_proj\source\mobile\composeApp\src\wasmJsMain\kotlin\org\messenger\app\AppPlatform.wasmJs.kt
-SIZE: 0.3 KB
-----------------------------------------------------------------------
-package org.messenger.app
-
-import org.messenger.app.shared.di.AppModule
-
-actual fun updateCurrentChatId(chatId: String?) {}
-actual fun onLoginSuccessCallback(appModule: AppModule) {}
-actual fun syncAppModule(appModule: AppModule) {}
-
-actual fun observeDeepLinks(): kotlinx.coroutines.flow.Flow<Pair<String, String>>? = null
-
-----------------------------------------------------------------------
-FILE: D:\messenger_proj\source\mobile\composeApp\src\wasmJsMain\kotlin\org\messenger\app\PlatformName.wasmJs.kt
-SIZE: 0.1 KB
-----------------------------------------------------------------------
-package org.messenger.app
-
-actual fun getPlatformName(): String = "web"
-
-----------------------------------------------------------------------
-FILE: D:\messenger_proj\source\mobile\composeApp\src\wasmJsMain\kotlin\org\messenger\app\util\BackHandler.wasmJs.kt
-SIZE: 0.2 KB
-----------------------------------------------------------------------
-package org.messenger.app.util
-
-import androidx.compose.runtime.Composable
-
-@Composable
-actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {}
-
-
-
-----------------------------------------------------------------------
-FILE: D:\messenger_proj\source\mobile\composeApp\src\wasmJsMain\kotlin\org\messenger\app\util\FilePicker.wasmJs.kt
-SIZE: 0.3 KB
-----------------------------------------------------------------------
-package org.messenger.app.util
-
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
-
-@Composable
-actual fun rememberFilePicker(
-    onPicked: (PickedFile) -> Unit,
-): FilePickerLauncher = remember {
-    object : FilePickerLauncher {
-        override fun launch(mimeFilter: String) {}
     }
 }
 
@@ -13624,6 +16436,33 @@ actual fun copyToClipboard(text: String) {
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\androidMain\kotlin\org\messenger\app\shared\util\ImageCache.android.kt
+SIZE: 0.8 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.util
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+
+actual object ImageCache {
+    private val dir: File by lazy {
+        val ctx = AndroidClipboardHolder.appContext
+            ?: error("AndroidClipboardHolder.appContext is not initialized")
+        File(ctx.cacheDir, "images").apply { mkdirs() }
+    }
+
+    actual suspend fun get(key: String): ByteArray? = withContext(Dispatchers.IO) {
+        val f = File(dir, key)
+        if (f.exists() && f.length() > 0) f.readBytes() else null
+    }
+
+    actual suspend fun put(key: String, bytes: ByteArray) = withContext(Dispatchers.IO) {
+        try { File(dir, key).writeBytes(bytes) } catch (_: Exception) {}
+    }
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\androidMain\kotlin\org\messenger\app\shared\util\UrlOpener.android.kt
 SIZE: 0.4 KB
 ----------------------------------------------------------------------
@@ -14169,6 +17008,117 @@ data class MarkReadBody(
 )
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\model\ProfileModels.kt
+SIZE: 2.9 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.data.model
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+@Serializable
+data class MeDto(
+    val id: String,
+    val phone: String,
+    val username: String,
+    @SerialName("display_name")
+    val displayName: String,
+    @SerialName("first_name")
+    val firstName: String? = null,
+    @SerialName("last_name")
+    val lastName: String? = null,
+    @SerialName("birth_date")
+    val birthDate: String? = null,
+    val bio: String? = null,
+    val email: String? = null,
+    val role: String,
+    @SerialName("primary_avatar_attachment_id")
+    val primaryAvatarAttachmentId: String? = null,
+    @SerialName("primary_avatar_thumb_attachment_id")
+    val primaryAvatarThumbAttachmentId: String? = null,
+    @SerialName("primary_avatar_url")
+    val primaryAvatarUrl: String? = null,
+    @SerialName("primary_avatar_thumb_url")
+    val primaryAvatarThumbUrl: String? = null,
+    @SerialName("created_at")
+    val createdAt: String,
+)
+
+@Serializable
+data class UpdateMeBody(
+    val username: String? = null,
+    @SerialName("display_name")
+    val displayName: String? = null,
+    @SerialName("first_name")
+    val firstName: String? = null,
+    @SerialName("last_name")
+    val lastName: String? = null,
+    @SerialName("birth_date")
+    val birthDate: String? = null,
+    val bio: String? = null,
+    val email: String? = null,
+)
+
+@Serializable
+data class AvatarDto(
+    val id: String,
+    @SerialName("full_attachment_id")
+    val fullAttachmentId: String,
+    @SerialName("crop_attachment_id")
+    val cropAttachmentId: String,
+    @SerialName("full_url")
+    val fullUrl: String? = null,
+    @SerialName("crop_url")
+    val cropUrl: String? = null,
+    @SerialName("created_at")
+    val createdAt: String,
+)
+
+@Serializable
+data class AvatarListResponse(
+    val avatars: List<AvatarDto>,
+    @SerialName("primary_avatar_id")
+    val primaryAvatarId: String? = null,
+)
+
+@Serializable
+data class CreateAvatarBody(
+    @SerialName("source_attachment_id")
+    val sourceAttachmentId: String,
+    @SerialName("crop_x")
+    val cropX: Int,
+    @SerialName("crop_y")
+    val cropY: Int,
+    @SerialName("crop_size")
+    val cropSize: Int,
+)
+
+@Serializable
+data class SetPrimaryAvatarBody(
+    @SerialName("avatar_id")
+    val avatarId: String,
+)
+
+@Serializable
+data class PublicUserDto(
+    val id: String,
+    val username: String,
+    @SerialName("display_name")
+    val displayName: String,
+    @SerialName("first_name")
+    val firstName: String? = null,
+    @SerialName("last_name")
+    val lastName: String? = null,
+    val bio: String? = null,
+    @SerialName("primary_avatar_url")
+    val primaryAvatarUrl: String? = null,
+    @SerialName("primary_avatar_thumb_url")
+    val primaryAvatarThumbUrl: String? = null,
+    @SerialName("created_at")
+    val createdAt: String,
+)
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\model\WsModels.kt
 SIZE: 2 KB
 ----------------------------------------------------------------------
@@ -14266,7 +17216,7 @@ data class WsAttachmentReady(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\remote\ApiService.kt
-SIZE: 10.3 KB
+SIZE: 11.5 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.remote
 
@@ -14550,6 +17500,40 @@ class ApiService(private val client: HttpClient) {
 
     suspend fun deleteAttachment(attachmentId: String) {
         val response = client.delete("api/v1/attachments/$attachmentId")
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
+
+    // в”Ђв”Ђ Profile (me) в”Ђв”Ђ
+    suspend fun getMe(): MeDto =
+        requestAndParse { client.get("api/v1/me") }
+
+    suspend fun getPublicUser(userId: String): PublicUserDto =
+        requestAndParse { client.get("api/v1/users/$userId") }
+
+    suspend fun updateMe(body: UpdateMeBody): MeDto =
+        requestAndParse {
+            client.patch("api/v1/me") { setBody(body) }
+        }
+
+    suspend fun listMyAvatars(): AvatarListResponse =
+        requestAndParse { client.get("api/v1/me/avatars") }
+
+    suspend fun createAvatar(body: CreateAvatarBody): AvatarDto =
+        requestAndParse {
+            client.post("api/v1/me/avatars") { setBody(body) }
+        }
+
+    suspend fun setPrimaryAvatar(avatarId: String): MeDto =
+        requestAndParse {
+            client.post("api/v1/me/avatars/set-primary") {
+                setBody(SetPrimaryAvatarBody(avatarId))
+            }
+        }
+
+    suspend fun deleteAvatar(avatarId: String) {
+        val response = client.delete("api/v1/me/avatars/$avatarId")
         if (!response.status.isSuccess()) {
             throw ApiException(response.status.value, response.bodyAsText())
         }
@@ -14844,7 +17828,7 @@ class WsService(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\di\AppModule.kt
-SIZE: 2.3 KB
+SIZE: 2.5 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.di
 
@@ -14892,7 +17876,11 @@ class AppModule(
     }
 
     val attachmentsRepository by lazy {
-        org.messenger.app.shared.domain.repository.AttachmentsRepository(apiService)
+        org.messenger.app.shared.domain.repository.AttachmentsRepository(apiService, httpClient)
+    }
+
+    val profileRepository by lazy {
+        org.messenger.app.shared.domain.repository.ProfileRepository(apiService)
     }
 
     companion object {
@@ -14917,20 +17905,27 @@ class AppModule(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\domain\repository\AttachmentsRepository.kt
-SIZE: 1.4 KB
+SIZE: 2.8 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.domain.repository
 
+import io.ktor.client.HttpClient
+import io.ktor.client.call.body
+import io.ktor.client.plugins.auth.AuthCircuitBreaker
+import io.ktor.client.request.get
+import io.ktor.http.HttpHeaders
+import io.ktor.http.isSuccess
 import org.messenger.app.shared.data.model.AttachmentDto
 import org.messenger.app.shared.data.model.DownloadUrlResponse
 import org.messenger.app.shared.data.model.PresignUploadBody
 import org.messenger.app.shared.data.remote.ApiService
 
-class AttachmentsRepository(private val api: ApiService) {
-
+class AttachmentsRepository(
+    private val api: ApiService,
+    private val httpClient: HttpClient,
+) {
     /**
      * РџРѕР»РЅС‹Р№ С†РёРєР» Р·Р°РіСЂСѓР·РєРё: presign в†’ PUT РІ S3 в†’ complete.
-     * Р’РѕР·РІСЂР°С‰Р°РµС‚ РіРѕС‚РѕРІС‹Р№ AttachmentDto СЃРѕ СЃС‚Р°С‚СѓСЃРѕРј "uploaded" РёР»Рё "ready".
      */
     suspend fun uploadFile(
         filename: String,
@@ -14958,6 +17953,40 @@ class AttachmentsRepository(private val api: ApiService) {
 
     suspend fun delete(attachmentId: String) =
         api.deleteAttachment(attachmentId)
+
+    /**
+     * Р—Р°РіСЂСѓР¶Р°РµС‚ Р±Р°Р№С‚С‹ РїРѕ presigned URL Р±РµР· Authorization-Р·Р°РіРѕР»РѕРІРєР°.
+     */
+    suspend fun fetchBytes(url: String): ByteArray? {
+        return try {
+            val resp = httpClient.get(url) {
+                headers.remove(HttpHeaders.Authorization)
+                attributes.put(AuthCircuitBreaker, Unit)
+            }
+            if (resp.status.isSuccess()) resp.body<ByteArray>() else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Р—Р°РіСЂСѓР¶Р°РµС‚ Р±Р°Р№С‚С‹ РІР»РѕР¶РµРЅРёСЏ СЃ Р°РІС‚Рѕ-РѕР±РЅРѕРІР»РµРЅРёРµРј URL РїСЂРё РёСЃС‚РµС‡РµРЅРёРё.
+     */
+    suspend fun loadImageBytes(
+        attachmentId: String,
+        thumbnailUrl: String?,
+        downloadUrl: String?,
+        thumb: Boolean,
+    ): ByteArray? {
+        val initialUrl = if (thumb) thumbnailUrl ?: downloadUrl else downloadUrl
+        if (initialUrl != null) {
+            val bytes = fetchBytes(initialUrl)
+            if (bytes != null) return bytes
+        }
+        val fresh = try { getDownloadUrl(attachmentId) } catch (_: Exception) { return null }
+        val freshUrl = if (thumb) fresh.thumbnailUrl ?: fresh.downloadUrl else fresh.downloadUrl
+        return fetchBytes(freshUrl)
+    }
 }
 
 ----------------------------------------------------------------------
@@ -15124,6 +18153,69 @@ class ContactsRepository(private val api: ApiService) {
     suspend fun deleteContact(contactId: String) = api.deleteContact(contactId)
 
     suspend fun dismissPeer(peerUserId: String) = api.dismissPeer(peerUserId)
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\domain\repository\ProfileRepository.kt
+SIZE: 1.8 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.domain.repository
+
+import org.messenger.app.shared.data.model.AvatarDto
+import org.messenger.app.shared.data.model.AvatarListResponse
+import org.messenger.app.shared.data.model.CreateAvatarBody
+import org.messenger.app.shared.data.model.MeDto
+import org.messenger.app.shared.data.model.UpdateMeBody
+import org.messenger.app.shared.data.remote.ApiService
+
+class ProfileRepository(private val api: ApiService) {
+
+    suspend fun getMe(): MeDto = api.getMe()
+
+    suspend fun updateMe(
+        username: String? = null,
+        displayName: String? = null,
+        firstName: String? = null,
+        lastName: String? = null,
+        birthDate: String? = null,
+        bio: String? = null,
+        email: String? = null,
+    ): MeDto = api.updateMe(
+        UpdateMeBody(
+            username = username,
+            displayName = displayName,
+            firstName = firstName,
+            lastName = lastName,
+            birthDate = birthDate,
+            bio = bio,
+            email = email,
+        )
+    )
+
+    suspend fun listAvatars(): AvatarListResponse = api.listMyAvatars()
+
+    suspend fun createAvatar(
+        sourceAttachmentId: String,
+        cropX: Int,
+        cropY: Int,
+        cropSize: Int,
+    ): AvatarDto = api.createAvatar(
+        CreateAvatarBody(
+            sourceAttachmentId = sourceAttachmentId,
+            cropX = cropX,
+            cropY = cropY,
+            cropSize = cropSize,
+        )
+    )
+
+    suspend fun setPrimaryAvatar(avatarId: String): MeDto =
+        api.setPrimaryAvatar(avatarId)
+
+    suspend fun deleteAvatar(avatarId: String) =
+        api.deleteAvatar(avatarId)
+
+    suspend fun getPublicUser(userId: String): org.messenger.app.shared.data.model.PublicUserDto =
+        api.getPublicUser(userId)
 }
 
 ----------------------------------------------------------------------
@@ -15393,7 +18485,7 @@ class AuthViewModel(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\chat\ChatViewModel.kt
-SIZE: 20.8 KB
+SIZE: 21 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.ui.chat
 
@@ -15422,6 +18514,7 @@ data class UploadingAttachment(
     val isUploading: Boolean = true,
     val error: String? = null,
     val attachment: AttachmentDto? = null,
+    val previewBytes: ByteArray? = null,
 )
 
 data class ChatUiState(
@@ -15607,11 +18700,16 @@ class ChatViewModel(
             return
         }
         val localId = "local-${++localIdCounter}"
+        val previewBytes = if (mimeType.startsWith("image/", ignoreCase = true) && bytes.size <= 10 * 1024 * 1024) {
+            bytes
+        } else null
+
         val placeholder = UploadingAttachment(
             localId = localId,
             filename = filename,
             mimeType = mimeType,
             sizeBytes = bytes.size.toLong(),
+            previewBytes = previewBytes,
         )
         _state.update { it.copy(uploadingAttachments = it.uploadingAttachments + placeholder) }
 
@@ -16185,12 +19283,311 @@ class ContactsViewModel(
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\profile\AvatarsViewModel.kt
+SIZE: 5.6 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.ui.profile
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import org.messenger.app.shared.data.model.AttachmentDto
+import org.messenger.app.shared.data.model.AvatarDto
+import org.messenger.app.shared.domain.repository.AttachmentsRepository
+import org.messenger.app.shared.domain.repository.ProfileRepository
+
+data class AvatarsUiState(
+    val avatars: List<AvatarDto> = emptyList(),
+    val primaryAvatarId: String? = null,
+    val isLoading: Boolean = false,
+    val isUploading: Boolean = false,
+    val pendingSource: AttachmentDto? = null,
+    val pendingSourceBytes: ByteArray? = null,
+    val error: String? = null,
+)
+
+class AvatarsViewModel(
+    private val profileRepository: ProfileRepository,
+    private val attachmentsRepository: AttachmentsRepository,
+) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    private val _state = MutableStateFlow(AvatarsUiState())
+    val state: StateFlow<AvatarsUiState> = _state.asStateFlow()
+
+    init {
+        loadAvatars()
+    }
+
+    fun loadAvatars() {
+        scope.launch {
+            _state.update { it.copy(isLoading = true, error = null) }
+            try {
+                val list = profileRepository.listAvatars()
+                _state.update {
+                    it.copy(
+                        avatars = list.avatars,
+                        primaryAvatarId = list.primaryAvatarId,
+                        isLoading = false,
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(isLoading = false, error = e.message ?: "РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё")
+                }
+            }
+        }
+    }
+
+    /**
+     * Р­С‚Р°Рї 1 Р·Р°РіСЂСѓР·РєРё РЅРѕРІРѕРіРѕ Р°РІР°С‚Р°СЂР°: РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ РІС‹Р±СЂР°Р» С„Р°Р№Р» РёР·РѕР±СЂР°Р¶РµРЅРёСЏ,
+     * РјС‹ Р·Р°РіСЂСѓР¶Р°РµРј РµРіРѕ РІ S3 РєР°Рє РѕР±С‹С‡РЅРѕРµ РІР»РѕР¶РµРЅРёРµ Рё СЃРѕС…СЂР°РЅСЏРµРј РІРѕ РІСЂРµРјРµРЅРЅРѕРµ СЃРѕСЃС‚РѕСЏРЅРёРµ,
+     * С‡С‚РѕР±С‹ UI РѕС‚РєСЂС‹Р» РґРёР°Р»РѕРі crop'Р°.
+     */
+    fun pickSourceImage(filename: String, mimeType: String, bytes: ByteArray) {
+        if (!mimeType.startsWith("image/", ignoreCase = true)) {
+            _state.update { it.copy(error = "Р¤Р°Р№Р» РґРѕР»Р¶РµРЅ Р±С‹С‚СЊ РёР·РѕР±СЂР°Р¶РµРЅРёРµРј") }
+            return
+        }
+        scope.launch {
+            _state.update { it.copy(isUploading = true, error = null) }
+            try {
+                val att = attachmentsRepository.uploadFile(
+                    filename = filename,
+                    mimeType = mimeType,
+                    data = bytes,
+                    chatId = null,
+                )
+                _state.update {
+                    it.copy(
+                        isUploading = false,
+                        pendingSource = att,
+                        pendingSourceBytes = bytes,
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(isUploading = false, error = e.message ?: "РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё С„Р°Р№Р»Р°")
+                }
+            }
+        }
+    }
+
+    fun cancelPendingSource() {
+        _state.update { it.copy(pendingSource = null, pendingSourceBytes = null) }
+    }
+
+    /**
+     * Р­С‚Р°Рї 2: РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ РїРѕРґС‚РІРµСЂРґРёР» СЂР°РјРєСѓ crop'Р° (РІ РєРѕРѕСЂРґРёРЅР°С‚Р°С… РёСЃС…РѕРґРЅРѕРіРѕ РёР·РѕР±СЂР°Р¶РµРЅРёСЏ).
+     */
+    fun confirmCrop(cropX: Int, cropY: Int, cropSize: Int, onSuccess: () -> Unit = {}) {
+        val source = _state.value.pendingSource ?: return
+        scope.launch {
+            _state.update { it.copy(isUploading = true, error = null) }
+            try {
+                profileRepository.createAvatar(
+                    sourceAttachmentId = source.id,
+                    cropX = cropX,
+                    cropY = cropY,
+                    cropSize = cropSize,
+                )
+                _state.update {
+                    it.copy(
+                        isUploading = false,
+                        pendingSource = null,
+                        pendingSourceBytes = null,
+                    )
+                }
+                loadAvatars()
+                onSuccess()
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(isUploading = false, error = e.message ?: "РћС€РёР±РєР° РѕР±СЂРµР·РєРё")
+                }
+            }
+        }
+    }
+
+    fun setPrimary(avatarId: String) {
+        scope.launch {
+            try {
+                profileRepository.setPrimaryAvatar(avatarId)
+                loadAvatars()
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "РћС€РёР±РєР° СѓСЃС‚Р°РЅРѕРІРєРё") }
+            }
+        }
+    }
+
+    fun deleteAvatar(avatarId: String) {
+        scope.launch {
+            try {
+                profileRepository.deleteAvatar(avatarId)
+                _state.update { st ->
+                    st.copy(avatars = st.avatars.filterNot { it.id == avatarId })
+                }
+                loadAvatars()
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: "РћС€РёР±РєР° СѓРґР°Р»РµРЅРёСЏ") }
+            }
+        }
+    }
+
+    fun clearError() {
+        _state.update { it.copy(error = null) }
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\profile\ProfileViewModel.kt
+SIZE: 4 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.ui.profile
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import org.messenger.app.shared.data.local.TokenStorage
+import org.messenger.app.shared.data.model.MeDto
+import org.messenger.app.shared.data.remote.ApiException
+import org.messenger.app.shared.domain.repository.ProfileRepository
+
+data class ProfileUiState(
+    val me: MeDto? = null,
+    val isLoading: Boolean = false,
+    val isSaving: Boolean = false,
+    val error: String? = null,
+    val savedSuccess: Boolean = false,
+)
+
+class ProfileViewModel(
+    private val repository: ProfileRepository,
+    private val tokenStorage: TokenStorage? = null,
+) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    private val _state = MutableStateFlow(ProfileUiState())
+    val state: StateFlow<ProfileUiState> = _state.asStateFlow()
+
+    init {
+        loadProfile()
+    }
+
+    fun loadProfile() {
+        scope.launch {
+            _state.update { it.copy(isLoading = true, error = null) }
+            try {
+                val me = repository.getMe()
+                _state.update { it.copy(me = me, isLoading = false) }
+                syncTokenStorage(me)
+            } catch (e: ApiException) {
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        error = "РћС€РёР±РєР° ${e.statusCode}: ${e.errorBody}",
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(isLoading = false, error = e.message ?: "РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё")
+                }
+            }
+        }
+    }
+
+    fun updateProfile(
+        username: String? = null,
+        displayName: String? = null,
+        firstName: String? = null,
+        lastName: String? = null,
+        birthDate: String? = null,
+        bio: String? = null,
+        email: String? = null,
+        onSuccess: () -> Unit = {},
+    ) {
+        scope.launch {
+            _state.update { it.copy(isSaving = true, error = null, savedSuccess = false) }
+            try {
+                val me = repository.updateMe(
+                    username = username,
+                    displayName = displayName,
+                    firstName = firstName,
+                    lastName = lastName,
+                    birthDate = birthDate,
+                    bio = bio,
+                    email = email,
+                )
+                _state.update { it.copy(me = me, isSaving = false, savedSuccess = true) }
+                syncTokenStorage(me)
+                onSuccess()
+            } catch (e: ApiException) {
+                val msg = parseErrorMessage(e.errorBody) ?: "РћС€РёР±РєР° ${e.statusCode}"
+                _state.update { it.copy(isSaving = false, error = msg) }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(isSaving = false, error = e.message ?: "РћС€РёР±РєР° СЃРѕС…СЂР°РЅРµРЅРёСЏ")
+                }
+            }
+        }
+    }
+
+    fun refreshAfterAvatarChange() {
+        loadProfile()
+    }
+
+    fun clearError() {
+        _state.update { it.copy(error = null) }
+    }
+
+    fun clearSavedFlag() {
+        _state.update { it.copy(savedSuccess = false) }
+    }
+
+    private fun syncTokenStorage(me: MeDto) {
+        tokenStorage?.saveUser(
+            id = me.id,
+            phone = me.phone,
+            displayName = me.displayName,
+            role = me.role,
+        )
+    }
+
+    private fun parseErrorMessage(body: String): String? {
+        return try {
+            val detailRegex = """"detail"\s*:\s*"([^"]+)"""".toRegex()
+            detailRegex.find(body)?.groupValues?.getOrNull(1)
+        } catch (_: Exception) { null }
+    }
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\util\Clipboard.kt
 SIZE: 0.1 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.util
 
 expect fun copyToClipboard(text: String)
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\util\ImageCache.kt
+SIZE: 0.2 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.util
+
+expect object ImageCache {
+    suspend fun get(key: String): ByteArray?
+    suspend fun put(key: String, bytes: ByteArray)
+}
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\util\JwtUtil.kt
@@ -16290,6 +19687,47 @@ actual fun copyToClipboard(text: String) {
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\iosMain\kotlin\org\messenger\app\shared\util\ImageCache.ios.kt
+SIZE: 1.3 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.util
+
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.usePinned
+import platform.Foundation.*
+import platform.posix.memcpy
+
+@OptIn(ExperimentalForeignApi::class)
+actual object ImageCache {
+    private val dirPath: String by lazy {
+        val paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, true)
+        val base = paths.firstOrNull() as? String ?: NSTemporaryDirectory()
+        val full = "$base/images"
+        NSFileManager.defaultManager.createDirectoryAtPath(full, true, null, null)
+        full
+    }
+
+    actual suspend fun get(key: String): ByteArray? {
+        val path = "$dirPath/$key"
+        val data = NSData.dataWithContentsOfFile(path) ?: return null
+        val len = data.length.toInt()
+        if (len == 0) return null
+        val arr = ByteArray(len)
+        arr.usePinned { memcpy(it.addressOf(0), data.bytes, data.length) }
+        return arr
+    }
+
+    actual suspend fun put(key: String, bytes: ByteArray) {
+        val path = "$dirPath/$key"
+        bytes.usePinned {
+            val data = NSData.dataWithBytes(it.addressOf(0), bytes.size.toULong())
+            data.writeToFile(path, true)
+        }
+    }
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\iosMain\kotlin\org\messenger\app\shared\util\UrlOpener.ios.kt
 SIZE: 0.2 KB
 ----------------------------------------------------------------------
@@ -16341,6 +19779,18 @@ actual fun copyToClipboard(text: String) {
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\jsMain\kotlin\org\messenger\app\shared\util\ImageCache.js.kt
+SIZE: 0.3 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.util
+
+actual object ImageCache {
+    private val mem = mutableMapOf<String, ByteArray>()
+    actual suspend fun get(key: String): ByteArray? = mem[key]
+    actual suspend fun put(key: String, bytes: ByteArray) { mem[key] = bytes }
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\jsMain\kotlin\org\messenger\app\shared\util\UrlOpener.js.kt
 SIZE: 0.1 KB
 ----------------------------------------------------------------------
@@ -16387,6 +19837,32 @@ import java.awt.datatransfer.StringSelection
 actual fun copyToClipboard(text: String) {
     val selection = StringSelection(text)
     Toolkit.getDefaultToolkit().systemClipboard.setContents(selection, selection)
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\jvmMain\kotlin\org\messenger\app\shared\util\ImageCache.jvm.kt
+SIZE: 0.7 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.util
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+
+actual object ImageCache {
+    private val dir: File by lazy {
+        val tmp = System.getProperty("java.io.tmpdir") ?: "."
+        File(tmp, "messenger_image_cache").apply { mkdirs() }
+    }
+
+    actual suspend fun get(key: String): ByteArray? = withContext(Dispatchers.IO) {
+        val f = File(dir, key)
+        if (f.exists() && f.length() > 0) f.readBytes() else null
+    }
+
+    actual suspend fun put(key: String, bytes: ByteArray) = withContext(Dispatchers.IO) {
+        try { File(dir, key).writeBytes(bytes) } catch (_: Exception) {}
+    }
 }
 
 ----------------------------------------------------------------------
@@ -16482,7 +19958,7 @@ SIZE: 0.2 KB
 }
 
 ======================================================================
-Total files dumped: 120
+Total files dumped: 130
 ======================================================================
 
 

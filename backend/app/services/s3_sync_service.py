@@ -54,3 +54,21 @@ def head_object(storage_key: str) -> dict | None:
         return _get_client().head_object(Bucket=settings.s3_bucket, Key=storage_key)
     except Exception:
         return None
+        
+        
+def move_to_deleted(storage_key: str) -> str | None:
+    if storage_key.startswith("deleted/"):
+        return storage_key
+    new_key = f"deleted/{storage_key}"
+    try:
+        client = _get_client()
+        client.copy_object(
+            Bucket=settings.s3_bucket,
+            CopySource={"Bucket": settings.s3_bucket, "Key": storage_key},
+            Key=new_key,
+        )
+        client.delete_object(Bucket=settings.s3_bucket, Key=storage_key)
+        return new_key
+    except Exception as e:
+        logger.error("s3_sync_move_to_deleted_error", key=storage_key, error=str(e))
+        return None

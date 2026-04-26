@@ -32,7 +32,8 @@ fun AppNavHost(
                     selectedChatName = chatName
                     currentScreen = NavScreen.CHAT
                 },
-                onOpenSettings = onOpenSettings
+                onOpenSettings = onOpenSettings,
+                onOpenProfile = { /* TODO navigation to profile */ },
             )
         }
         NavScreen.CHAT -> {

@@ -19,6 +19,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.filled.AccountCircle
 import org.messenger.app.shared.data.model.ChatDto
 import org.messenger.app.shared.di.AppModule
 import org.messenger.app.shared.ui.chatlist.ChatListViewModel
@@ -35,6 +36,7 @@ fun ChatListScreen(
     appModule: AppModule,
     onChatClick: (chatId: String, chatName: String) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenProfile: () -> Unit,
 ) {
     val viewModel = remember {
         ChatListViewModel(
@@ -56,6 +58,9 @@ fun ChatListScreen(
             TopAppBar(
                 title = { Text("Чаты") },
                 actions = {
+                    IconButton(onClick = onOpenProfile) {
+                        Icon(Icons.Default.AccountCircle, contentDescription = "Профиль")
+                    }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Настройки")
                     }
