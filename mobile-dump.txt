@@ -1,6 +1,6 @@
 ﻿======================================================================
 MOBILE PROJECT DUMP
-Generated: 2026-04-27 00:28:32
+Generated: 2026-04-30 22:38:48
 Root: D:\messenger_proj\source\mobile
 ======================================================================
 
@@ -16,6 +16,7 @@ Root: D:\messenger_proj\source\mobile
                       app/
                         service/
                         ui/
+                          chat/
                           common/
                         util/
                 res/
@@ -53,17 +54,13 @@ Root: D:\messenger_proj\source\mobile
                   org/
                     messenger/
                       app/
-              desktopMain/
-                kotlin/
-                  org/
-                    messenger/
-                      app/
               jvmMain/
                 kotlin/
                   org/
                     messenger/
                       app/
                         ui/
+                          chat/
                           common/
                         util/
           gradle/
@@ -213,7 +210,7 @@ plugins {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\build.gradle.kts
-SIZE: 2.8 KB
+SIZE: 3 KB
 ----------------------------------------------------------------------
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -253,7 +250,6 @@ kotlin {
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.androidx.lifecycle.viewmodelCompose)
             implementation(libs.androidx.lifecycle.runtimeCompose)
-            implementation(libs.kotlinx.datetime)
             implementation("org.jetbrains.compose.material:material-icons-extended:1.7.3")
             implementation(projects.shared)
         }
@@ -263,6 +259,7 @@ kotlin {
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)
             implementation(libs.kotlinx.coroutinesSwing)
+            implementation(libs.multiplatformSettings)
         }
     }
 }
@@ -306,6 +303,14 @@ compose.desktop {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "org.messenger.app"
             packageVersion = "1.0.0"
+
+            modules(
+                "java.net.http",
+                "java.naming",
+                "java.sql",
+                "jdk.crypto.ec",
+                "jdk.unsupported"
+            )
         }
     }
 }
@@ -865,6 +870,14 @@ object PendingTokenStore {
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\ui\chat\Time.android.kt
+SIZE: 0.1 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.chat
+
+internal actual fun currentTimeMillis(): Long = System.currentTimeMillis()
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\ui\common\CachedAsyncImage.android.kt
 SIZE: 0.4 KB
 ----------------------------------------------------------------------
@@ -949,6 +962,16 @@ private fun queryFileName(
         null
     }
 }
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\util\PointerEvents.android.kt
+SIZE: 0.1 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.ui.Modifier
+
+actual fun Modifier.onRightClick(onClick: () -> Unit): Modifier = this
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\res\drawable\ic_launcher_background.xml
@@ -1262,7 +1285,7 @@ SIZE: 1.5 KB
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\App.kt
-SIZE: 13.3 KB
+SIZE: 13.6 KB
 ----------------------------------------------------------------------
 package org.messenger.app
 
@@ -1565,7 +1588,7 @@ expect fun observeDeepLinks(): kotlinx.coroutines.flow.Flow<Pair<String, String>
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\navigation\AppNavHost.kt
-SIZE: 1.3 KB
+SIZE: 1.4 KB
 ----------------------------------------------------------------------
 package org.messenger.app.navigation
 
@@ -1601,7 +1624,8 @@ fun AppNavHost(
                     selectedChatName = chatName
                     currentScreen = NavScreen.CHAT
                 },
-                onOpenSettings = onOpenSettings
+                onOpenSettings = onOpenSettings,
+                onOpenProfile = { /* TODO navigation to profile */ },
             )
         }
         NavScreen.CHAT -> {
@@ -1958,7 +1982,7 @@ private fun AddContactInlineDialog(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chat\ChatComponents.kt
-SIZE: 39 KB
+SIZE: 41.8 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chat
 
@@ -2004,15 +2028,29 @@ import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
 import org.messenger.app.shared.data.model.AttachmentDto
 import org.messenger.app.shared.ui.chat.UploadingAttachment
-import kotlinx.datetime.toLocalDateTime
+import org.messenger.app.util.onRightClick
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.platform.LocalDensity
 import org.messenger.app.shared.data.model.MessageDto
 import org.messenger.app.shared.data.model.PinnedMessageDto
 import org.messenger.app.shared.data.model.ReplyPreviewDto
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -2177,6 +2215,7 @@ fun DateSeparator(label: String) {
     }
 }
 
+
 @Composable
 fun MessageInput(
     draft: String,
@@ -2229,12 +2268,57 @@ fun MessageInput(
                     }
                 }
 
+                var textFieldValue by remember(editing?.id) {
+                    mutableStateOf(TextFieldValue(draft, TextRange(draft.length)))
+                }
+// СЃРёРЅС…СЂРѕРЅРёР·Р°С†РёСЏ: РµСЃР»Рё draft РёР·РјРµРЅРёР»СЃСЏ РёР·РІРЅРµ (РЅР°РїСЂРёРјРµСЂ, РѕС‡РёСЃС‚РєР° РїРѕСЃР»Рµ РѕС‚РїСЂР°РІРєРё), РѕР±РЅРѕРІР»СЏРµРј
+                LaunchedEffect(draft) {
+                    if (textFieldValue.text != draft) {
+                        textFieldValue = TextFieldValue(draft, TextRange(draft.length))
+                    }
+                }
+
                 OutlinedTextField(
-                    value = draft,
-                    onValueChange = onDraftChanged,
-                    modifier = Modifier.weight(1f),
+                    value = textFieldValue,
+                    onValueChange = { newValue ->
+                        textFieldValue = newValue
+                        if (newValue.text != draft) {
+                            onDraftChanged(newValue.text)
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown
+                                && keyEvent.key == Key.Enter
+                                && !keyEvent.isShiftPressed
+                            ) {
+                                val hasReady = uploadingAttachments.any { !it.isUploading && it.attachment != null }
+                                val anyUploading = uploadingAttachments.any { it.isUploading }
+                                if (!isSending && !anyUploading &&
+                                    (draft.isNotBlank() || hasReady || editing != null)
+                                ) {
+                                    onSend()
+                                    return@onPreviewKeyEvent true
+                                }
+                                false
+                            } else if (keyEvent.type == KeyEventType.KeyDown
+                                && keyEvent.key == Key.Enter
+                                && keyEvent.isShiftPressed
+                            ) {
+                                // Shift+Enter: РІСЃС‚Р°РІР»СЏРµРј РїРµСЂРµРЅРѕСЃ РІ РїРѕР·РёС†РёСЋ РєСѓСЂСЃРѕСЂР°
+                                val sel = textFieldValue.selection
+                                val text = textFieldValue.text
+                                val newText = text.substring(0, sel.start) + "\n" + text.substring(sel.end)
+                                val newCursor = sel.start + 1
+                                textFieldValue = TextFieldValue(newText, TextRange(newCursor))
+                                onDraftChanged(newText)
+                                true
+                            } else false
+                        },
                     placeholder = { Text("РЎРѕРѕР±С‰РµРЅРёРµ...") },
-                    maxLines = 4,
+                    maxLines = 6,
+                    singleLine = false,
                 )
 
                 Spacer(modifier = Modifier.width(8.dp))
@@ -2580,7 +2664,8 @@ fun MessageBubble(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 4.dp)
-                .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                .onRightClick(onLongClick),
             horizontalArrangement = Arrangement.Center,
         ) {
             Surface(
@@ -2644,6 +2729,7 @@ fun MessageBubble(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .onRightClick(onLongClick)
             .padding(vertical = 2.dp),
         horizontalArrangement = if (isOwnMessage) Arrangement.End else Arrangement.Start,
     ) {
@@ -2916,25 +3002,12 @@ private fun declOfNum(n: Int, one: String, few: String, many: String): String {
 
 internal fun formatTimeFromIso(iso: String): String {
     return try {
-        val normalized = if (
-            iso.endsWith("Z") ||
-            iso.contains("+") ||
-            iso.substringAfter("T", "").contains("-")
-        ) iso else "${iso}Z"
-        val instant = kotlinx.datetime.Instant.parse(normalized)
-        val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
-        val hh = local.hour.toString().padStart(2, '0')
-        val mm = local.minute.toString().padStart(2, '0')
-        "$hh:$mm"
-    } catch (_: Exception) {
-        try {
-            val timePart = if (iso.contains("T")) {
-                iso.substringAfter("T").substringBefore(".")
-                    .substringBefore("+").substringBefore("Z")
-            } else iso
-            timePart.take(5)
-        } catch (_: Exception) { "" }
-    }
+        val timePart = if (iso.contains("T")) {
+            iso.substringAfter("T").substringBefore(".")
+                .substringBefore("+").substringBefore("Z")
+        } else iso
+        timePart.take(5)
+    } catch (_: Exception) { "" }
 }
 
 internal fun isMessageReadByOthers(
@@ -3045,7 +3118,7 @@ fun StickyDateHeader(label: String) {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chat\ChatScreen.kt
-SIZE: 20.1 KB
+SIZE: 20.6 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chat
 
@@ -3508,21 +3581,22 @@ private fun computeListIndexForMessage(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chat\DateFormatter.kt
-SIZE: 2.4 KB
+SIZE: 3.4 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chat
 
-import kotlinx.datetime.*
-
 /**
- * РџР°СЂСЃРёС‚ ISO РґР°С‚Сѓ РёР· backend Рё РІРѕР·РІСЂР°С‰Р°РµС‚ "РєР»СЋС‡ РґРЅСЏ" РІ Р»РѕРєР°Р»СЊРЅРѕР№ С‚Р°Р№РјР·РѕРЅРµ.
- * Р¤РѕСЂРјР°С‚ РєР»СЋС‡Р°: "YYYY-MM-DD".
+ * РџР°СЂСЃРёС‚ ISO РґР°С‚Сѓ Рё РІРѕР·РІСЂР°С‰Р°РµС‚ "РєР»СЋС‡ РґРЅСЏ" РІ С„РѕСЂРјР°С‚Рµ "YYYY-MM-DD".
+ * РџСЂРѕСЃС‚Р°СЏ СЂР°Р±РѕС‚Р° СЃРѕ СЃС‚СЂРѕРєРѕР№ Р±РµР· Р·Р°РІРёСЃРёРјРѕСЃС‚РµР№ РѕС‚ datetime-Р±РёР±Р»РёРѕС‚РµРє.
  */
 fun dayKeyFromIso(iso: String): String {
     return try {
-        val instant = Instant.parse(normalizeIso(iso))
-        val ld = instant.toLocalDateTime(TimeZone.currentSystemDefault()).date
-        "${ld.year.toString().padStart(4, '0')}-${ld.monthNumber.toString().padStart(2, '0')}-${ld.dayOfMonth.toString().padStart(2, '0')}"
+        // ISO С„РѕСЂРјР°С‚: "2026-04-30T12:34:56.789Z" РёР»Рё "2026-04-30T12:34:56+03:00"
+        if (iso.length >= 10 && iso[4] == '-' && iso[7] == '-') {
+            iso.take(10)
+        } else {
+            iso.take(10)
+        }
     } catch (_: Exception) {
         iso.take(10)
     }
@@ -3534,30 +3608,32 @@ fun dayKeyFromIso(iso: String): String {
 fun formatDateLabel(dayKey: String): String {
     return try {
         val parts = dayKey.split("-")
+        if (parts.size != 3) return dayKey
         val y = parts[0].toInt()
         val m = parts[1].toInt()
         val d = parts[2].toInt()
-        val date = LocalDate(y, m, d)
 
-        val today = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
-        val yesterday = today.minus(1, DateTimeUnit.DAY)
+        val today = todayKey()
+        val todayParts = today.split("-").map { it.toInt() }
+        val isToday = y == todayParts[0] && m == todayParts[1] && d == todayParts[2]
 
-        when (date) {
-            today -> "РЎРµРіРѕРґРЅСЏ"
-            yesterday -> "Р’С‡РµСЂР°"
+        // Р’С‡РµСЂР°: РІС‹С‡РёС‚Р°РµРј 1 РґРµРЅСЊ РїСЂРѕСЃС‚С‹Рј СЃРїРѕСЃРѕР±РѕРј
+        val yesterdayKey = yesterdayKey(todayParts[0], todayParts[1], todayParts[2])
+        val isYesterday = dayKey == yesterdayKey
+
+        when {
+            isToday -> "РЎРµРіРѕРґРЅСЏ"
+            isYesterday -> "Р’С‡РµСЂР°"
             else -> {
-                val monthName = when (date.monthNumber) {
+                val monthName = when (m) {
                     1 -> "СЏРЅРІР°СЂСЏ"; 2 -> "С„РµРІСЂР°Р»СЏ"; 3 -> "РјР°СЂС‚Р°"
                     4 -> "Р°РїСЂРµР»СЏ"; 5 -> "РјР°СЏ"; 6 -> "РёСЋРЅСЏ"
                     7 -> "РёСЋР»СЏ"; 8 -> "Р°РІРіСѓСЃС‚Р°"; 9 -> "СЃРµРЅС‚СЏР±СЂСЏ"
                     10 -> "РѕРєС‚СЏР±СЂСЏ"; 11 -> "РЅРѕСЏР±СЂСЏ"; 12 -> "РґРµРєР°Р±СЂСЏ"
                     else -> ""
                 }
-                if (date.year == today.year) {
-                    "${date.dayOfMonth} $monthName"
-                } else {
-                    "${date.dayOfMonth} $monthName ${date.year}"
-                }
+                if (y == todayParts[0]) "$d $monthName"
+                else "$d $monthName $y"
             }
         }
     } catch (_: Exception) {
@@ -3565,17 +3641,39 @@ fun formatDateLabel(dayKey: String): String {
     }
 }
 
-/**
- * Р”РѕР±Р°РІР»СЏРµС‚ СЃСѓС„С„РёРєСЃ 'Z' РµСЃР»Рё РЅРµС‚ Р·РѕРЅС‹, С‡С‚РѕР±С‹ Instant.parse РїСЂРёРЅСЏР».
- */
-private fun normalizeIso(iso: String): String {
-    if (iso.isEmpty()) return iso
-    // Р•СЃС‚СЊ СѓР¶Рµ С‚Р°Р№РјР·РѕРЅР°?
-    val hasZone = iso.endsWith("Z") ||
-            iso.contains("+") ||
-            iso.substringAfter("T", "").contains("-")
-    return if (hasZone) iso else "${iso}Z"
+private fun todayKey(): String {
+    val nowMs = currentTimeMillis()
+    return millisToDayKey(nowMs)
 }
+
+private fun yesterdayKey(y: Int, m: Int, d: Int): String {
+    val nowMs = currentTimeMillis()
+    val yesterdayMs = nowMs - 24L * 60 * 60 * 1000
+    return millisToDayKey(yesterdayMs)
+}
+
+private fun millisToDayKey(ms: Long): String {
+    // РџСЂРѕСЃС‚РѕР№ Р°Р»РіРѕСЂРёС‚Рј: РґРЅРё СЃ СЌРїРѕС…Рё -> Y-M-D (РїРѕ UTC, РґР»СЏ UI РґРѕСЃС‚Р°С‚РѕС‡РЅРѕ)
+    val daysSinceEpoch = ms / (24L * 60 * 60 * 1000)
+    return daysToYmd(daysSinceEpoch)
+}
+
+private fun daysToYmd(daysSinceEpoch: Long): String {
+    // РђР»РіРѕСЂРёС‚Рј РїРµСЂРµРІРѕРґР° РґРЅРµР№ СЃ 1970-01-01 РІ Y-M-D
+    var days = daysSinceEpoch + 719468
+    val era = if (days >= 0) days / 146097 else (days - 146096) / 146097
+    val doe = (days - era * 146097).toInt()
+    val yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    val y = yoe + (era * 400).toInt()
+    val doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    val mp = (5 * doy + 2) / 153
+    val d = doy - (153 * mp + 2) / 5 + 1
+    val m = if (mp < 10) mp + 3 else mp - 9
+    val year = if (m <= 2) y + 1 else y
+    return "${year.toString().padStart(4, '0')}-${m.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}"
+}
+
+internal expect fun currentTimeMillis(): Long
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chat\FocusTargetRegistry.kt
@@ -6452,6 +6550,20 @@ interface FilePickerLauncher {
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\util\PointerEvents.kt
+SIZE: 0.3 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.ui.Modifier
+
+/**
+ * Р”РѕР±Р°РІР»СЏРµС‚ РѕР±СЂР°Р±РѕС‚С‡РёРє РїСЂР°РІРѕРіРѕ РєР»РёРєР° РјС‹С€Рё (С‚РѕР»СЊРєРѕ desktop).
+ * РќР° Android/iOS вЂ” no-op (РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ long-press).
+ */
+expect fun Modifier.onRightClick(onClick: () -> Unit): Modifier
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonTest\kotlin\org\messenger\app\ComposeAppCommonTest.kt
 SIZE: 0.2 KB
 ----------------------------------------------------------------------
@@ -6469,7 +6581,216 @@ class ComposeAppCommonTest {
 }
 
 ----------------------------------------------------------------------
-FILE: D:\messenger_proj\source\mobile\composeApp\src\desktopMain\kotlin\org\messenger\app\PlatformName.desktop.kt
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\AppPlatform.jvm.kt
+SIZE: 0.9 KB
+----------------------------------------------------------------------
+package org.messenger.app
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.Flow
+import org.messenger.app.shared.di.AppModule
+
+/**
+ * Holder РґР»СЏ lifecycle: РїРѕР·РІРѕР»СЏРµС‚ syncAppModule РїРµСЂРµРєР»СЋС‡Р°С‚СЊ WS РЅР° РЅРѕРІС‹Р№ AppModule.
+ */
+internal object DesktopLifecycleHolder {
+    @Volatile var instance: DesktopLifecycle? = null
+    @Volatile var scope: CoroutineScope? = null
+}
+
+actual fun updateCurrentChatId(chatId: String?) {
+    DesktopLifecycleHolder.instance?.currentChatId = chatId
+}
+
+actual fun onLoginSuccessCallback(appModule: AppModule) {
+    // Desktop: push-СѓРІРµРґРѕРјР»РµРЅРёР№ РЅРµС‚ вЂ” no-op.
+}
+
+actual fun syncAppModule(appModule: AppModule) {
+    val lc = DesktopLifecycleHolder.instance ?: return
+    val sc = DesktopLifecycleHolder.scope ?: return
+    lc.updateAppModule(appModule, sc)
+}
+
+actual fun observeDeepLinks(): Flow<Pair<String, String>>? = null
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\DesktopLifecycle.kt
+SIZE: 2.4 KB
+----------------------------------------------------------------------
+package org.messenger.app
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import org.messenger.app.shared.di.AppModule
+
+/**
+ * РђРЅР°Р»РѕРі AppLifecycleObserver РёР· Android.
+ * РџСЂРё Р·Р°РїСѓСЃРєРµ РїСЂРёР»РѕР¶РµРЅРёСЏ / СЂР°Р·РІРѕСЂР°С‡РёРІР°РЅРёРё РѕРєРЅР° вЂ” РїРѕРґРєР»СЋС‡Р°РµС‚ WS.
+ * РџСЂРё СЃРІРѕСЂР°С‡РёРІР°РЅРёРё вЂ” РґР°С‘С‚ 30 СЃРµРєСѓРЅРґ, РїРѕС‚РѕРј РѕС‚РєР»СЋС‡Р°РµС‚ WS (РµСЃР»Рё РЅРµ РІРµСЂРЅСѓР»РёСЃСЊ).
+ */
+class DesktopLifecycle(
+    @Volatile private var appModule: AppModule
+) {
+    private val internalScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var disconnectJob: Job? = null
+    private var wsScope: CoroutineScope? = null
+
+    @Volatile
+    var currentChatId: String? = null
+
+    fun onAppStart(parentScope: CoroutineScope) {
+        startWs(parentScope)
+    }
+
+    fun onWindowRestored(parentScope: CoroutineScope) {
+        disconnectJob?.cancel()
+        disconnectJob = null
+        if (wsScope == null) {
+            startWs(parentScope)
+        }
+    }
+
+    fun onWindowMinimized() {
+        disconnectJob?.cancel()
+        disconnectJob = internalScope.launch {
+            delay(30_000)
+            stopWs()
+        }
+    }
+
+    fun onAppStop() {
+        disconnectJob?.cancel()
+        stopWs()
+        internalScope.cancel()
+    }
+
+    /**
+     * Р—Р°РјРµРЅРёС‚СЊ AppModule (РЅР°РїСЂРёРјРµСЂ РїРѕСЃР»Рµ СЃРјРµРЅС‹ СЃРµСЂРІРµСЂР° РЅР° СЌРєСЂР°РЅРµ Р»РѕРіРёРЅР°).
+     */
+    fun updateAppModule(newModule: AppModule, parentScope: CoroutineScope) {
+        try {
+            appModule.wsService.disconnect()
+        } catch (_: Exception) {}
+        wsScope?.cancel()
+        wsScope = null
+
+        appModule = newModule
+        startWs(parentScope)
+    }
+
+    private fun startWs(parentScope: CoroutineScope) {
+        wsScope?.cancel()
+        val newScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+        wsScope = newScope
+        try {
+            appModule.wsService.connect(newScope)
+        } catch (_: Exception) {}
+    }
+
+    private fun stopWs() {
+        try {
+            appModule.wsService.disconnect()
+        } catch (_: Exception) {}
+        wsScope?.cancel()
+        wsScope = null
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\main.kt
+SIZE: 2.6 KB
+----------------------------------------------------------------------
+package org.messenger.app
+
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.application
+import androidx.compose.ui.window.rememberWindowState
+import com.russhwolf.settings.Settings
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import org.messenger.app.shared.di.AppModule
+import org.messenger.app.util.DesktopBackStack
+import java.awt.Dimension
+
+private const val WINDOW_W_KEY = "window_width"
+private const val WINDOW_H_KEY = "window_height"
+private const val MIN_W = 800
+private const val MIN_H = 600
+
+fun main() = application {
+    val appModule = AppModule()
+    val settings = remember { Settings() }
+
+    val savedW = (settings.getIntOrNull(WINDOW_W_KEY) ?: 1280).coerceAtLeast(MIN_W)
+    val savedH = (settings.getIntOrNull(WINDOW_H_KEY) ?: 800).coerceAtLeast(MIN_H)
+
+    val windowState = rememberWindowState(
+        width = savedW.dp,
+        height = savedH.dp,
+    )
+
+    val scope = remember { CoroutineScope(SupervisorJob() + Dispatchers.Main) }
+    val lifecycle = remember {
+        DesktopLifecycle(appModule).also {
+            DesktopLifecycleHolder.instance = it
+            DesktopLifecycleHolder.scope = scope
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        lifecycle.onAppStart(scope)
+    }
+
+    Window(
+        onCloseRequest = {
+            try {
+                settings.putInt(WINDOW_W_KEY, windowState.size.width.value.toInt())
+                settings.putInt(WINDOW_H_KEY, windowState.size.height.value.toInt())
+            } catch (_: Exception) {}
+            lifecycle.onAppStop()
+            exitApplication()
+        },
+        title = "Messenger Oreshnik",
+        state = windowState,
+        onPreviewKeyEvent = { keyEvent ->
+            if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Escape) {
+                DesktopBackStack.handleEscape()
+            } else false
+        },
+    ) {
+        // РњРёРЅРёРјР°Р»СЊРЅС‹Р№ СЂР°Р·РјРµСЂ РѕРєРЅР°
+        LaunchedEffect(Unit) {
+            window.minimumSize = Dimension(MIN_W, MIN_H)
+        }
+
+        LaunchedEffect(windowState.isMinimized) {
+            if (windowState.isMinimized) {
+                lifecycle.onWindowMinimized()
+            } else {
+                lifecycle.onWindowRestored(scope)
+            }
+        }
+
+        App(appModule = appModule)
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\PlatformName.jvm.kt
 SIZE: 0.1 KB
 ----------------------------------------------------------------------
 package org.messenger.app
@@ -6477,41 +6798,12 @@ package org.messenger.app
 actual fun getPlatformName(): String = "desktop"
 
 ----------------------------------------------------------------------
-FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\AppPlatform.jvm.kt
-SIZE: 0.3 KB
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\ui\chat\Time.jvm.kt
+SIZE: 0.1 KB
 ----------------------------------------------------------------------
-package org.messenger.app
+package org.messenger.app.ui.chat
 
-import org.messenger.app.shared.di.AppModule
-
-actual fun updateCurrentChatId(chatId: String?) {}
-actual fun onLoginSuccessCallback(appModule: AppModule) {}
-actual fun syncAppModule(appModule: AppModule) {}
-
-actual fun observeDeepLinks(): kotlinx.coroutines.flow.Flow<Pair<String, String>>? = null
-
-----------------------------------------------------------------------
-FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\main.kt
-SIZE: 0.4 KB
-----------------------------------------------------------------------
-package org.messenger.app
-
-import androidx.compose.ui.window.Window
-import androidx.compose.ui.window.application
-import org.messenger.app.shared.di.AppModule
-
-fun main() = application {
-    val appModule = AppModule(
-        baseUrl = "http://localhost:8000/",
-        wsBaseUrl = "ws://localhost:8000/"
-    )
-    Window(
-        onCloseRequest = ::exitApplication,
-        title = "MessengerApp",
-    ) {
-        App(appModule = appModule)
-    }
-}
+internal actual fun currentTimeMillis(): Long = System.currentTimeMillis()
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\ui\common\CachedAsyncImage.jvm.kt
@@ -6531,20 +6823,43 @@ actual fun decodeImageBitmap(bytes: ByteArray): ImageBitmap? {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\util\BackHandler.jvm.kt
-SIZE: 0.2 KB
+SIZE: 1.1 KB
 ----------------------------------------------------------------------
 package org.messenger.app.util
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+
+/**
+ * РќР° Desktop "back" РїСЂРёРІСЏР·Р°РЅ Рє РєР»Р°РІРёС€Рµ Escape.
+ * РСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РµРґРёРЅС‹Р№ СЃС‚РµРє: РїРѕСЃР»РµРґРЅРёР№ Р·Р°СЂРµРіРёСЃС‚СЂРёСЂРѕРІР°РЅРЅС‹Р№ enabled-РєРѕР»Р»Р±СЌРє
+ * РїРµСЂРµС…РІР°С‚С‹РІР°РµС‚ РЅР°Р¶Р°С‚РёРµ Esc.
+ */
+internal object DesktopBackStack {
+    // РСЃРїРѕР»СЊР·СѓРµРј CopyOnWriteArrayList РґР»СЏ Р±РµР·РѕРїР°СЃРЅРѕР№ РёС‚РµСЂР°С†РёРё РІ Swing-РїРѕС‚РѕРєРµ
+    val handlers = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+
+    fun handleEscape(): Boolean {
+        val last = handlers.lastOrNull() ?: return false
+        try { last() } catch (_: Exception) {}
+        return true
+    }
+}
 
 @Composable
-actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {}
-
-
+actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {
+    DisposableEffect(enabled, onBack) {
+        if (!enabled) return@DisposableEffect onDispose { }
+        DesktopBackStack.handlers.add(onBack)
+        onDispose {
+            DesktopBackStack.handlers.remove(onBack)
+        }
+    }
+}
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\util\FilePicker.jvm.kt
-SIZE: 1.2 KB
+SIZE: 2.7 KB
 ----------------------------------------------------------------------
 package org.messenger.app.util
 
@@ -6553,6 +6868,7 @@ import androidx.compose.runtime.remember
 import java.awt.FileDialog
 import java.awt.Frame
 import java.io.File
+import java.io.FilenameFilter
 import java.nio.file.Files
 
 @Composable
@@ -6562,7 +6878,16 @@ actual fun rememberFilePicker(
     object : FilePickerLauncher {
         override fun launch(mimeFilter: String) {
             try {
-                val dialog = FileDialog(null as Frame?, "Р’С‹Р±РµСЂРёС‚Рµ С„Р°Р№Р»", FileDialog.LOAD)
+                val dialog = FileDialog(null as Frame?, "Р’С‹Р±РµСЂРёС‚Рµ С„Р°Р№Р»", FileDialog.LOAD).apply {
+                    // mimeFilter РІРёРґР° "image/*", "*/*", "application/pdf"
+                    val (type, sub) = parseMime(mimeFilter)
+                    if (type != null && type != "*") {
+                        filenameFilter = FilenameFilter { _, name ->
+                            val ext = name.substringAfterLast('.', "").lowercase()
+                            matchExtension(type, sub, ext)
+                        }
+                    }
+                }
                 dialog.isVisible = true
                 val dir = dialog.directory
                 val file = dialog.file
@@ -6571,10 +6896,61 @@ actual fun rememberFilePicker(
                     val bytes = f.readBytes()
                     val mime = try {
                         Files.probeContentType(f.toPath()) ?: "application/octet-stream"
-                    } catch (_: Exception) { "application/octet-stream" }
+                    } catch (_: Exception) {
+                        "application/octet-stream"
+                    }
                     onPicked(PickedFile(name = f.name, mimeType = mime, bytes = bytes))
                 }
             } catch (_: Exception) {}
+        }
+    }
+}
+
+private fun parseMime(filter: String): Pair<String?, String?> {
+    val parts = filter.trim().split("/")
+    val type = parts.getOrNull(0)?.takeIf { it.isNotBlank() }
+    val sub = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
+    return type to sub
+}
+
+private val IMAGE_EXTS = setOf("jpg", "jpeg", "png", "gif", "bmp", "webp", "heic", "heif")
+private val VIDEO_EXTS = setOf("mp4", "mov", "mkv", "avi", "webm", "m4v")
+private val AUDIO_EXTS = setOf("mp3", "wav", "ogg", "m4a", "flac", "aac", "opus")
+
+private fun matchExtension(type: String, sub: String?, ext: String): Boolean {
+    if (ext.isEmpty()) return false
+    return when (type) {
+        "image" -> IMAGE_EXTS.contains(ext)
+        "video" -> VIDEO_EXTS.contains(ext)
+        "audio" -> AUDIO_EXTS.contains(ext)
+        "application" -> when (sub) {
+            null, "*" -> true
+            "pdf" -> ext == "pdf"
+            else -> sub.equals(ext, ignoreCase = true)
+        }
+        else -> true
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\util\PointerEvents.jvm.kt
+SIZE: 0.7 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.pointerInput
+
+actual fun Modifier.onRightClick(onClick: () -> Unit): Modifier = this.pointerInput(onClick) {
+    awaitEachGesture {
+        val event = awaitPointerEvent(PointerEventPass.Main)
+        if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
+            event.changes.forEach { it.consume() }
+            onClick()
         }
     }
 }
@@ -6603,7 +6979,7 @@ SIZE: 4.9 KB
 [versions]
 agp = "8.11.2"
 android-compileSdk = "36"
-android-minSdk = "24"
+android-minSdk = "26"
 android-targetSdk = "36"
 androidx-activity = "1.13.0"
 androidx-appcompat = "1.7.1"
@@ -10946,6 +11322,6 @@ SIZE: 0.2 KB
 }
 
 ======================================================================
-Total files dumped: 130
+Total files dumped: 136
 ======================================================================
 

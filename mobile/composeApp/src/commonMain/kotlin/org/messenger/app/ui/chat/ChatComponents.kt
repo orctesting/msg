@@ -42,15 +42,29 @@ import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
 import org.messenger.app.shared.data.model.AttachmentDto
 import org.messenger.app.shared.ui.chat.UploadingAttachment
-import kotlinx.datetime.toLocalDateTime
+import org.messenger.app.util.onRightClick
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.platform.LocalDensity
 import org.messenger.app.shared.data.model.MessageDto
 import org.messenger.app.shared.data.model.PinnedMessageDto
 import org.messenger.app.shared.data.model.ReplyPreviewDto
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -215,6 +229,7 @@ fun DateSeparator(label: String) {
     }
 }
 
+
 @Composable
 fun MessageInput(
     draft: String,
@@ -267,12 +282,57 @@ fun MessageInput(
                     }
                 }
 
+                var textFieldValue by remember(editing?.id) {
+                    mutableStateOf(TextFieldValue(draft, TextRange(draft.length)))
+                }
+// синхронизация: если draft изменился извне (например, очистка после отправки), обновляем
+                LaunchedEffect(draft) {
+                    if (textFieldValue.text != draft) {
+                        textFieldValue = TextFieldValue(draft, TextRange(draft.length))
+                    }
+                }
+
                 OutlinedTextField(
-                    value = draft,
-                    onValueChange = onDraftChanged,
-                    modifier = Modifier.weight(1f),
+                    value = textFieldValue,
+                    onValueChange = { newValue ->
+                        textFieldValue = newValue
+                        if (newValue.text != draft) {
+                            onDraftChanged(newValue.text)
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown
+                                && keyEvent.key == Key.Enter
+                                && !keyEvent.isShiftPressed
+                            ) {
+                                val hasReady = uploadingAttachments.any { !it.isUploading && it.attachment != null }
+                                val anyUploading = uploadingAttachments.any { it.isUploading }
+                                if (!isSending && !anyUploading &&
+                                    (draft.isNotBlank() || hasReady || editing != null)
+                                ) {
+                                    onSend()
+                                    return@onPreviewKeyEvent true
+                                }
+                                false
+                            } else if (keyEvent.type == KeyEventType.KeyDown
+                                && keyEvent.key == Key.Enter
+                                && keyEvent.isShiftPressed
+                            ) {
+                                // Shift+Enter: вставляем перенос в позицию курсора
+                                val sel = textFieldValue.selection
+                                val text = textFieldValue.text
+                                val newText = text.substring(0, sel.start) + "\n" + text.substring(sel.end)
+                                val newCursor = sel.start + 1
+                                textFieldValue = TextFieldValue(newText, TextRange(newCursor))
+                                onDraftChanged(newText)
+                                true
+                            } else false
+                        },
                     placeholder = { Text("Сообщение...") },
-                    maxLines = 4,
+                    maxLines = 6,
+                    singleLine = false,
                 )
 
                 Spacer(modifier = Modifier.width(8.dp))
@@ -618,7 +678,8 @@ fun MessageBubble(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 4.dp)
-                .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                .onRightClick(onLongClick),
             horizontalArrangement = Arrangement.Center,
         ) {
             Surface(
@@ -682,6 +743,7 @@ fun MessageBubble(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .onRightClick(onLongClick)
             .padding(vertical = 2.dp),
         horizontalArrangement = if (isOwnMessage) Arrangement.End else Arrangement.Start,
     ) {
@@ -954,25 +1016,12 @@ private fun declOfNum(n: Int, one: String, few: String, many: String): String {
 
 internal fun formatTimeFromIso(iso: String): String {
     return try {
-        val normalized = if (
-            iso.endsWith("Z") ||
-            iso.contains("+") ||
-            iso.substringAfter("T", "").contains("-")
-        ) iso else "${iso}Z"
-        val instant = kotlinx.datetime.Instant.parse(normalized)
-        val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
-        val hh = local.hour.toString().padStart(2, '0')
-        val mm = local.minute.toString().padStart(2, '0')
-        "$hh:$mm"
-    } catch (_: Exception) {
-        try {
-            val timePart = if (iso.contains("T")) {
-                iso.substringAfter("T").substringBefore(".")
-                    .substringBefore("+").substringBefore("Z")
-            } else iso
-            timePart.take(5)
-        } catch (_: Exception) { "" }
-    }
+        val timePart = if (iso.contains("T")) {
+            iso.substringAfter("T").substringBefore(".")
+                .substringBefore("+").substringBefore("Z")
+        } else iso
+        timePart.take(5)
+    } catch (_: Exception) { "" }
 }
 
 internal fun isMessageReadByOthers(

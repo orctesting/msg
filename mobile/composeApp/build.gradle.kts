@@ -36,7 +36,6 @@ kotlin {
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.androidx.lifecycle.viewmodelCompose)
             implementation(libs.androidx.lifecycle.runtimeCompose)
-            implementation(libs.kotlinx.datetime)
             implementation("org.jetbrains.compose.material:material-icons-extended:1.7.3")
             implementation(projects.shared)
         }
@@ -46,6 +45,7 @@ kotlin {
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)
             implementation(libs.kotlinx.coroutinesSwing)
+            implementation(libs.multiplatformSettings)
         }
     }
 }
@@ -89,6 +89,14 @@ compose.desktop {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "org.messenger.app"
             packageVersion = "1.0.0"
+
+            modules(
+                "java.net.http",
+                "java.naming",
+                "java.sql",
+                "jdk.crypto.ec",
+                "jdk.unsupported"
+            )
         }
     }
 }
