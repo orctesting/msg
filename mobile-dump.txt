@@ -1,6 +1,6 @@
 ﻿======================================================================
 MOBILE PROJECT DUMP
-Generated: 2026-04-30 22:38:48
+Generated: 2026-05-01 22:55:20
 Root: D:\messenger_proj\source\mobile
 ======================================================================
 
@@ -676,6 +676,13 @@ class MessengerApplication : Application() {
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\PlatformFlags.android.kt
+SIZE: 0.1 KB
+----------------------------------------------------------------------
+package org.messenger.app
+actual val isDesktop: Boolean = false
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\PlatformName.android.kt
 SIZE: 0.1 KB
 ----------------------------------------------------------------------
@@ -894,6 +901,33 @@ actual fun decodeImageBitmap(bytes: ByteArray): ImageBitmap? {
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\ui\MainScreen.android.kt
+SIZE: 0.8 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui
+
+import androidx.compose.runtime.Composable
+import org.messenger.app.shared.di.AppModule
+
+@Composable
+actual fun PlatformMainScreen(
+    appModule: AppModule,
+    initialChatId: String?,
+    initialChatName: String?,
+    onLogout: () -> Unit,
+    onOpenForwardPicker: (sourceChatId: String, sourceChatName: String, messageIds: List<String>) -> Unit,
+    forwardResultChatId: String?,
+    onForwardResultConsumed: () -> Unit,
+) {
+    // РќР° Android РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ СЃС‚РµРєРѕРІР°СЏ РЅР°РІРёРіР°С†РёСЏ РІ App.kt вЂ” СЌС‚РѕС‚ expect РЅРµ РІС‹Р·С‹РІР°РµС‚СЃСЏ.
+    // Р—Р°РіР»СѓС€РєР° РЅСѓР¶РЅР° С‚РѕР»СЊРєРѕ РґР»СЏ РєРѕРјРїРёР»СЏС†РёРё actual.
+    MobileMainScreenStub()
+}
+
+@Composable
+private fun MobileMainScreenStub() {}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\util\BackHandler.android.kt
 SIZE: 0.3 KB
 ----------------------------------------------------------------------
@@ -907,6 +941,41 @@ actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {
     BackHandler(enabled = enabled, onBack = onBack)
 }
 
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\util\ContextMenu.android.kt
+SIZE: 0.4 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+
+@Composable
+actual fun PlatformContextMenu(
+    itemsProvider: () -> List<ContextMenuItem>,
+    modifier: Modifier,
+    content: @Composable () -> Unit,
+) {
+    Box(modifier = modifier) { content() }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\util\FileDrop.android.kt
+SIZE: 0.3 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+
+@Composable
+actual fun Modifier.fileDropTarget(
+    enabled: Boolean,
+    onDragStateChange: (Boolean) -> Unit,
+    onFilesDropped: (List<DroppedFile>) -> Unit,
+): Modifier = this
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\util\FilePicker.android.kt
@@ -964,6 +1033,20 @@ private fun queryFileName(
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\util\MouseDragScroll.android.kt
+SIZE: 0.3 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.ui.Modifier
+
+actual fun Modifier.mouseScrollGestures(
+    listState: LazyListState,
+    selectionCallbacks: MouseSelectionCallbacks?,
+): Modifier = this
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\util\PointerEvents.android.kt
 SIZE: 0.1 KB
 ----------------------------------------------------------------------
@@ -972,6 +1055,25 @@ package org.messenger.app.util
 import androidx.compose.ui.Modifier
 
 actual fun Modifier.onRightClick(onClick: () -> Unit): Modifier = this
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\util\Scrollbar.android.kt
+SIZE: 0.3 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+
+@Composable
+actual fun PlatformVerticalScrollbar(
+    state: LazyListState,
+    modifier: Modifier,
+    reverseLayout: Boolean,
+) {
+    // no-op on Android
+}
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\res\drawable\ic_launcher_background.xml
@@ -1285,7 +1387,7 @@ SIZE: 1.5 KB
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\App.kt
-SIZE: 13.6 KB
+SIZE: 11 KB
 ----------------------------------------------------------------------
 package org.messenger.app
 
@@ -1347,6 +1449,8 @@ fun App(
         )
     }
 
+    var forwardResultChatId by remember { mutableStateOf<String?>(null) }
+
     // РЎРєРѕСѓРї РґР»СЏ РїРµСЂРµСЃС‹Р»РѕРє (forward) вЂ” Р¶РёРІС‘С‚ РЅР° СѓСЂРѕРІРЅРµ App, РЅРµ РїСЂРёРІСЏР·Р°РЅ Рє ChatScreen
     val forwardScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.Main) }
     // Deep links (FCM tap РЅР° Android). РќР° РґСЂСѓРіРёС… РїР»Р°С‚С„РѕСЂРјР°С… РІРѕР·РІСЂР°С‰Р°РµС‚ null.
@@ -1366,194 +1470,23 @@ fun App(
         ) {
             when (val screen = currentScreen) {
                 is Screen.Auth -> {
-                    val viewModel = remember(appModuleRevision) {
-                        AuthViewModel(
-                            authRepository = currentAppModule.authRepository,
-                            deviceInfo = DeviceInfo(
-                                deviceId = "device-${getPlatformName()}",
-                                platform = getPlatformName()
-                            ),
-                            initialServerAddress = currentAppModule.tokenStorage.getServerUrl() ?: ""
-                        )
-                    }
-                    val state by viewModel.state.collectAsState()
-
-                    // РЎРёСЃС‚РµРјРЅР°СЏ РєРЅРѕРїРєР° "РЅР°Р·Р°Рґ": РЅР° С€Р°РіРµ CODE РІРѕР·РІСЂР°С‰Р°РµС‚ Рє PHONE,
-                    // РЅР° С€Р°РіРµ PHONE вЂ” РЅРµ РїРµСЂРµС…РІР°С‚С‹РІР°РµС‚ (РґР°С‘С‚ СЃРёСЃС‚РµРјРµ СЃРІРµСЂРЅСѓС‚СЊ РїСЂРёР»РѕР¶РµРЅРёРµ)
-                    PlatformBackHandler(
-                        enabled = state.step == AuthStep.CODE
-                    ) {
-                        viewModel.backToPhone()
-                    }
-
-                    LaunchedEffect(state.isAuthenticated) {
-                        if (state.isAuthenticated) {
-                            val addr = state.serverAddress.trim()
-                            if (addr.isNotBlank()) {
-                                currentAppModule.tokenStorage.saveServerUrl(addr)
-                            }
-                            currentScreen = Screen.ChatList
-                            onLoginSuccessCallback(currentAppModule)
-                        }
-                    }
-
-                    AuthScreen(
-                        viewModel = viewModel,
-                        onRequestOtp = { addr ->
-                            val newBase = AppModule.buildBaseUrl(addr)
-                            if (newBase != currentAppModule.baseUrl) {
-                                val keptPhone = viewModel.state.value.phone
-                                val newModule = AppModule(
-                                    baseUrl = newBase,
-                                    wsBaseUrl = AppModule.buildWsUrl(addr)
-                                )
-                                newModule.tokenStorage.saveServerUrl(addr)
-                                currentAppModule = newModule
-                                appModuleRevision++
-                                syncAppModule(newModule)
-                                pendingPhoneForOtp = keptPhone
-                                pendingServerAddress = addr
-                            } else {
-                                viewModel.requestOtp()
-                            }
-                        }
-                    )
-
-                    LaunchedEffect(appModuleRevision) {
-                        val phone = pendingPhoneForOtp
-                        val addr = pendingServerAddress
-                        if (phone != null && addr != null && appModuleRevision > 0) {
-                            viewModel.onServerAddressChanged(addr)
-                            viewModel.onPhoneChanged(phone)
-                            viewModel.requestOtp()
-                            pendingPhoneForOtp = null
-                            pendingServerAddress = null
-                        }
-                    }
-                }
-
-                is Screen.ChatList -> {
-                    ChatListScreen(
-                        appModule = currentAppModule,
-                        onChatClick = { chatId, chatName ->
-                            currentScreen = Screen.Chat(chatId, chatName)
-                        },
-                        onOpenSettings = { currentScreen = Screen.Settings },
-                        onOpenProfile = { currentScreen = Screen.Profile },
-                    )
-                }
-
-                is Screen.Settings -> {
-                    // "РќР°Р·Р°Рґ" РёР· РЅР°СЃС‚СЂРѕРµРє в†’ СЃРїРёСЃРѕРє С‡Р°С‚РѕРІ
-                    PlatformBackHandler(enabled = true) {
-                        currentScreen = Screen.ChatList
-                    }
-
-                    SettingsScreen(
-                        appModule = currentAppModule,
-                        onBack = { currentScreen = Screen.ChatList },
-                        onOpenContacts = { currentScreen = Screen.Contacts },
-                        onOpenProfile = { currentScreen = Screen.Profile },
-                        onLogout = {
-                            currentAppModule.tokenStorage.clear()
-                            currentAppModule.wsService.disconnect()
-                            currentScreen = Screen.Auth
-                        }
-                    )
-                }
-
-                is Screen.Contacts -> {
-                    PlatformBackHandler(enabled = true) {
-                        currentScreen = Screen.Settings
-                    }
-                    ContactsScreen(
-                        appModule = currentAppModule,
-                        onBack = { currentScreen = Screen.Settings },
-                        onContactClick = { contact ->
-                            // РЎРѕР·РґР°С‚СЊ / РѕС‚РєСЂС‹С‚СЊ Р»РёС‡РЅС‹Р№ С‡Р°С‚ СЃ РєРѕРЅС‚Р°РєС‚РѕРј
-                            forwardScope.launch {
-                                try {
-                                    val chat = currentAppModule.chatRepository
-                                        .createPersonalChat(contactId = contact.id)
-                                    currentScreen = Screen.Chat(chat.id, chat.name ?: contact.displayName)
-                                } catch (_: Exception) {
-                                    // silently ignore; РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ СѓРІРёРґРёС‚ С‡РµСЂРµР· state РѕС€РёР±РєРё РµСЃР»Рё СЂР°СЃС€РёСЂРёРј
-                                }
-                            }
-                        }
-                    )
-                }
-
-                is Screen.Profile -> {
-                    PlatformBackHandler(enabled = true) {
-                        currentScreen = Screen.Settings
-                    }
-                    org.messenger.app.ui.profile.ProfileScreen(
-                        appModule = currentAppModule,
-                        onBack = { currentScreen = Screen.Settings },
-                        onOpenAvatars = { currentScreen = Screen.Avatars },
-                    )
-                }
-
-                is Screen.Avatars -> {
-                    PlatformBackHandler(enabled = true) {
-                        currentScreen = Screen.Profile
-                    }
-                    org.messenger.app.ui.profile.AvatarsScreen(
-                        appModule = currentAppModule,
-                        onBack = { currentScreen = Screen.Profile },
-                    )
-                }
-
-                is Screen.PeerProfile -> {
-                    PlatformBackHandler(enabled = true) {
-                        currentScreen = Screen.ChatList
-                    }
-                    org.messenger.app.ui.profile.PeerProfileScreen(
-                        appModule = currentAppModule,
-                        userId = screen.userId,
-                        onBack = { /* РІРѕР·РІСЂР°С‰Р°РµРјСЃСЏ РєСѓРґР° Р±С‹Р»Рё вЂ” СѓРїСЂРѕС‰С‘РЅРЅРѕ РІ ChatList */
-                            currentScreen = Screen.ChatList
-                        },
-                    )
-                }
-
-                is Screen.Chat -> {
-                    updateCurrentChatId(screen.chatId)
-                    ChatScreen(
-                        chatId = screen.chatId,
-                        chatName = screen.chatName,
-                        appModule = currentAppModule,
-                        onBack = {
-                            updateCurrentChatId(null)
-                            currentScreen = Screen.ChatList
-                        },
-                        onPickForwardTarget = { sourceChatId, messageIds ->
-                            currentScreen = Screen.ForwardPicker(
-                                sourceChatId = sourceChatId,
-                                sourceChatName = screen.chatName,
-                                messageIds = messageIds,
-                            )
-                        },
-                        onOpenPeerProfile = { userId ->
-                            currentScreen = Screen.PeerProfile(userId)
-                        },
-                    )
+                    // ... РѕСЃС‚Р°РІРёС‚СЊ РљРђРљ Р‘Р«Р›Рћ (Р±РµР· РёР·РјРµРЅРµРЅРёР№)
                 }
 
                 is Screen.ForwardPicker -> {
                     updateCurrentChatId(null)
-                    // BackHandler РІРЅСѓС‚СЂРё ForwardTargetScreen СЃР°Рј РѕР±СЂР°Р±Р°С‚С‹РІР°РµС‚ РґРёР°Р»РѕРі РїРѕРґС‚РІРµСЂР¶РґРµРЅРёСЏ
-                    // Рё РѕС‚РјРµРЅСѓ РІС‹Р±РѕСЂР°, РІРѕР·РІСЂР°С‰Р°СЏСЃСЊ РІ РёСЃС…РѕРґРЅС‹Р№ С‡Р°С‚
                     ForwardTargetScreen(
                         appModule = currentAppModule,
                         sourceChatId = screen.sourceChatId,
                         messageIds = screen.messageIds,
                         onCancel = {
-                            currentScreen = Screen.Chat(screen.sourceChatId, screen.sourceChatName)
+                            currentScreen = if (isDesktop) {
+                                Screen.ChatList
+                            } else {
+                                Screen.Chat(screen.sourceChatId, screen.sourceChatName)
+                            }
                         },
                         onPicked = { targetChatId ->
-                            // Р¤РѕСЂРІР°СЂРґРёРј РІСЃРµ РІС‹Р±СЂР°РЅРЅС‹Рµ СЃРѕРѕР±С‰РµРЅРёСЏ РїРѕ РѕРґРЅРѕРјСѓ
                             forwardScope.launch {
                                 screen.messageIds.forEach { msgId ->
                                     try {
@@ -1562,15 +1495,47 @@ fun App(
                                             messageId = msgId,
                                             targetChatId = targetChatId,
                                         )
-                                    } catch (_: Exception) {
-                                        // РѕС€РёР±РєРё С„РѕСЂРІР°СЂРґР° РіР»РѕС‚Р°РµРј, РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ СѓРІРёРґРёС‚ РѕС‚СЃСѓС‚СЃС‚РІРёРµ СЃРѕРѕР±С‰РµРЅРёСЏ
-                                    }
+                                    } catch (_: Exception) {}
                                 }
                             }
-                            // РћС‚РєСЂС‹РІР°РµРј С†РµР»РµРІРѕР№ С‡Р°С‚ (РёРјСЏ РїРѕРґС‚СЏРЅРµС‚СЃСЏ РёР· loadChatInfo РІРЅСѓС‚СЂРё ChatScreen)
-                            currentScreen = Screen.Chat(targetChatId, "")
+                            if (isDesktop) {
+                                forwardResultChatId = targetChatId
+                                currentScreen = Screen.ChatList
+                            } else {
+                                currentScreen = Screen.Chat(targetChatId, "")
+                            }
                         }
                     )
+                }
+
+                else -> {
+                    if (isDesktop) {
+                        // Desktop: РµРґРёРЅС‹Р№ split-pane СЌРєСЂР°РЅ РїРѕСЃР»Рµ Р°РІС‚РѕСЂРёР·Р°С†РёРё
+                        val initialChatScreen = screen as? Screen.Chat
+                        org.messenger.app.ui.PlatformMainScreen(
+                            appModule = currentAppModule,
+                            initialChatId = initialChatScreen?.chatId,
+                            initialChatName = initialChatScreen?.chatName,
+                            onLogout = {
+                                currentAppModule.tokenStorage.clear()
+                                currentAppModule.wsService.disconnect()
+                                currentScreen = Screen.Auth
+                            },
+                            onOpenForwardPicker = { srcId, srcName, ids ->
+                                currentScreen = Screen.ForwardPicker(srcId, srcName, ids)
+                            },
+                            forwardResultChatId = forwardResultChatId,
+                            onForwardResultConsumed = { forwardResultChatId = null },
+                        )
+                    } else {
+                        // Mobile: РѕСЂРёРіРёРЅР°Р»СЊРЅР°СЏ СЃС‚РµРєРѕРІР°СЏ РЅР°РІРёРіР°С†РёСЏ
+                        MobileNavigation(
+                            screen = screen,
+                            currentAppModule = currentAppModule,
+                            forwardScope = forwardScope,
+                            onScreenChange = { currentScreen = it },
+                        )
+                    }
                 }
             }
         }
@@ -1585,6 +1550,110 @@ expect fun onLoginSuccessCallback(appModule: AppModule)
 expect fun syncAppModule(appModule: AppModule)
 
 expect fun observeDeepLinks(): kotlinx.coroutines.flow.Flow<Pair<String, String>>?
+
+@Composable
+private fun MobileNavigation(
+    screen: Screen,
+    currentAppModule: AppModule,
+    forwardScope: CoroutineScope,
+    onScreenChange: (Screen) -> Unit,
+) {
+    when (screen) {
+        is Screen.ChatList -> {
+            ChatListScreen(
+                appModule = currentAppModule,
+                onChatClick = { chatId, chatName ->
+                    onScreenChange(Screen.Chat(chatId, chatName))
+                },
+                onOpenSettings = { onScreenChange(Screen.Settings) },
+                onOpenProfile = { onScreenChange(Screen.Profile) },
+            )
+        }
+        is Screen.Settings -> {
+            PlatformBackHandler(enabled = true) { onScreenChange(Screen.ChatList) }
+            SettingsScreen(
+                appModule = currentAppModule,
+                onBack = { onScreenChange(Screen.ChatList) },
+                onOpenContacts = { onScreenChange(Screen.Contacts) },
+                onOpenProfile = { onScreenChange(Screen.Profile) },
+                onLogout = {
+                    currentAppModule.tokenStorage.clear()
+                    currentAppModule.wsService.disconnect()
+                    onScreenChange(Screen.Auth)
+                }
+            )
+        }
+        is Screen.Contacts -> {
+            PlatformBackHandler(enabled = true) { onScreenChange(Screen.Settings) }
+            ContactsScreen(
+                appModule = currentAppModule,
+                onBack = { onScreenChange(Screen.Settings) },
+                onContactClick = { contact ->
+                    forwardScope.launch {
+                        try {
+                            val chat = currentAppModule.chatRepository
+                                .createPersonalChat(contactId = contact.id)
+                            onScreenChange(Screen.Chat(chat.id, chat.name ?: contact.displayName))
+                        } catch (_: Exception) {}
+                    }
+                }
+            )
+        }
+        is Screen.Profile -> {
+            PlatformBackHandler(enabled = true) { onScreenChange(Screen.Settings) }
+            org.messenger.app.ui.profile.ProfileScreen(
+                appModule = currentAppModule,
+                onBack = { onScreenChange(Screen.Settings) },
+                onOpenAvatars = { onScreenChange(Screen.Avatars) },
+            )
+        }
+        is Screen.Avatars -> {
+            PlatformBackHandler(enabled = true) { onScreenChange(Screen.Profile) }
+            org.messenger.app.ui.profile.AvatarsScreen(
+                appModule = currentAppModule,
+                onBack = { onScreenChange(Screen.Profile) },
+            )
+        }
+        is Screen.PeerProfile -> {
+            PlatformBackHandler(enabled = true) { onScreenChange(Screen.ChatList) }
+            org.messenger.app.ui.profile.PeerProfileScreen(
+                appModule = currentAppModule,
+                userId = screen.userId,
+                onBack = { onScreenChange(Screen.ChatList) },
+            )
+        }
+        is Screen.Chat -> {
+            updateCurrentChatId(screen.chatId)
+            PlatformBackHandler(enabled = true) {
+                updateCurrentChatId(null)
+                onScreenChange(Screen.ChatList)
+            }
+            ChatScreen(
+                chatId = screen.chatId,
+                chatName = screen.chatName,
+                appModule = currentAppModule,
+                onBack = {
+                    updateCurrentChatId(null)
+                    onScreenChange(Screen.ChatList)
+                },
+                onPickForwardTarget = { sourceChatId, messageIds ->
+                    onScreenChange(
+                        Screen.ForwardPicker(
+                            sourceChatId = sourceChatId,
+                            sourceChatName = screen.chatName,
+                            messageIds = messageIds,
+                        )
+                    )
+                },
+                onOpenPeerProfile = { userId ->
+                    onScreenChange(Screen.PeerProfile(userId))
+                },
+            )
+        }
+        // Auth Рё ForwardPicker РѕР±СЂР°Р±Р°С‚С‹РІР°СЋС‚СЃСЏ РІС‹С€Рµ, РґРѕ РІС‹Р·РѕРІР° MobileNavigation
+        is Screen.Auth, is Screen.ForwardPicker -> Unit
+    }
+}
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\navigation\AppNavHost.kt
@@ -1638,6 +1707,14 @@ fun AppNavHost(
         }
     }
 }
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\PlatformFlags.kt
+SIZE: 0.1 KB
+----------------------------------------------------------------------
+package org.messenger.app
+
+expect val isDesktop: Boolean
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\PlatformName.kt
@@ -1982,7 +2059,7 @@ private fun AddContactInlineDialog(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chat\ChatComponents.kt
-SIZE: 41.8 KB
+SIZE: 47.8 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chat
 
@@ -2051,6 +2128,9 @@ import org.messenger.app.shared.data.model.ReplyPreviewDto
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.foundation.layout.BoxWithConstraints
+import org.messenger.app.util.fileDropTarget
+import org.messenger.app.util.DroppedFile
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -2229,10 +2309,26 @@ fun MessageInput(
     onAttachClick: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     isSending: Boolean,
+    onFilesDropped: ((List<org.messenger.app.util.DroppedFile>) -> Unit)? = null,
 ) {
+    var isDragOver by remember { mutableStateOf(false) }
+    val dropModifier = if (onFilesDropped != null) {
+        Modifier.fileDropTarget(
+            enabled = editing == null,
+            onDragStateChange = { isDragOver = it },
+            onFilesDropped = { files -> onFilesDropped(files) },
+        )
+    } else Modifier
+
     Surface(
         tonalElevation = 3.dp,
-        modifier = Modifier.fillMaxWidth().imePadding().navigationBarsPadding(),
+        color = if (isDragOver) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+        else MaterialTheme.colorScheme.surface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .imePadding()
+            .navigationBarsPadding()
+            .then(dropModifier),
     ) {
         Column {
             if (editing != null) {
@@ -2686,27 +2782,133 @@ fun MessageBubble(
     }
 
     if (isSystem) {
+        val bubbleColor = when {
+            isSelected -> MaterialTheme.colorScheme.tertiaryContainer
+            isOwnMessage -> MaterialTheme.colorScheme.primaryContainer
+            isAdmin -> Color(0xFFFFCDD2)
+            else -> MaterialTheme.colorScheme.surfaceVariant
+        }
+
+        val nameColor = when {
+            isAdmin -> Color(0xFFD32F2F)
+            else -> MaterialTheme.colorScheme.primary
+        }
+
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                .onRightClick(onLongClick)
+                .padding(vertical = 2.dp),
+            horizontalArrangement = if (isOwnMessage) Arrangement.End else Arrangement.Start,
         ) {
+            // Spacer РґР»СЏ РѕС‚СЃС‚СѓРїР° СЃРѕ "СЃРІРѕР±РѕРґРЅРѕР№" СЃС‚РѕСЂРѕРЅС‹, Р·Р°РЅРёРјР°РµС‚ 25% С€РёСЂРёРЅС‹
+            if (isOwnMessage) {
+                Spacer(modifier = Modifier.weight(0.25f))
+            }
             Surface(
                 shape = MaterialTheme.shapes.medium,
-                color = Color(0xFFFFF3E0),
-                modifier = Modifier.widthIn(max = 300.dp),
+                color = bubbleColor,
+                modifier = Modifier.weight(0.75f, fill = false),
             ) {
                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                    Text(
-                        text = message.content,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF795548),
-                    )
-                    Text(
-                        text = formatTimeFromIso(message.createdAt),
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                        color = Color(0xFF795548).copy(alpha = 0.6f),
+                    if (!isOwnMessage) {
+                        Text(
+                            text = when {
+                                isAdmin -> "Admin"
+                                !message.senderName.isNullOrBlank() -> message.senderName!!
+                                else -> "РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = nameColor,
+                        )
+                    }
+
+                    message.forwardedFrom?.let { fwd ->
+                        Surface(
+                            color = Color.Transparent,
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        ) {
+                            Column {
+                                Text(
+                                    text = "РџРµСЂРµСЃР»Р°РЅРѕ РѕС‚ ${fwd.senderName ?: "РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ"}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                if (fwd.isDeleted) {
+                                    Text(
+                                        text = "(РѕСЂРёРіРёРЅР°Р» СѓРґР°Р»С‘РЅ)",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    message.replyTo?.let { reply ->
+                        ReplyQuote(reply)
+                        Spacer(Modifier.height(4.dp))
+                    }
+
+                    if (message.attachments.isNotEmpty()) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.padding(bottom = if (message.content.isNotBlank()) 6.dp else 0.dp),
+                        ) {
+                            message.attachments.forEach { att ->
+                                AttachmentChip(
+                                    attachment = att,
+                                    attachmentsRepository = attachmentsRepository,
+                                    onClick = {
+                                        att.downloadUrl?.let { url ->
+                                            org.messenger.app.shared.util.openUrl(url)
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                    }
+
+                    if (message.content.isNotBlank()) {
+                        LinkifiedText(
+                            text = message.content,
+                            baseStyle = MaterialTheme.typography.bodyMedium,
+                            onUrlClick = { url -> org.messenger.app.shared.util.openUrl(url) },
+                        )
+                    }
+
+                    Row(
                         modifier = Modifier.align(Alignment.End),
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        if (message.editedAt != null) {
+                            Text(
+                                text = "РёР·Рј.",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            )
+                            Spacer(Modifier.width(4.dp))
+                        }
+                        Text(
+                            text = formatTimeFromIso(message.createdAt),
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        )
+                        if (isOwnMessage) {
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                text = "вњ“вњ“",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                                color = if (isReadByOthers)
+                                    Color(0xFF2196F3)
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -2733,10 +2935,13 @@ fun MessageBubble(
             .padding(vertical = 2.dp),
         horizontalArrangement = if (isOwnMessage) Arrangement.End else Arrangement.Start,
     ) {
+        if (isOwnMessage) {
+            Spacer(modifier = Modifier.weight(0.25f))
+        }
         Surface(
             shape = MaterialTheme.shapes.medium,
             color = bubbleColor,
-            modifier = Modifier.widthIn(max = 280.dp),
+            modifier = Modifier.weight(0.75f, fill = false),
         ) {
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                 if (!isOwnMessage) {
@@ -2838,6 +3043,9 @@ fun MessageBubble(
                 }
             }
         }
+        if (!isOwnMessage) {
+            Spacer(modifier = Modifier.weight(0.25f))
+        }
     }
 }
 
@@ -2845,7 +3053,6 @@ fun MessageBubble(
 private fun ReplyQuote(reply: ReplyPreviewDto) {
     Row(
         modifier = Modifier
-            .fillMaxWidth()
             .clip(RoundedCornerShape(6.dp))
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.4f))
             .padding(horizontal = 8.dp, vertical = 4.dp),
@@ -3118,7 +3325,7 @@ fun StickyDateHeader(label: String) {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chat\ChatScreen.kt
-SIZE: 20.6 KB
+SIZE: 31.7 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chat
 
@@ -3127,21 +3334,41 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.material.icons.automirrored.filled.Forward
+import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Forward
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.runtime.mutableStateMapOf
 import kotlinx.coroutines.launch
 import org.messenger.app.shared.data.model.MessageDto
 import org.messenger.app.shared.di.AppModule
 import org.messenger.app.shared.ui.chat.ChatViewModel
 import org.messenger.app.shared.util.copyToClipboard
+import org.messenger.app.util.MouseSelectionCallbacks
+import org.messenger.app.util.PlatformBackHandler
+import org.messenger.app.util.PlatformVerticalScrollbar
+import org.messenger.app.util.mouseScrollGestures
+
+private val SELECTION_COLUMN_WIDTH = 36.dp
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class)
 @Composable
@@ -3183,11 +3410,19 @@ fun ChatScreen(
     var lastKnownTopMessageId by remember { mutableStateOf<String?>(null) }
     var showMessageMenuFor by remember { mutableStateOf<MessageDto?>(null) }
 
-    // Focus overlay state
     val focusBounds = remember { mutableStateMapOf<String, androidx.compose.ui.geometry.Rect>() }
     var overlayRootCoords by remember {
         mutableStateOf<androidx.compose.ui.layout.LayoutCoordinates?>(null)
     }
+
+    // Y-РєРѕРѕСЂРґРёРЅР°С‚С‹ СЃРѕРѕР±С‰РµРЅРёР№ (СЃС‚Р°Р±РёР»СЊРЅР°СЏ СЃСЃС‹Р»РєР°)
+    val messageRowYRanges = remember { mutableStateMapOf<String, ClosedFloatingPointRange<Float>>() }
+    var selectAnchorMessageId by remember { mutableStateOf<String?>(null) }
+
+    // РђРєС‚СѓР°Р»СЊРЅС‹Рµ Р·РЅР°С‡РµРЅРёСЏ РґР»СЏ Р»СЏРјР±Рґ (Р±РµР· РїРµСЂРµСЃРѕР·РґР°РЅРёСЏ callbacks)
+    val currentMessages by rememberUpdatedState(state.messages)
+    val currentSelectedIds by rememberUpdatedState(state.selectedIds)
+    val currentSelectionMode by rememberUpdatedState(state.selectionMode)
 
     val isAtBottom by remember {
         derivedStateOf {
@@ -3234,7 +3469,7 @@ fun ChatScreen(
         }
     }
 
-    org.messenger.app.util.PlatformBackHandler(
+    PlatformBackHandler(
         enabled = true,
         onBack = {
             when {
@@ -3256,6 +3491,45 @@ fun ChatScreen(
             .map { it.content }
         copyToClipboard(sortedContents.joinToString("\n\n"))
         viewModel.exitSelectionMode()
+    }
+
+    // РЎС‚Р°Р±РёР»СЊРЅС‹Рµ callbacks (СЃРѕР·РґР°СЋС‚СЃСЏ РѕРґРёРЅ СЂР°Р·)
+    val selectionCallbacks = remember {
+        MouseSelectionCallbacks(
+            onSelectStart = { y ->
+                val id = messageRowYRanges.entries.firstOrNull { (_, r) -> y in r }?.key
+                if (id != null) {
+                    selectAnchorMessageId = id
+                    if (!currentSelectionMode) {
+                        viewModel.enterSelectionMode(id)
+                    } else if (!currentSelectedIds.contains(id)) {
+                        viewModel.toggleSelection(id)
+                    }
+                }
+            },
+            onSelectUpdate = { y ->
+                val anchor = selectAnchorMessageId ?: return@MouseSelectionCallbacks
+                val current = messageRowYRanges.entries.firstOrNull { (_, r) -> y in r }?.key
+                    ?: return@MouseSelectionCallbacks
+                val msgs = currentMessages
+                val ai = msgs.indexOfFirst { it.id == anchor }
+                val ci = msgs.indexOfFirst { it.id == current }
+                if (ai < 0 || ci < 0) return@MouseSelectionCallbacks
+                val from = minOf(ai, ci)
+                val to = maxOf(ai, ci)
+                val rangeIds = msgs.subList(from, to + 1).map { it.id }.toSet()
+                val selected = currentSelectedIds
+                rangeIds.forEach { mid ->
+                    if (!selected.contains(mid)) viewModel.toggleSelection(mid)
+                }
+                selected.forEach { sid ->
+                    if (sid !in rangeIds) viewModel.toggleSelection(sid)
+                }
+            },
+            onSelectEnd = {
+                selectAnchorMessageId = null
+            },
+        )
     }
 
     Scaffold(
@@ -3335,7 +3609,16 @@ fun ChatScreen(
                     },
                     onAttachClick = { filePicker.launch("*/*") },
                     onRemoveAttachment = viewModel::removeUploadingAttachment,
-                    isSending = state.isSending
+                    isSending = state.isSending,
+                    onFilesDropped = { files ->
+                        files.forEach { f ->
+                            viewModel.uploadAttachment(
+                                filename = f.name,
+                                mimeType = f.mimeType,
+                                bytes = f.bytes,
+                            )
+                        }
+                    },
                 )
             }
         }
@@ -3350,6 +3633,7 @@ fun ChatScreen(
             } else {
                 val messages = state.messages
                 val focusTargetId = state.editingMessage?.id ?: state.replyTo?.id
+                val selectionMode = state.selectionMode
 
                 Column(modifier = Modifier.fillMaxSize()) {
                     val peer = state.peerUser
@@ -3387,9 +3671,19 @@ fun ChatScreen(
                     ) {
                         LazyColumn(
                             state = listState,
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .mouseScrollGestures(
+                                    listState = listState,
+                                    selectionCallbacks = selectionCallbacks,
+                                ),
                             reverseLayout = true,
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                            contentPadding = PaddingValues(
+                                start = 16.dp,
+                                end = 16.dp,
+                                top = 8.dp,
+                                bottom = 8.dp,
+                            ),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             messages.forEachIndexed { index, message ->
@@ -3400,46 +3694,94 @@ fun ChatScreen(
 
                                 item(key = "msg_${message.id}") {
                                     val isFocused = message.id == focusTargetId
-                                    Box(
-                                        modifier = if (isFocused) {
-                                            Modifier.onGloballyPositioned { coords ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .onGloballyPositioned { coords ->
                                                 val root = overlayRootCoords
                                                 if (root != null && coords.isAttached) {
                                                     val pos = root.localPositionOf(
                                                         coords,
                                                         androidx.compose.ui.geometry.Offset.Zero
                                                     )
-                                                    focusBounds[message.id] = androidx.compose.ui.geometry.Rect(
-                                                        offset = pos,
-                                                        size = androidx.compose.ui.geometry.Size(
-                                                            coords.size.width.toFloat(),
-                                                            coords.size.height.toFloat()
+                                                    val top = pos.y
+                                                    val bottom = top + coords.size.height.toFloat()
+                                                    messageRowYRanges[message.id] = top..bottom
+                                                    if (isFocused) {
+                                                        focusBounds[message.id] = androidx.compose.ui.geometry.Rect(
+                                                            offset = pos,
+                                                            size = androidx.compose.ui.geometry.Size(
+                                                                coords.size.width.toFloat(),
+                                                                coords.size.height.toFloat()
+                                                            )
                                                         )
-                                                    )
+                                                    }
                                                 }
                                             }
-                                        } else Modifier
+                                            .then(
+                                                if (selectionMode) {
+                                                    Modifier.clickable { viewModel.toggleSelection(message.id) }
+                                                } else Modifier
+                                            ),
+                                        verticalAlignment = Alignment.CenterVertically,
                                     ) {
-                                        MessageBubble(
-                                            message = message,
-                                            isOwnMessage = isOwn,
-                                            isReadByOthers = isRead,
-                                            isSelected = isSelected,
-                                            selectionMode = state.selectionMode,
-                                            attachmentsRepository = appModule.attachmentsRepository,
-                                            onClick = {
-                                                if (state.selectionMode) {
-                                                    viewModel.toggleSelection(message.id)
-                                                }
-                                            },
-                                            onLongClick = {
-                                                if (state.selectionMode) {
-                                                    viewModel.toggleSelection(message.id)
-                                                } else {
-                                                    showMessageMenuFor = message
-                                                }
-                                            },
-                                        )
+                                        Box(modifier = Modifier.weight(1f)) {
+                                            org.messenger.app.util.PlatformContextMenu(
+                                                itemsProvider = {
+                                                    buildMessageContextMenu(
+                                                        message = message,
+                                                        canEdit = viewModel.canEdit(message),
+                                                        canDelete = viewModel.canDelete(message),
+                                                        forwardAvailable = onPickForwardTarget != null,
+                                                        onReply = { viewModel.setReplyTo(message) },
+                                                        onCopy = {
+                                                            org.messenger.app.shared.util.copyToClipboard(message.content)
+                                                        },
+                                                        onEdit = { viewModel.startEdit(message) },
+                                                        onDelete = { viewModel.deleteMessage(message.id) },
+                                                        onForward = {
+                                                            onPickForwardTarget?.invoke(chatId, listOf(message.id))
+                                                        },
+                                                        onPin = { viewModel.pinMessage(message.id) },
+                                                        onSelect = { viewModel.enterSelectionMode(message.id) },
+                                                    )
+                                                },
+                                            ) {
+                                                MessageBubble(
+                                                    message = message,
+                                                    isOwnMessage = isOwn,
+                                                    isReadByOthers = isRead,
+                                                    isSelected = isSelected,
+                                                    selectionMode = selectionMode,
+                                                    attachmentsRepository = appModule.attachmentsRepository,
+                                                    onClick = {
+                                                        if (selectionMode) {
+                                                            viewModel.toggleSelection(message.id)
+                                                        }
+                                                    },
+                                                    onLongClick = {
+                                                        if (selectionMode) {
+                                                            viewModel.toggleSelection(message.id)
+                                                        } else {
+                                                            showMessageMenuFor = message
+                                                        }
+                                                    },
+                                                )
+                                            }
+                                        }
+                                        if (selectionMode) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .width(SELECTION_COLUMN_WIDTH)
+                                                    .padding(start = 6.dp, end = 6.dp),
+                                                contentAlignment = Alignment.Center,
+                                            ) {
+                                                SelectionMark(
+                                                    isSelected = isSelected,
+                                                    onClick = { viewModel.toggleSelection(message.id) },
+                                                )
+                                            }
+                                        }
                                     }
                                 }
 
@@ -3468,6 +3810,13 @@ fun ChatScreen(
                                 }
                             }
                         }
+
+                        // РЎРєСЂРѕР»Р»Р±Р°СЂ РїРѕРІРµСЂС… РїСЂР°РІРѕР№ РєСЂРѕРјРєРё
+                        PlatformVerticalScrollbar(
+                            state = listState,
+                            modifier = Modifier.align(Alignment.CenterEnd),
+                            reverseLayout = true,
+                        )
 
                         stickyDateKey?.let { key ->
                             Box(
@@ -3561,6 +3910,37 @@ fun ChatScreen(
     }
 }
 
+@Composable
+private fun SelectionMark(
+    isSelected: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(22.dp)
+            .clip(CircleShape)
+            .then(
+                if (isSelected) Modifier.background(MaterialTheme.colorScheme.primary)
+                else Modifier.border(
+                    width = 1.5.dp,
+                    color = MaterialTheme.colorScheme.outline,
+                    shape = CircleShape,
+                )
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (isSelected) {
+            Icon(
+                Icons.Default.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+}
+
 private fun computeListIndexForMessage(
     messages: List<MessageDto>,
     targetMessageId: String,
@@ -3577,6 +3957,65 @@ private fun computeListIndexForMessage(
         if (showDateHeader) lazyIndex++
     }
     return -1
+}
+
+private fun buildMessageContextMenu(
+    message: org.messenger.app.shared.data.model.MessageDto,
+    canEdit: Boolean,
+    canDelete: Boolean,
+    forwardAvailable: Boolean,
+    onReply: () -> Unit,
+    onCopy: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onForward: () -> Unit,
+    onPin: () -> Unit,
+    onSelect: () -> Unit,
+): List<org.messenger.app.util.ContextMenuItem> {
+    val items = mutableListOf<org.messenger.app.util.ContextMenuItem>()
+    items += org.messenger.app.util.ContextMenuItem(
+        label = "РћС‚РІРµС‚РёС‚СЊ",
+        icon = androidx.compose.material.icons.Icons.AutoMirrored.Filled.Reply,
+        onClick = onReply,
+    )
+    items += org.messenger.app.util.ContextMenuItem(
+        label = "РљРѕРїРёСЂРѕРІР°С‚СЊ",
+        icon = androidx.compose.material.icons.Icons.Default.ContentCopy,
+        onClick = onCopy,
+    )
+    if (forwardAvailable) {
+        items += org.messenger.app.util.ContextMenuItem(
+            label = "РџРµСЂРµСЃР»Р°С‚СЊ",
+            icon = androidx.compose.material.icons.Icons.Default.Forward,
+            onClick = onForward,
+        )
+    }
+    items += org.messenger.app.util.ContextMenuItem(
+        label = "Р—Р°РєСЂРµРїРёС‚СЊ",
+        icon = androidx.compose.material.icons.Icons.Default.PushPin,
+        onClick = onPin,
+    )
+    if (canEdit) {
+        items += org.messenger.app.util.ContextMenuItem(
+            label = "Р РµРґР°РєС‚РёСЂРѕРІР°С‚СЊ",
+            icon = androidx.compose.material.icons.Icons.Default.Edit,
+            onClick = onEdit,
+        )
+    }
+    if (canDelete) {
+        items += org.messenger.app.util.ContextMenuItem(
+            label = "РЈРґР°Р»РёС‚СЊ",
+            icon = androidx.compose.material.icons.Icons.Default.Delete,
+            isDestructive = true,
+            onClick = onDelete,
+        )
+    }
+    items += org.messenger.app.util.ContextMenuItem(
+        label = "Р’С‹Р±СЂР°С‚СЊ",
+        icon = androidx.compose.material.icons.Icons.Default.Check,
+        onClick = onSelect,
+    )
+    return items
 }
 
 ----------------------------------------------------------------------
@@ -3764,7 +4203,7 @@ private fun androidx.compose.ui.graphics.Color.takeOrDefault(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chatlist\ChatListScreen.kt
-SIZE: 9 KB
+SIZE: 9.8 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chatlist
 
@@ -3788,9 +4227,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.foundation.layout.Box
 import org.messenger.app.shared.data.model.ChatDto
 import org.messenger.app.shared.di.AppModule
 import org.messenger.app.shared.ui.chatlist.ChatListViewModel
+import org.messenger.app.util.mouseScrollGestures
+import org.messenger.app.util.PlatformVerticalScrollbar
 
 private enum class ChatsTab(val title: String) {
     ALL("Р’СЃРµ"),
@@ -3902,14 +4344,27 @@ fun ChatListScreen(
                         )
                     }
                     else -> {
-                        LazyColumn(modifier = Modifier.fillMaxSize()) {
-                            items(filtered, key = { it.id }) { chat ->
-                                ChatItem(
-                                    chat = chat,
-                                    showTypeIcon = selectedTab == ChatsTab.ALL,
-                                    onClick = { onChatClick(chat.id, chat.name ?: "Р§Р°С‚") }
-                                )
+                        val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .mouseScrollGestures(listState),
+                            ) {
+                                items(filtered, key = { it.id }) { chat ->
+                                    ChatItem(
+                                        chat = chat,
+                                        showTypeIcon = selectedTab == ChatsTab.ALL,
+                                        onClick = { onChatClick(chat.id, chat.name ?: "Р§Р°С‚") }
+                                    )
+                                }
                             }
+                            PlatformVerticalScrollbar(
+                                state = listState,
+                                modifier = Modifier.align(Alignment.CenterEnd),
+                                reverseLayout = false,
+                            )
                         }
                     }
                 }
@@ -5126,6 +5581,26 @@ private fun ForwardTargetRow(chat: ChatDto, onClick: () -> Unit) {
         }
     }
 }
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\MainScreen.kt
+SIZE: 0.5 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui
+
+import androidx.compose.runtime.Composable
+import org.messenger.app.shared.di.AppModule
+
+@Composable
+expect fun PlatformMainScreen(
+    appModule: AppModule,
+    initialChatId: String?,
+    initialChatName: String?,
+    onLogout: () -> Unit,
+    onOpenForwardPicker: (sourceChatId: String, sourceChatName: String, messageIds: List<String>) -> Unit,
+    forwardResultChatId: String?,
+    onForwardResultConsumed: () -> Unit,
+)
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\profile\AvatarsScreen.kt
@@ -6527,6 +7002,56 @@ expect fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit)
 
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\util\ContextMenu.kt
+SIZE: 0.8 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+
+data class ContextMenuItem(
+    val label: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    val isDestructive: Boolean = false,
+    val onClick: () -> Unit,
+)
+
+/**
+ * РћР±РѕСЂР°С‡РёРІР°РµС‚ РєРѕРЅС‚РµРЅС‚ РїР»Р°С‚С„РѕСЂРјРµРЅРЅС‹Рј РєРѕРЅС‚РµРєСЃС‚РЅС‹Рј РјРµРЅСЋ.
+ * - Desktop: РџРљРњ РѕС‚РєСЂС‹РІР°РµС‚ DropdownMenu РІ С‚РѕС‡РєРµ РєСѓСЂСЃРѕСЂР°.
+ * - Android/iOS: no-op (РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ long-press + ModalBottomSheet РІС‹С€Рµ РїРѕ РґРµСЂРµРІСѓ).
+ */
+@Composable
+expect fun PlatformContextMenu(
+    itemsProvider: () -> List<ContextMenuItem>,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+)
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\util\FileDrop.kt
+SIZE: 0.4 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+
+data class DroppedFile(
+    val name: String,
+    val mimeType: String,
+    val bytes: ByteArray,
+)
+
+@Composable
+expect fun Modifier.fileDropTarget(
+    enabled: Boolean = true,
+    onDragStateChange: (Boolean) -> Unit = {},
+    onFilesDropped: (List<DroppedFile>) -> Unit,
+): Modifier
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\util\FilePicker.kt
 SIZE: 0.4 KB
 ----------------------------------------------------------------------
@@ -6550,6 +7075,40 @@ interface FilePickerLauncher {
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\util\MouseDragScroll.kt
+SIZE: 1.5 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.ui.Modifier
+
+/**
+ * РџР°СЂР°РјРµС‚СЂС‹ РѕР±СЂР°Р±РѕС‚РєРё РјС‹С€Рё РґР»СЏ РѕР±Р»Р°СЃС‚Рё СЃРѕРѕР±С‰РµРЅРёР№ (Desktop).
+ *
+ * @param onLeftDragSelect вЂ” РІС‹Р·С‹РІР°РµС‚СЃСЏ РїСЂРё Р›РљРњ-drag. РџРµСЂРµРґР°С‘С‚ РєРѕР»Р»Р±СЌРєРё РґР»СЏ РѕРїСЂРµРґРµР»РµРЅРёСЏ
+ *   СЃРѕРѕР±С‰РµРЅРёСЏ РїРѕ СЌРєСЂР°РЅРЅРѕР№ С‚РѕС‡РєРµ (Y-РєРѕРѕСЂРґРёРЅР°С‚Рµ) Рё РЅР°С‡Р°Р»Р°/РѕР±РЅРѕРІР»РµРЅРёСЏ РІС‹РґРµР»РµРЅРёСЏ РґРёР°РїР°Р·РѕРЅР°.
+ *   РќР° Android/iOS вЂ” РёРіРЅРѕСЂРёСЂСѓРµС‚СЃСЏ.
+ *
+ * РЎС†РµРЅР°СЂРёРё:
+ * - РЎРљРњ Р·Р°Р¶Р°С‚Р° + РґРІРёР¶РµРЅРёРµ в†’ auto-scroll: СЃРєРѕСЂРѕСЃС‚СЊ РїСЂРѕРїРѕСЂС†РёРѕРЅР°Р»СЊРЅР° О”y РѕС‚ С‚РѕС‡РєРё РЅР°Р¶Р°С‚РёСЏ.
+ * - Р›РљРњ Р·Р°Р¶Р°С‚Р° + РґРІРёР¶РµРЅРёРµ в†’ РІС‹РґРµР»РµРЅРёРµ СЃРѕРѕР±С‰РµРЅРёР№ (С‡РµСЂРµР· onLeftDragSelect).
+ * - РџРљРњ Р·Р°Р¶Р°С‚Р° + РґРІРёР¶РµРЅРёРµ в†’ touch-like drag (РєРѕРЅС‚РµРЅС‚ СЃР»РµРґСѓРµС‚ Р·Р° РєСѓСЂСЃРѕСЂРѕРј СЃ РёРЅРІРµСЂСЃРёРµР№ СЃРєСЂРѕР»Р»Р°).
+ *
+ * Tap (Р±РµР· РґРІРёР¶РµРЅРёСЏ > РїРѕСЂРѕРіР°) вЂ” РќР• РїРµСЂРµС…РІР°С‚С‹РІР°РµС‚СЃСЏ; РѕР±С‹С‡РЅС‹Рµ click/longClick/onRightClick СЂР°Р±РѕС‚Р°СЋС‚.
+ */
+data class MouseSelectionCallbacks(
+    val onSelectStart: (yPx: Float) -> Unit,
+    val onSelectUpdate: (yPx: Float) -> Unit,
+    val onSelectEnd: () -> Unit,
+)
+
+expect fun Modifier.mouseScrollGestures(
+    listState: LazyListState,
+    selectionCallbacks: MouseSelectionCallbacks? = null,
+): Modifier
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\util\PointerEvents.kt
 SIZE: 0.3 KB
 ----------------------------------------------------------------------
@@ -6562,6 +7121,27 @@ import androidx.compose.ui.Modifier
  * РќР° Android/iOS вЂ” no-op (РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ long-press).
  */
 expect fun Modifier.onRightClick(onClick: () -> Unit): Modifier
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\util\Scrollbar.kt
+SIZE: 0.5 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+
+/**
+ * РќР°РєР»Р°РґС‹РІР°РµС‚ РІРµСЂС‚РёРєР°Р»СЊРЅС‹Р№ СЃРєСЂРѕР»Р»Р±Р°СЂ РїРѕРІРµСЂС… РєРѕРЅС‚РµРЅС‚Р° (РЅР° Desktop).
+ * РќР° Android/iOS вЂ” no-op (РёСЃРїРѕР»СЊР·СѓСЋС‚СЃСЏ РЅР°С‚РёРІРЅС‹Рµ РёРЅРґРёРєР°С‚РѕСЂС‹ LazyColumn).
+ */
+@Composable
+expect fun PlatformVerticalScrollbar(
+    state: LazyListState,
+    modifier: Modifier = Modifier,
+    reverseLayout: Boolean = false,
+)
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonTest\kotlin\org\messenger\app\ComposeAppCommonTest.kt
@@ -6704,7 +7284,7 @@ class DesktopLifecycle(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\main.kt
-SIZE: 2.6 KB
+SIZE: 3 KB
 ----------------------------------------------------------------------
 package org.messenger.app
 
@@ -6725,6 +7305,7 @@ import kotlinx.coroutines.SupervisorJob
 import org.messenger.app.shared.di.AppModule
 import org.messenger.app.util.DesktopBackStack
 import java.awt.Dimension
+import androidx.compose.ui.input.key.isCtrlPressed
 
 private const val WINDOW_W_KEY = "window_width"
 private const val WINDOW_H_KEY = "window_height"
@@ -6767,8 +7348,17 @@ fun main() = application {
         title = "Messenger Oreshnik",
         state = windowState,
         onPreviewKeyEvent = { keyEvent ->
-            if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Escape) {
-                DesktopBackStack.handleEscape()
+            if (keyEvent.type == KeyEventType.KeyDown) {
+                when {
+                    keyEvent.key == Key.Escape -> {
+                        DesktopBackStack.handleEscape()
+                    }
+                    keyEvent.key == Key.W && keyEvent.isCtrlPressed -> {
+                        // Ctrl+W = back (РїРѕСЃР»РµРґРЅРёР№ С…РµРЅРґР»РµСЂ РІ СЃС‚РµРєРµ)
+                        DesktopBackStack.handleEscape()
+                    }
+                    else -> false
+                }
             } else false
         },
     ) {
@@ -6788,6 +7378,13 @@ fun main() = application {
         App(appModule = appModule)
     }
 }
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\PlatformFlags.jvm.kt
+SIZE: 0.1 KB
+----------------------------------------------------------------------
+package org.messenger.app
+actual val isDesktop: Boolean = true
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\PlatformName.jvm.kt
@@ -6819,6 +7416,294 @@ actual fun decodeImageBitmap(bytes: ByteArray): ImageBitmap? {
     return try {
         Image.makeFromEncoded(bytes).toComposeImageBitmap()
     } catch (_: Exception) { null }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\ui\MainScreen.jvm.kt
+SIZE: 10.8 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import com.russhwolf.settings.Settings
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+
+import org.messenger.app.shared.di.AppModule
+import org.messenger.app.ui.chat.ChatScreen
+import org.messenger.app.ui.chatlist.ChatListScreen
+import org.messenger.app.ui.contacts.ContactsScreen
+import org.messenger.app.ui.profile.AvatarsScreen
+import org.messenger.app.ui.profile.PeerProfileScreen
+import org.messenger.app.ui.profile.ProfileScreen
+import org.messenger.app.ui.settings.SettingsScreen
+import java.awt.Cursor
+
+private const val SPLIT_RATIO_KEY = "desktop_split_ratio"
+private const val DEFAULT_RATIO = 0.30f
+private const val MIN_RATIO = 0.18f
+private const val MAX_RATIO = 0.55f
+private const val SPLITTER_WIDTH_DP = 4
+
+private sealed class RightPane {
+    data object Empty : RightPane()
+    data class Chat(val chatId: String, val chatName: String) : RightPane()
+    data object Settings : RightPane()
+    data object Contacts : RightPane()
+    data object Profile : RightPane()
+    data object Avatars : RightPane()
+    data class PeerProfile(val userId: String) : RightPane()
+}
+
+@Composable
+actual fun PlatformMainScreen(
+    appModule: AppModule,
+    initialChatId: String?,
+    initialChatName: String?,
+    onLogout: () -> Unit,
+    onOpenForwardPicker: (sourceChatId: String, sourceChatName: String, messageIds: List<String>) -> Unit,
+    forwardResultChatId: String?,
+    onForwardResultConsumed: () -> Unit,
+) {
+    val settings = remember { Settings() }
+    var ratio by remember {
+        mutableStateOf(
+            (settings.getFloatOrNull(SPLIT_RATIO_KEY) ?: DEFAULT_RATIO)
+                .coerceIn(MIN_RATIO, MAX_RATIO)
+        )
+    }
+
+    var rightPane by remember {
+        mutableStateOf<RightPane>(
+            if (initialChatId != null) RightPane.Chat(initialChatId, initialChatName ?: "")
+            else RightPane.Empty
+        )
+    }
+
+    // Р РµР°РєС†РёСЏ РЅР° СЂРµР·СѓР»СЊС‚Р°С‚ forward'Р°: РѕС‚РєСЂС‹С‚СЊ РІС‹Р±СЂР°РЅРЅС‹Р№ С‡Р°С‚ СЃРїСЂР°РІР°
+    LaunchedEffect(forwardResultChatId) {
+        val id = forwardResultChatId ?: return@LaunchedEffect
+        rightPane = RightPane.Chat(id, "")
+        onForwardResultConsumed()
+    }
+
+    val forwardScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.Main) }
+
+    var totalWidth by remember { mutableStateOf(0) }
+    val density = LocalDensity.current
+
+    // РўРµРєСѓС‰РёР№ РІС‹Р±СЂР°РЅРЅС‹Р№ С‡Р°С‚ вЂ” РґР»СЏ РїРѕРґСЃРІРµС‚РєРё РІ СЃРїРёСЃРєРµ (РµСЃР»Рё СЂРµС€РёРј РґРѕР±Р°РІРёС‚СЊ РїРѕР·Р¶Рµ)
+    val currentChatId = (rightPane as? RightPane.Chat)?.chatId
+
+    // РћР±РЅРѕРІР»СЏРµРј currentChatId РґР»СЏ FCM-С„РёР»СЊС‚СЂР°/lifecycle
+    LaunchedEffect(currentChatId) {
+        org.messenger.app.updateCurrentChatId(currentChatId)
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onSizeChanged { totalWidth = it.width },
+    ) {
+        if (totalWidth > 0) {
+            val leftWidthPx = (totalWidth * ratio).toInt()
+            val splitterPx = with(density) { SPLITTER_WIDTH_DP.dp.toPx() }.toInt()
+            val rightWidthPx = (totalWidth - leftWidthPx - splitterPx).coerceAtLeast(0)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onSizeChanged { totalWidth = it.width },
+            ) {
+                Row(modifier = Modifier.fillMaxSize()) {
+                    // Р›РµРІР°СЏ РїР°РЅРµР»СЊ
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .weight(ratio),
+                    ) {
+                        ChatListScreen(
+                            appModule = appModule,
+                            onChatClick = { id, name ->
+                                rightPane = RightPane.Chat(id, name)
+                            },
+                            onOpenSettings = { rightPane = RightPane.Settings },
+                            onOpenProfile = { rightPane = RightPane.Profile },
+                        )
+                    }
+
+                    // РЎРїР»РёС‚С‚РµСЂ
+                    SplitterHandle(
+                        onDrag = { deltaPx ->
+                            val width = totalWidth
+                            if (width <= 0) return@SplitterHandle
+                            val newRatio = (ratio + deltaPx / width.toFloat())
+                                .coerceIn(MIN_RATIO, MAX_RATIO)
+                            ratio = newRatio
+                        },
+                        onDragEnd = {
+                            try { settings.putFloat(SPLIT_RATIO_KEY, ratio) } catch (_: Exception) {}
+                        },
+                    )
+
+                    // РџСЂР°РІР°СЏ РїР°РЅРµР»СЊ
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .weight(1f - ratio),
+                    ) {
+                        RightPaneContent(
+                            pane = rightPane,
+                            appModule = appModule,
+                            onClose = { rightPane = RightPane.Empty },
+                            onOpenSettings = { rightPane = RightPane.Settings },
+                            onOpenContacts = { rightPane = RightPane.Contacts },
+                            onOpenProfile = { rightPane = RightPane.Profile },
+                            onOpenAvatars = { rightPane = RightPane.Avatars },
+                            onOpenPeerProfile = { userId -> rightPane = RightPane.PeerProfile(userId) },
+                            onOpenChat = { id, name -> rightPane = RightPane.Chat(id, name) },
+                            onLogout = onLogout,
+                            onPickForwardTarget = { sourceChatId, ids ->
+                                val sourceName = (rightPane as? RightPane.Chat)?.chatName ?: ""
+                                onOpenForwardPicker(sourceChatId, sourceName, ids)
+                            },
+                            onContactClick = { contact ->
+                                forwardScope.launch {
+                                    try {
+                                        val chat = appModule.chatRepository
+                                            .createPersonalChat(contactId = contact.id)
+                                        rightPane = RightPane.Chat(
+                                            chat.id,
+                                            chat.name ?: contact.displayName,
+                                        )
+                                    } catch (_: Exception) {}
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SplitterHandle(
+    onDrag: (deltaPx: Float) -> Unit,
+    onDragEnd: () -> Unit,
+) {
+    val dragState = rememberDraggableState { delta -> onDrag(delta) }
+    Box(
+        modifier = Modifier
+            .width(SPLITTER_WIDTH_DP.dp)
+            .fillMaxHeight()
+            .background(MaterialTheme.colorScheme.outlineVariant)
+            .pointerHoverIcon(PointerIcon(Cursor.getPredefinedCursor(Cursor.E_RESIZE_CURSOR)))
+            .draggable(
+                state = dragState,
+                orientation = Orientation.Horizontal,
+                onDragStopped = { onDragEnd() },
+            )
+    )
+}
+
+@Composable
+private fun RightPaneContent(
+    pane: RightPane,
+    appModule: AppModule,
+    onClose: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenContacts: () -> Unit,
+    onOpenProfile: () -> Unit,
+    onOpenAvatars: () -> Unit,
+    onOpenPeerProfile: (String) -> Unit,
+    onOpenChat: (String, String) -> Unit,
+    onLogout: () -> Unit,
+    onPickForwardTarget: (sourceChatId: String, messageIds: List<String>) -> Unit,
+    onContactClick: (org.messenger.app.shared.data.model.ContactDto) -> Unit,
+) {
+    when (pane) {
+        is RightPane.Empty -> EmptyPanePlaceholder()
+
+        is RightPane.Chat -> {
+            // key РїРѕ chatId вЂ” С‡С‚РѕР±С‹ РїРµСЂРµСЃРѕР·РґР°РІР°С‚СЊ ViewModel РїСЂРё СЃРјРµРЅРµ С‡Р°С‚Р°
+            key(pane.chatId) {
+                ChatScreen(
+                    chatId = pane.chatId,
+                    chatName = pane.chatName,
+                    appModule = appModule,
+                    onBack = onClose,
+                    onPickForwardTarget = { sourceChatId, ids ->
+                        onPickForwardTarget(sourceChatId, ids)
+                    },
+                    onOpenPeerProfile = { userId -> onOpenPeerProfile(userId) },
+                )
+            }
+        }
+
+        is RightPane.Settings -> SettingsScreen(
+            appModule = appModule,
+            onBack = onClose,
+            onOpenContacts = onOpenContacts,
+            onOpenProfile = onOpenProfile,
+            onLogout = onLogout,
+        )
+
+        is RightPane.Contacts -> ContactsScreen(
+            appModule = appModule,
+            onBack = onOpenSettings,
+            onContactClick = onContactClick,
+        )
+
+        is RightPane.Profile -> ProfileScreen(
+            appModule = appModule,
+            onBack = onOpenSettings,
+            onOpenAvatars = onOpenAvatars,
+        )
+
+        is RightPane.Avatars -> AvatarsScreen(
+            appModule = appModule,
+            onBack = onOpenProfile,
+        )
+
+        is RightPane.PeerProfile -> PeerProfileScreen(
+            appModule = appModule,
+            userId = pane.userId,
+            onBack = onClose,
+        )
+    }
+}
+
+@Composable
+private fun EmptyPanePlaceholder() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = "Р’С‹Р±РµСЂРёС‚Рµ С‡Р°С‚",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 ----------------------------------------------------------------------
@@ -6855,6 +7740,215 @@ actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {
             DesktopBackStack.handlers.remove(onBack)
         }
     }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\util\ContextMenu.jvm.kt
+SIZE: 3.8 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.layout.Box
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.window.PopupProperties
+
+@Composable
+actual fun PlatformContextMenu(
+    itemsProvider: () -> List<ContextMenuItem>,
+    modifier: Modifier,
+    content: @Composable () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var anchorOffset by remember { mutableStateOf(Offset.Zero) }
+    var items by remember { mutableStateOf<List<ContextMenuItem>>(emptyList()) }
+    val density = LocalDensity.current
+
+    Box(
+        modifier = modifier.pointerInput(Unit) {
+            awaitEachGesture {
+                val event = awaitPointerEvent(PointerEventPass.Main)
+                if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
+                    val change = event.changes.firstOrNull() ?: return@awaitEachGesture
+                    anchorOffset = change.position
+                    items = itemsProvider()
+                    if (items.isNotEmpty()) {
+                        expanded = true
+                        event.changes.forEach { it.consume() }
+                    }
+                }
+            }
+        }
+    ) {
+        content()
+
+        if (expanded) {
+            val xDp = with(density) { anchorOffset.x.toDp() }
+            val yDp = with(density) { anchorOffset.y.toDp() }
+            DropdownMenu(
+                expanded = true,
+                onDismissRequest = { expanded = false },
+                offset = DpOffset(xDp, yDp),
+                properties = PopupProperties(focusable = true),
+            ) {
+                items.forEach { item ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                item.label,
+                                color = if (item.isDestructive)
+                                    MaterialTheme.colorScheme.error
+                                else
+                                    MaterialTheme.colorScheme.onSurface,
+                            )
+                        },
+                        leadingIcon = item.icon?.let {
+                            {
+                                Icon(
+                                    it,
+                                    contentDescription = null,
+                                    tint = if (item.isDestructive)
+                                        MaterialTheme.colorScheme.error
+                                    else
+                                        MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                        },
+                        onClick = {
+                            expanded = false
+                            item.onClick()
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\util\FileDrop.jvm.kt
+SIZE: 4.2 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
+import androidx.compose.ui.layout.onGloballyPositioned
+import java.awt.Component
+import java.awt.Window
+import java.awt.datatransfer.DataFlavor
+import java.awt.dnd.DnDConstants
+import java.awt.dnd.DropTarget
+import java.awt.dnd.DropTargetAdapter
+import java.awt.dnd.DropTargetDragEvent
+import java.awt.dnd.DropTargetDropEvent
+import java.io.File
+import java.nio.file.Files
+
+@Composable
+actual fun Modifier.fileDropTarget(
+    enabled: Boolean,
+    onDragStateChange: (Boolean) -> Unit,
+    onFilesDropped: (List<DroppedFile>) -> Unit,
+): Modifier = composed {
+    val dragCb = rememberUpdatedState(onDragStateChange)
+    val dropCb = rememberUpdatedState(onFilesDropped)
+    val enabledState = rememberUpdatedState(enabled)
+
+    DisposableEffect(Unit) {
+        val window = findActiveWindow()
+        var oldTarget: DropTarget? = null
+        if (window != null) {
+            oldTarget = window.dropTarget
+            val dt = object : DropTargetAdapter() {
+                override fun dragEnter(dtde: DropTargetDragEvent) {
+                    if (!enabledState.value) return
+                    if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                        dtde.acceptDrag(DnDConstants.ACTION_COPY)
+                        dragCb.value(true)
+                    } else {
+                        dtde.rejectDrag()
+                    }
+                }
+
+                override fun dragOver(dtde: DropTargetDragEvent) {
+                    if (!enabledState.value) {
+                        dtde.rejectDrag(); return
+                    }
+                    if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                        dtde.acceptDrag(DnDConstants.ACTION_COPY)
+                    }
+                }
+
+                override fun dragExit(dte: java.awt.dnd.DropTargetEvent) {
+                    dragCb.value(false)
+                }
+
+                override fun drop(dtde: DropTargetDropEvent) {
+                    dragCb.value(false)
+                    if (!enabledState.value) {
+                        dtde.rejectDrop(); return
+                    }
+                    try {
+                        if (!dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                            dtde.rejectDrop(); return
+                        }
+                        dtde.acceptDrop(DnDConstants.ACTION_COPY)
+                        @Suppress("UNCHECKED_CAST")
+                        val list = dtde.transferable
+                            .getTransferData(DataFlavor.javaFileListFlavor) as List<File>
+                        val items = list.mapNotNull { f ->
+                            try {
+                                if (!f.exists() || !f.isFile) return@mapNotNull null
+                                val mime = try {
+                                    Files.probeContentType(f.toPath()) ?: "application/octet-stream"
+                                } catch (_: Exception) { "application/octet-stream" }
+                                DroppedFile(f.name, mime, f.readBytes())
+                            } catch (_: Exception) { null }
+                        }
+                        if (items.isNotEmpty()) dropCb.value(items)
+                        dtde.dropComplete(true)
+                    } catch (_: Exception) {
+                        try { dtde.dropComplete(false) } catch (_: Exception) {}
+                    }
+                }
+            }
+            window.dropTarget = DropTarget(window, DnDConstants.ACTION_COPY, dt, true)
+        }
+        onDispose {
+            if (window != null) {
+                window.dropTarget = oldTarget
+            }
+        }
+    }
+    this
+}
+
+private fun findActiveWindow(): Window? {
+    return try {
+        Window.getWindows().firstOrNull { it.isShowing && it.isFocused }
+            ?: Window.getWindows().firstOrNull { it.isShowing }
+    } catch (_: Exception) { null }
 }
 
 ----------------------------------------------------------------------
@@ -6933,26 +8027,237 @@ private fun matchExtension(type: String, sub: String?, ext: String): Boolean {
 }
 
 ----------------------------------------------------------------------
-FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\util\PointerEvents.jvm.kt
-SIZE: 0.7 KB
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\util\MouseDragScroll.jvm.kt
+SIZE: 7.5 KB
 ----------------------------------------------------------------------
 package org.messenger.app.util
 
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
+import androidx.compose.ui.input.pointer.isPrimaryPressed
 import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.isTertiaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.awt.Cursor
+import java.awt.MouseInfo
+import javax.swing.SwingUtilities
+import kotlin.math.abs
+import kotlin.math.sign
 
-actual fun Modifier.onRightClick(onClick: () -> Unit): Modifier = this.pointerInput(onClick) {
-    awaitEachGesture {
-        val event = awaitPointerEvent(PointerEventPass.Main)
-        if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
-            event.changes.forEach { it.consume() }
-            onClick()
+private const val DRAG_THRESHOLD_PX = 6f
+private const val AUTO_SCROLL_DEAD_ZONE_PX = 8f
+private const val AUTO_SCROLL_MAX_SPEED_PX_PER_FRAME = 60f
+private const val AUTO_SCROLL_FRAME_MS = 16L
+private const val AUTO_SCROLL_DIVIDER = 3.5f
+
+private enum class DragMode { NONE, MIDDLE_AUTOSCROLL, LEFT_SELECT, RIGHT_TOUCH_DRAG }
+
+actual fun Modifier.mouseScrollGestures(
+    listState: LazyListState,
+    selectionCallbacks: MouseSelectionCallbacks?,
+): Modifier = composed {
+    val scope = rememberCoroutineScope()
+
+    pointerInput(listState) {
+        awaitEachGesture {
+            val down = awaitPointerEvent(PointerEventPass.Initial)
+            val firstChange = down.changes.firstOrNull() ?: return@awaitEachGesture
+            if (firstChange.type != PointerType.Mouse) return@awaitEachGesture
+            if (down.type != PointerEventType.Press) return@awaitEachGesture
+
+            val buttons = down.buttons
+            val mode: DragMode = when {
+                buttons.isTertiaryPressed -> DragMode.MIDDLE_AUTOSCROLL
+                buttons.isSecondaryPressed -> DragMode.RIGHT_TOUCH_DRAG
+                buttons.isPrimaryPressed && selectionCallbacks != null -> DragMode.LEFT_SELECT
+                else -> DragMode.NONE
+            }
+            if (mode == DragMode.NONE) return@awaitEachGesture
+
+            val anchor: Offset = firstChange.position
+            var lastPos: Offset = anchor
+            var dragStarted = false
+            var autoScrollJob: Job? = null
+            var middleDeltaY = 0f
+            var cursorChanged = false
+
+            // РЈСЃС‚Р°РЅРѕРІРёС‚СЊ РєСѓСЂСЃРѕСЂ РґР»СЏ РЎРљРњ-СЂРµР¶РёРјР°
+            if (mode == DragMode.MIDDLE_AUTOSCROLL) {
+                setGlobalCursor(Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR))
+                cursorChanged = true
+            }
+
+            try {
+                while (true) {
+                    val ev = awaitPointerEvent(PointerEventPass.Main)
+                    val change = ev.changes.firstOrNull() ?: break
+
+                    val released = ev.type == PointerEventType.Release ||
+                            change.changedToUpIgnoreConsumed() ||
+                            !ev.buttons.let {
+                                when (mode) {
+                                    DragMode.MIDDLE_AUTOSCROLL -> it.isTertiaryPressed
+                                    DragMode.RIGHT_TOUCH_DRAG -> it.isSecondaryPressed
+                                    DragMode.LEFT_SELECT -> it.isPrimaryPressed
+                                    DragMode.NONE -> false
+                                }
+                            }
+
+                    val pos = change.position
+                    val totalDelta = pos - anchor
+
+                    when (mode) {
+                        DragMode.MIDDLE_AUTOSCROLL -> {
+                            if (!dragStarted) {
+                                dragStarted = true
+                                autoScrollJob = startAutoScroll(scope, listState) { middleDeltaY }
+                            }
+                            middleDeltaY = totalDelta.y
+                            change.consume()
+                        }
+
+                        DragMode.RIGHT_TOUCH_DRAG -> {
+                            if (!dragStarted && abs(totalDelta.y) >= DRAG_THRESHOLD_PX) {
+                                dragStarted = true
+                            }
+                            if (dragStarted) {
+                                val frameDelta = pos.y - lastPos.y
+                                scope.launch {
+                                    listState.scrollBy(-frameDelta)
+                                }
+                                change.consume()
+                            }
+                        }
+
+                        DragMode.LEFT_SELECT -> {
+                            val cb = selectionCallbacks!!
+                            if (!dragStarted && abs(totalDelta.y) >= DRAG_THRESHOLD_PX) {
+                                dragStarted = true
+                                cb.onSelectStart(anchor.y)
+                            }
+                            if (dragStarted) {
+                                cb.onSelectUpdate(pos.y)
+                                change.consume()
+                            }
+                        }
+
+                        DragMode.NONE -> {}
+                    }
+
+                    lastPos = pos
+
+                    if (released) break
+                }
+            } finally {
+                autoScrollJob?.cancel()
+                if (cursorChanged) {
+                    setGlobalCursor(Cursor.getDefaultCursor())
+                }
+                if (mode == DragMode.LEFT_SELECT && dragStarted) {
+                    selectionCallbacks?.onSelectEnd?.invoke()
+                }
+            }
         }
     }
+}
+
+private fun setGlobalCursor(cursor: Cursor) {
+    try {
+        val pi = MouseInfo.getPointerInfo() ?: return
+        // РџСЂРёРјРµРЅСЏРµРј РєСѓСЂСЃРѕСЂ Рє РѕРєРЅСѓ РїРѕРґ РјС‹С€СЊСЋ
+        SwingUtilities.invokeLater {
+            try {
+                val windows = java.awt.Window.getWindows()
+                for (w in windows) {
+                    if (w.isShowing) {
+                        w.cursor = cursor
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+    } catch (_: Exception) {}
+}
+
+private suspend fun LazyListState.scrollBy(deltaPx: Float) {
+    if (deltaPx == 0f) return
+    scroll {
+        scrollBy(deltaPx)
+    }
+}
+
+private fun startAutoScroll(
+    scope: CoroutineScope,
+    listState: LazyListState,
+    deltaProvider: () -> Float,
+): Job = scope.launch {
+    while (isActive) {
+        val dy = deltaProvider()
+        val absDy = abs(dy)
+        if (absDy > AUTO_SCROLL_DEAD_ZONE_PX) {
+            val raw = (absDy - AUTO_SCROLL_DEAD_ZONE_PX) / AUTO_SCROLL_DIVIDER
+            val speed = raw.coerceAtMost(AUTO_SCROLL_MAX_SPEED_PX_PER_FRAME)
+            // РРЅРІРµСЂСЃРёСЏ РґР»СЏ reverseLayout: РєСѓСЂСЃРѕСЂ РІРІРµСЂС… (dy<0) в†’ Рє СЃС‚Р°СЂС‹Рј СЃРѕРѕР±С‰РµРЅРёСЏРј (scroll РІРІРµСЂС… в†’ РїРѕР»РѕР¶РёС‚РµР»СЊРЅС‹Р№ delta)
+            val signed = -speed * sign(dy)
+            try {
+                listState.scrollBy(signed)
+            } catch (_: Exception) {}
+        }
+        delay(AUTO_SCROLL_FRAME_MS)
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\util\PointerEvents.jvm.kt
+SIZE: 0.4 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.ui.Modifier
+
+/**
+ * No-op РЅР° desktop: РџРљРњ РѕР±СЂР°Р±Р°С‚С‹РІР°РµС‚СЃСЏ С‡РµСЂРµР· PlatformContextMenu (DropdownMenu).
+ * РЎС‚Р°СЂР°СЏ Р»РѕРіРёРєР° РѕС‚РєСЂС‹РІР°Р»Р° ModalBottomSheet, С‡С‚Рѕ РґСѓР±Р»РёСЂРѕРІР°Р»Рѕ РєРѕРЅС‚РµРєСЃС‚РЅРѕРµ РјРµРЅСЋ.
+ */
+actual fun Modifier.onRightClick(onClick: () -> Unit): Modifier = this
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\util\Scrollbar.jvm.kt
+SIZE: 0.6 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.foundation.VerticalScrollbar
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.rememberScrollbarAdapter
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+
+@Composable
+actual fun PlatformVerticalScrollbar(
+    state: LazyListState,
+    modifier: Modifier,
+    reverseLayout: Boolean,
+) {
+    VerticalScrollbar(
+        adapter = rememberScrollbarAdapter(state),
+        modifier = modifier.fillMaxHeight(),
+        reverseLayout = reverseLayout,
+    )
 }
 
 ----------------------------------------------------------------------
@@ -11322,6 +12627,6 @@ SIZE: 0.2 KB
 }
 
 ======================================================================
-Total files dumped: 136
+Total files dumped: 154
 ======================================================================
 

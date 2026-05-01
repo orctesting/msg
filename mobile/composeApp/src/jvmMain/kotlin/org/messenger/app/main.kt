@@ -17,6 +17,7 @@ import kotlinx.coroutines.SupervisorJob
 import org.messenger.app.shared.di.AppModule
 import org.messenger.app.util.DesktopBackStack
 import java.awt.Dimension
+import androidx.compose.ui.input.key.isCtrlPressed
 
 private const val WINDOW_W_KEY = "window_width"
 private const val WINDOW_H_KEY = "window_height"
@@ -59,8 +60,17 @@ fun main() = application {
         title = "Messenger Oreshnik",
         state = windowState,
         onPreviewKeyEvent = { keyEvent ->
-            if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Escape) {
-                DesktopBackStack.handleEscape()
+            if (keyEvent.type == KeyEventType.KeyDown) {
+                when {
+                    keyEvent.key == Key.Escape -> {
+                        DesktopBackStack.handleEscape()
+                    }
+                    keyEvent.key == Key.W && keyEvent.isCtrlPressed -> {
+                        // Ctrl+W = back (последний хендлер в стеке)
+                        DesktopBackStack.handleEscape()
+                    }
+                    else -> false
+                }
             } else false
         },
     ) {

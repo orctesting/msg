@@ -20,9 +20,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.foundation.layout.Box
 import org.messenger.app.shared.data.model.ChatDto
 import org.messenger.app.shared.di.AppModule
 import org.messenger.app.shared.ui.chatlist.ChatListViewModel
+import org.messenger.app.util.mouseScrollGestures
+import org.messenger.app.util.PlatformVerticalScrollbar
 
 private enum class ChatsTab(val title: String) {
     ALL("Все"),
@@ -134,14 +137,27 @@ fun ChatListScreen(
                         )
                     }
                     else -> {
-                        LazyColumn(modifier = Modifier.fillMaxSize()) {
-                            items(filtered, key = { it.id }) { chat ->
-                                ChatItem(
-                                    chat = chat,
-                                    showTypeIcon = selectedTab == ChatsTab.ALL,
-                                    onClick = { onChatClick(chat.id, chat.name ?: "Чат") }
-                                )
+                        val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .mouseScrollGestures(listState),
+                            ) {
+                                items(filtered, key = { it.id }) { chat ->
+                                    ChatItem(
+                                        chat = chat,
+                                        showTypeIcon = selectedTab == ChatsTab.ALL,
+                                        onClick = { onChatClick(chat.id, chat.name ?: "Чат") }
+                                    )
+                                }
                             }
+                            PlatformVerticalScrollbar(
+                                state = listState,
+                                modifier = Modifier.align(Alignment.CenterEnd),
+                                reverseLayout = false,
+                            )
                         }
                     }
                 }

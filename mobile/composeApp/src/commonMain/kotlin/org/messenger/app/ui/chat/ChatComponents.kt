@@ -65,6 +65,9 @@ import org.messenger.app.shared.data.model.ReplyPreviewDto
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.foundation.layout.BoxWithConstraints
+import org.messenger.app.util.fileDropTarget
+import org.messenger.app.util.DroppedFile
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -243,10 +246,26 @@ fun MessageInput(
     onAttachClick: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
     isSending: Boolean,
+    onFilesDropped: ((List<org.messenger.app.util.DroppedFile>) -> Unit)? = null,
 ) {
+    var isDragOver by remember { mutableStateOf(false) }
+    val dropModifier = if (onFilesDropped != null) {
+        Modifier.fileDropTarget(
+            enabled = editing == null,
+            onDragStateChange = { isDragOver = it },
+            onFilesDropped = { files -> onFilesDropped(files) },
+        )
+    } else Modifier
+
     Surface(
         tonalElevation = 3.dp,
-        modifier = Modifier.fillMaxWidth().imePadding().navigationBarsPadding(),
+        color = if (isDragOver) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+        else MaterialTheme.colorScheme.surface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .imePadding()
+            .navigationBarsPadding()
+            .then(dropModifier),
     ) {
         Column {
             if (editing != null) {
@@ -700,27 +719,133 @@ fun MessageBubble(
     }
 
     if (isSystem) {
+        val bubbleColor = when {
+            isSelected -> MaterialTheme.colorScheme.tertiaryContainer
+            isOwnMessage -> MaterialTheme.colorScheme.primaryContainer
+            isAdmin -> Color(0xFFFFCDD2)
+            else -> MaterialTheme.colorScheme.surfaceVariant
+        }
+
+        val nameColor = when {
+            isAdmin -> Color(0xFFD32F2F)
+            else -> MaterialTheme.colorScheme.primary
+        }
+
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                .onRightClick(onLongClick)
+                .padding(vertical = 2.dp),
+            horizontalArrangement = if (isOwnMessage) Arrangement.End else Arrangement.Start,
         ) {
+            // Spacer для отступа со "свободной" стороны, занимает 25% ширины
+            if (isOwnMessage) {
+                Spacer(modifier = Modifier.weight(0.25f))
+            }
             Surface(
                 shape = MaterialTheme.shapes.medium,
-                color = Color(0xFFFFF3E0),
-                modifier = Modifier.widthIn(max = 300.dp),
+                color = bubbleColor,
+                modifier = Modifier.weight(0.75f, fill = false),
             ) {
                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                    Text(
-                        text = message.content,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF795548),
-                    )
-                    Text(
-                        text = formatTimeFromIso(message.createdAt),
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                        color = Color(0xFF795548).copy(alpha = 0.6f),
+                    if (!isOwnMessage) {
+                        Text(
+                            text = when {
+                                isAdmin -> "Admin"
+                                !message.senderName.isNullOrBlank() -> message.senderName!!
+                                else -> "Пользователь"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = nameColor,
+                        )
+                    }
+
+                    message.forwardedFrom?.let { fwd ->
+                        Surface(
+                            color = Color.Transparent,
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        ) {
+                            Column {
+                                Text(
+                                    text = "Переслано от ${fwd.senderName ?: "пользователя"}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                if (fwd.isDeleted) {
+                                    Text(
+                                        text = "(оригинал удалён)",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    message.replyTo?.let { reply ->
+                        ReplyQuote(reply)
+                        Spacer(Modifier.height(4.dp))
+                    }
+
+                    if (message.attachments.isNotEmpty()) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.padding(bottom = if (message.content.isNotBlank()) 6.dp else 0.dp),
+                        ) {
+                            message.attachments.forEach { att ->
+                                AttachmentChip(
+                                    attachment = att,
+                                    attachmentsRepository = attachmentsRepository,
+                                    onClick = {
+                                        att.downloadUrl?.let { url ->
+                                            org.messenger.app.shared.util.openUrl(url)
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                    }
+
+                    if (message.content.isNotBlank()) {
+                        LinkifiedText(
+                            text = message.content,
+                            baseStyle = MaterialTheme.typography.bodyMedium,
+                            onUrlClick = { url -> org.messenger.app.shared.util.openUrl(url) },
+                        )
+                    }
+
+                    Row(
                         modifier = Modifier.align(Alignment.End),
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        if (message.editedAt != null) {
+                            Text(
+                                text = "изм.",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            )
+                            Spacer(Modifier.width(4.dp))
+                        }
+                        Text(
+                            text = formatTimeFromIso(message.createdAt),
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        )
+                        if (isOwnMessage) {
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                text = "✓✓",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                                color = if (isReadByOthers)
+                                    Color(0xFF2196F3)
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -747,10 +872,13 @@ fun MessageBubble(
             .padding(vertical = 2.dp),
         horizontalArrangement = if (isOwnMessage) Arrangement.End else Arrangement.Start,
     ) {
+        if (isOwnMessage) {
+            Spacer(modifier = Modifier.weight(0.25f))
+        }
         Surface(
             shape = MaterialTheme.shapes.medium,
             color = bubbleColor,
-            modifier = Modifier.widthIn(max = 280.dp),
+            modifier = Modifier.weight(0.75f, fill = false),
         ) {
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                 if (!isOwnMessage) {
@@ -852,6 +980,9 @@ fun MessageBubble(
                 }
             }
         }
+        if (!isOwnMessage) {
+            Spacer(modifier = Modifier.weight(0.25f))
+        }
     }
 }
 
@@ -859,7 +990,6 @@ fun MessageBubble(
 private fun ReplyQuote(reply: ReplyPreviewDto) {
     Row(
         modifier = Modifier
-            .fillMaxWidth()
             .clip(RoundedCornerShape(6.dp))
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.4f))
             .padding(horizontal = 8.dp, vertical = 4.dp),
