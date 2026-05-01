@@ -3,6 +3,8 @@ package org.messenger.app
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import kotlinx.coroutines.*
+import org.messenger.app.service.WsNotificationBridge
+import org.messenger.app.service.NotificationSettingsSync
 import org.messenger.app.shared.di.AppModule
 
 class AppLifecycleObserver(
@@ -18,20 +20,31 @@ class AppLifecycleObserver(
         private set
 
     override fun onStart(owner: LifecycleOwner) {
-        // App moved to foreground
         isInForeground = true
         disconnectJob?.cancel()
         disconnectJob = null
 
-        // Reconnect WS
         wsScope?.cancel()
-        wsScope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also {
-            appModule.wsService.connect(it)
+        wsScope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also { s ->
+            appModule.wsService.connect(s)
+            WsNotificationBridge.observe(
+                scope = s,
+                context = MessengerApplication.instance,
+                wsService = appModule.wsService,
+            )
+        }
+
+        if (appModule.tokenStorage.isLoggedIn()) {
+            scope.launch {
+                NotificationSettingsSync.refresh(MessengerApplication.instance, appModule)
+            }
+            // Принудительный resync списка чатов — ChatListViewModel сам обновит state,
+            // если экран открыт. Если другой экран — данные подтянутся при следующем открытии.
+            ChatListResyncBus.requestResync()
         }
     }
 
     override fun onStop(owner: LifecycleOwner) {
-        // App moved to background — disconnect WS after 30 sec
         isInForeground = false
         disconnectJob = scope.launch {
             delay(30_000)

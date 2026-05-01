@@ -31,6 +31,8 @@ fun ForwardTargetScreen(
         ChatListViewModel(
             chatRepository = appModule.chatRepository,
             wsService = appModule.wsService,
+            tokenStorage = appModule.tokenStorage,
+            activeChatIdProvider = { org.messenger.app.ActiveChatHolder.get() },
         )
     }
     val state by viewModel.state.collectAsState()

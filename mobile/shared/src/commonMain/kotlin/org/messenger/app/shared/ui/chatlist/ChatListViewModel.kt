@@ -8,10 +8,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.decodeFromJsonElement
+import org.messenger.app.shared.data.local.TokenStorage
 import org.messenger.app.shared.data.model.ChatDto
 import org.messenger.app.shared.data.model.WsMessageDeleted
 import org.messenger.app.shared.data.model.WsMessageEdited
+import org.messenger.app.shared.data.model.WsMessageRead
+import org.messenger.app.shared.data.model.WsMessageReadSelf
 import org.messenger.app.shared.data.model.WsNewMessage
+import org.messenger.app.shared.data.model.WsNewMessageSelf
 import org.messenger.app.shared.data.remote.WsService
 import org.messenger.app.shared.data.remote.appJson
 import org.messenger.app.shared.domain.repository.ChatRepository
@@ -24,9 +28,13 @@ data class ChatListUiState(
 
 class ChatListViewModel(
     private val chatRepository: ChatRepository,
-    private val wsService: WsService
+    private val wsService: WsService,
+    private val tokenStorage: TokenStorage? = null,
+    private val activeChatIdProvider: () -> String? = { null },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    private val currentUserId: String? = tokenStorage?.getUserId()
 
     private val _state = MutableStateFlow(ChatListUiState())
     val state: StateFlow<ChatListUiState> = _state.asStateFlow()
@@ -34,6 +42,7 @@ class ChatListViewModel(
     init {
         loadChats()
         observeWs()
+        observeWsConnection()
     }
 
     fun loadChats() {
@@ -51,6 +60,14 @@ class ChatListViewModel(
         }
     }
 
+    private fun observeWsConnection() {
+        scope.launch {
+            wsService.connected.collect { connected ->
+                if (connected) loadChats()
+            }
+        }
+    }
+
     private fun observeWs() {
         scope.launch {
             wsService.events.collect { event ->
@@ -58,7 +75,23 @@ class ChatListViewModel(
                     "new_message" -> {
                         try {
                             val msg = appJson.decodeFromJsonElement<WsNewMessage>(event.data)
-                            updateChatWithNewMessage(msg)
+                            updateChatWithNewMessage(
+                                chatId = msg.chatId,
+                                messageId = msg.message.id,
+                                senderId = msg.message.senderId,
+                                newLast = msg,
+                            )
+                        } catch (_: Exception) {}
+                    }
+                    "new_message_self" -> {
+                        // Своё сообщение, пришедшее с другого моего устройства.
+                        // Обновляем lastMessage, unread НЕ трогаем.
+                        try {
+                            val ev = appJson.decodeFromJsonElement<WsNewMessageSelf>(event.data)
+                            updateChatWithOwnMessage(
+                                chatId = ev.chatId,
+                                newLast = WsNewMessage(chatId = ev.chatId, message = ev.message),
+                            )
                         } catch (_: Exception) {}
                     }
                     "message_edited" -> {
@@ -70,7 +103,6 @@ class ChatListViewModel(
                     "message_deleted" -> {
                         try {
                             val ev = appJson.decodeFromJsonElement<WsMessageDeleted>(event.data)
-                            // Если удалено last_message — проще перезагрузить список
                             val affected = _state.value.chats.any { chat ->
                                 chat.id == ev.chatId &&
                                         chat.lastMessage != null &&
@@ -82,9 +114,40 @@ class ChatListViewModel(
                     "message_pinned", "message_unpinned" -> {
                         loadChats()
                     }
+                    "message_read" -> {
+                        // Другой пользователь прочитал — НАС это не касается для unread.
+                        // (бэк теперь шлёт message_read другим, не нам)
+                        // Но на всякий случай, если событие пришло с нашим user_id — тоже
+                        // сбросим (legacy fallback).
+                        try {
+                            val ev = appJson.decodeFromJsonElement<WsMessageRead>(event.data)
+                            if (currentUserId != null && ev.userId == currentUserId) {
+                                clearUnreadForChat(ev.chatId)
+                            }
+                        } catch (_: Exception) {}
+                    }
+                    "message_read_self" -> {
+                        // Другое моё устройство прочитало чат — сбрасываем unread.
+                        try {
+                            val ev = appJson.decodeFromJsonElement<WsMessageReadSelf>(event.data)
+                            clearUnreadForChat(ev.chatId)
+                        } catch (_: Exception) {}
+                    }
                 }
             }
         }
+    }
+
+    private fun clearUnreadForChat(chatId: String) {
+        val list = _state.value.chats
+        val idx = list.indexOfFirst { it.id == chatId }
+        if (idx < 0) return
+        val current = list[idx]
+        if (current.unreadCount == 0) return
+        val newList = list.toMutableList().also {
+            it[idx] = current.copy(unreadCount = 0)
+        }
+        _state.value = _state.value.copy(chats = newList)
     }
 
     private fun updateLastIfMatches(chatId: String, messageId: String, newContent: String) {
@@ -100,15 +163,39 @@ class ChatListViewModel(
         }
     }
 
-    private fun updateChatWithNewMessage(msg: WsNewMessage) {
+    private fun updateChatWithNewMessage(
+        chatId: String,
+        messageId: String,
+        senderId: String?,
+        newLast: WsNewMessage,
+    ) {
         val current = _state.value.chats.toMutableList()
-        val idx = current.indexOfFirst { it.id == msg.chatId }
+        val idx = current.indexOfFirst { it.id == chatId }
         if (idx >= 0) {
             val chat = current[idx]
+            val isOwn = currentUserId != null && senderId == currentUserId
             current[idx] = chat.copy(
-                lastMessage = msg.message,
-                unreadCount = chat.unreadCount + 1
+                lastMessage = newLast.message,
+                unreadCount = if (isOwn) chat.unreadCount else chat.unreadCount + 1
             )
+            val updated = current.removeAt(idx)
+            current.add(0, updated)
+            _state.value = _state.value.copy(chats = current)
+        } else {
+            loadChats()
+        }
+    }
+
+    /**
+     * Обновление lastMessage для собственного сообщения (пришедшего с другого устройства).
+     * unread НЕ меняем.
+     */
+    private fun updateChatWithOwnMessage(chatId: String, newLast: WsNewMessage) {
+        val current = _state.value.chats.toMutableList()
+        val idx = current.indexOfFirst { it.id == chatId }
+        if (idx >= 0) {
+            val chat = current[idx]
+            current[idx] = chat.copy(lastMessage = newLast.message)
             val updated = current.removeAt(idx)
             current.add(0, updated)
             _state.value = _state.value.copy(chats = current)

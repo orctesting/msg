@@ -20,7 +20,11 @@ class WsService(
     private val tokenStorage: TokenStorage,
     private val wsBaseUrl: String
 ) {
-    private val _events = MutableSharedFlow<WsEvent>(extraBufferCapacity = 64)
+    private val _events = MutableSharedFlow<WsEvent>(
+        replay = 0,
+        extraBufferCapacity = 256,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
     val events: SharedFlow<WsEvent> = _events.asSharedFlow()
 
     private val _connected = MutableStateFlow(false)

@@ -44,8 +44,15 @@ fun ChatListScreen(
     val viewModel = remember {
         ChatListViewModel(
             chatRepository = appModule.chatRepository,
-            wsService = appModule.wsService
+            wsService = appModule.wsService,
+            tokenStorage = appModule.tokenStorage,
+            activeChatIdProvider = { org.messenger.app.ActiveChatHolder.get() },
         )
+    }
+    LaunchedEffect(Unit) {
+        org.messenger.app.ChatListResyncBus.events.collect {
+            viewModel.loadChats()
+        }
     }
     val state by viewModel.state.collectAsState()
 

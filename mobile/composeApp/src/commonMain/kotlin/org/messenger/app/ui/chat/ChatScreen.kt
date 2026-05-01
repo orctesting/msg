@@ -126,6 +126,10 @@ fun ChatScreen(
             coroutineScope.launch { listState.animateScrollToItem(0) }
             unreadCount = 0
             firstUnreadMessageId = null
+            // Пользователь реально видит новое сообщение внизу — отмечаем прочитанным
+            if (!isOwn) {
+                viewModel.markReadExplicit(topMsg.id)
+            }
         } else {
             unreadCount += 1
             if (firstUnreadMessageId == null) firstUnreadMessageId = topMsg.id
@@ -137,6 +141,22 @@ fun ChatScreen(
         if (isAtBottom) {
             unreadCount = 0
             firstUnreadMessageId = null
+            // Пользователь доскроллил до низа — отмечаем прочитанным
+            val topMsg = state.messages.firstOrNull()
+            if (topMsg != null && topMsg.senderId != currentUserId) {
+                viewModel.markReadExplicit(topMsg.id)
+            }
+        }
+    }
+
+    // При первом входе в чат (или обновлении сообщений) — markRead,
+    // если пользователь уже внизу (обычный кейс открытия чата).
+    LaunchedEffect(state.messages.size > 0) {
+        if (state.messages.isNotEmpty() && isAtBottom) {
+            val topMsg = state.messages.first()
+            if (topMsg.senderId != currentUserId) {
+                viewModel.markReadExplicit(topMsg.id)
+            }
         }
     }
 

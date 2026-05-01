@@ -30,7 +30,6 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     Log.d(TAG, "FCM token registered on backend")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to register FCM token", e)
-                    // Сохраняем для повторной попытки при следующем запуске
                     PendingTokenStore.savePendingToken(applicationContext, token)
                 }
             }
@@ -43,15 +42,29 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
         super.onMessageReceived(remoteMessage)
         Log.d(TAG, "FCM message received: ${remoteMessage.data}")
 
-        val chatId = remoteMessage.data["chat_id"] ?: return
-        val messageId = remoteMessage.data["message_id"] ?: return
-        val senderId = remoteMessage.data["sender_id"]
+        val data = remoteMessage.data
+
+        // ── action=dismiss: служебный сигнал скрытия уведомлений ──
+        val action = data["action"]
+        if (action == "dismiss") {
+            val chatId = data["chat_id"] ?: return
+            val ids = (data["message_ids"] ?: "")
+                .split(",")
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+            NotificationDismisser.dismiss(applicationContext, chatId, ids)
+            return
+        }
+
+        // ── обычное уведомление о новом сообщении ──
+        val chatId = data["chat_id"] ?: return
+        val messageId = data["message_id"] ?: return
 
         val title = remoteMessage.notification?.title
-            ?: remoteMessage.data["title"]
+            ?: data["title"]
             ?: "Новое сообщение"
         val body = remoteMessage.notification?.body
-            ?: remoteMessage.data["body"]
+            ?: data["body"]
             ?: ""
 
         // Если приложение в foreground и этот чат открыт — не показываем
@@ -59,21 +72,59 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             return
         }
 
-        showNotification(chatId, messageId, title, body)
+        // Локальная фильтрация по notification_settings (на случай если бэк
+        // ещё не успел получить обновлённые настройки)
+        if (!shouldShowByLocalSettings(chatId)) {
+            return
+        }
+
+        showOrUpdateGroupNotification(
+            chatId = chatId,
+            chatName = title,
+            messageId = messageId,
+            senderNameOrTitle = title,
+            body = body,
+        )
     }
 
-    private fun showNotification(
+    private fun shouldShowByLocalSettings(chatId: String): Boolean {
+        val mode = NotificationSettingsCache.getMode(applicationContext)
+        return when (mode) {
+            "all" -> true
+            "none" -> false
+            "whitelist" -> NotificationSettingsCache.getWhitelist(applicationContext).contains(chatId)
+            // personal_only локально не определить надёжно (чаты не кэшируем),
+            // полагаемся на серверный фильтр
+            else -> true
+        }
+    }
+
+    private fun showOrUpdateGroupNotification(
         chatId: String,
+        chatName: String,
         messageId: String,
-        title: String,
-        body: String
+        senderNameOrTitle: String,
+        body: String,
     ) {
+        // Сохраняем запись для группировки
+        NotificationGroupStore.addMessage(
+            context = applicationContext,
+            chatId = chatId,
+            chatName = chatName,
+            entry = NotificationGroupStore.Entry(
+                messageId = messageId,
+                senderName = senderNameOrTitle,
+                text = body,
+                timestamp = System.currentTimeMillis(),
+            ),
+        )
+
+        val groupKey = GROUP_CHAT_PREFIX + chatId
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_CHAT_ID, chatId)
-            putExtra(EXTRA_CHAT_NAME, title)
+            putExtra(EXTRA_CHAT_NAME, chatName)
         }
-
         val pendingIntent = PendingIntent.getActivity(
             this,
             chatId.hashCode(),
@@ -81,19 +132,44 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(this, MessengerApplication.CHANNEL_CHAT_MESSAGES)
+        // Одиночное уведомление для конкретного сообщения
+        val singleNotif = NotificationCompat.Builder(this, MessengerApplication.CHANNEL_CHAT_MESSAGES)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle(title)
+            .setContentTitle(chatName)
             .setContentText(body)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
-            .setGroup(GROUP_CHAT_PREFIX + chatId)
+            .setGroup(groupKey)
+            .build()
+
+        // Summary-уведомление с InboxStyle
+        val entries = NotificationGroupStore.getEntries(applicationContext, chatId)
+        val inboxStyle = NotificationCompat.InboxStyle()
+            .setBigContentTitle(chatName)
+        entries.takeLast(5).forEach { e ->
+            val display = if (e.text.isBlank()) e.senderName else "${e.senderName}: ${e.text}"
+            inboxStyle.addLine(display)
+        }
+        val summaryText = if (entries.size > 1) "${entries.size} новых сообщений" else body
+        inboxStyle.setSummaryText(summaryText)
+
+        val summaryNotif = NotificationCompat.Builder(this, MessengerApplication.CHANNEL_CHAT_MESSAGES)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentTitle(chatName)
+            .setContentText(summaryText)
+            .setStyle(inboxStyle)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .setGroup(groupKey)
+            .setGroupSummary(true)
             .build()
 
         try {
-            NotificationManagerCompat.from(this)
-                .notify(messageId.hashCode(), notification)
+            val nm = NotificationManagerCompat.from(this)
+            nm.notify(messageId.hashCode(), singleNotif)
+            nm.notify(NotificationDismisser.summaryIdFor(chatId), summaryNotif)
         } catch (e: SecurityException) {
             Log.w(TAG, "No notification permission", e)
         }

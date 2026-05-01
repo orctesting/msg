@@ -116,10 +116,7 @@ class ChatViewModel(
                     )
                 }
                 loadRetryCount = 0
-
-                page.messages.lastOrNull()?.let { msg ->
-                    try { chatRepository.markRead(chatId, msg.id) } catch (_: Exception) {}
-                }
+                // НЕ делаем авто-markRead здесь — UI сам решит.
             } catch (e: ApiException) {
                 if (e.statusCode == 401 || e.statusCode == 403) {
                     _state.update {
@@ -449,6 +446,20 @@ class ChatViewModel(
         _state.update { it.copy(error = null) }
     }
 
+    /**
+     * Отмечает чат прочитанным до указанного сообщения (или до последнего,
+     * если id = null). Вызывается из UI только когда пользователь реально
+     * видит низ чата.
+     */
+    fun markReadExplicit(messageId: String? = null) {
+        scope.launch {
+            val targetId = messageId ?: _state.value.messages.firstOrNull()?.id ?: return@launch
+            try {
+                chatRepository.markRead(chatId, targetId)
+            } catch (_: Exception) {}
+        }
+    }
+
     private fun observeWs() {
         scope.launch {
             wsService.events.collect { event ->
@@ -472,7 +483,8 @@ class ChatViewModel(
             val current = _state.value.messages
             if (current.none { it.id == payload.message.id }) {
                 _state.update { it.copy(messages = listOf(payload.message) + it.messages) }
-                try { chatRepository.markRead(chatId, payload.message.id) } catch (_: Exception) {}
+                // НЕ делаем авто-markRead здесь — его делает UI-слой
+                // (ChatScreen) только когда пользователь реально у низа списка.
             }
         } catch (_: Exception) {}
     }

@@ -83,7 +83,7 @@ fun App(
                 }
 
                 is Screen.ForwardPicker -> {
-                    updateCurrentChatId(null)
+                    setActiveChatId(null)
                     ForwardTargetScreen(
                         appModule = currentAppModule,
                         sourceChatId = screen.sourceChatId,
@@ -153,10 +153,13 @@ fun App(
 
 private var pendingPhoneForOtp: String? = null
 private var pendingServerAddress: String? = null
-
 expect fun updateCurrentChatId(chatId: String?)
 expect fun onLoginSuccessCallback(appModule: AppModule)
 expect fun syncAppModule(appModule: AppModule)
+fun setActiveChatId(chatId: String?) {
+    ActiveChatHolder.set(chatId)
+    updateCurrentChatId(chatId)
+}
 
 expect fun observeDeepLinks(): kotlinx.coroutines.flow.Flow<Pair<String, String>>?
 
@@ -232,9 +235,9 @@ private fun MobileNavigation(
             )
         }
         is Screen.Chat -> {
-            updateCurrentChatId(screen.chatId)
+            setActiveChatId(screen.chatId)
             PlatformBackHandler(enabled = true) {
-                updateCurrentChatId(null)
+                setActiveChatId(null)
                 onScreenChange(Screen.ChatList)
             }
             ChatScreen(
@@ -242,7 +245,7 @@ private fun MobileNavigation(
                 chatName = screen.chatName,
                 appModule = currentAppModule,
                 onBack = {
-                    updateCurrentChatId(null)
+                    setActiveChatId(null)
                     onScreenChange(Screen.ChatList)
                 },
                 onPickForwardTarget = { sourceChatId, messageIds ->

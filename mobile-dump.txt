@@ -1,6 +1,6 @@
 ﻿======================================================================
 MOBILE PROJECT DUMP
-Generated: 2026-05-01 22:55:20
+Generated: 2026-05-02 02:49:31
 Root: D:\messenger_proj\source\mobile
 ======================================================================
 
@@ -210,7 +210,7 @@ plugins {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\build.gradle.kts
-SIZE: 3 KB
+SIZE: 3.1 KB
 ----------------------------------------------------------------------
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -240,6 +240,7 @@ kotlin {
             implementation(libs.androidx.lifecycle.process)
             implementation("com.google.firebase:firebase-messaging-ktx:24.1.0")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
+            implementation(libs.kotlinx.serialization.json)
         }
         commonMain.dependencies {
             implementation(libs.compose.runtime)
@@ -398,13 +399,15 @@ SIZE: 1.5 KB
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\AppLifecycleObserver.kt
-SIZE: 1.3 KB
+SIZE: 2 KB
 ----------------------------------------------------------------------
 package org.messenger.app
 
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import kotlinx.coroutines.*
+import org.messenger.app.service.WsNotificationBridge
+import org.messenger.app.service.NotificationSettingsSync
 import org.messenger.app.shared.di.AppModule
 
 class AppLifecycleObserver(
@@ -420,20 +423,31 @@ class AppLifecycleObserver(
         private set
 
     override fun onStart(owner: LifecycleOwner) {
-        // App moved to foreground
         isInForeground = true
         disconnectJob?.cancel()
         disconnectJob = null
 
-        // Reconnect WS
         wsScope?.cancel()
-        wsScope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also {
-            appModule.wsService.connect(it)
+        wsScope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also { s ->
+            appModule.wsService.connect(s)
+            WsNotificationBridge.observe(
+                scope = s,
+                context = MessengerApplication.instance,
+                wsService = appModule.wsService,
+            )
+        }
+
+        if (appModule.tokenStorage.isLoggedIn()) {
+            scope.launch {
+                NotificationSettingsSync.refresh(MessengerApplication.instance, appModule)
+            }
+            // РџСЂРёРЅСѓРґРёС‚РµР»СЊРЅС‹Р№ resync СЃРїРёСЃРєР° С‡Р°С‚РѕРІ вЂ” ChatListViewModel СЃР°Рј РѕР±РЅРѕРІРёС‚ state,
+            // РµСЃР»Рё СЌРєСЂР°РЅ РѕС‚РєСЂС‹С‚. Р•СЃР»Рё РґСЂСѓРіРѕР№ СЌРєСЂР°РЅ вЂ” РґР°РЅРЅС‹Рµ РїРѕРґС‚СЏРЅСѓС‚СЃСЏ РїСЂРё СЃР»РµРґСѓСЋС‰РµРј РѕС‚РєСЂС‹С‚РёРё.
+            ChatListResyncBus.requestResync()
         }
     }
 
     override fun onStop(owner: LifecycleOwner) {
-        // App moved to background вЂ” disconnect WS after 30 sec
         isInForeground = false
         disconnectJob = scope.launch {
             delay(30_000)
@@ -692,7 +706,7 @@ actual fun getPlatformName(): String = "android"
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\service\AppFirebaseMessagingService.kt
-SIZE: 4.1 KB
+SIZE: 7.3 KB
 ----------------------------------------------------------------------
 package org.messenger.app.service
 
@@ -726,7 +740,6 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     Log.d(TAG, "FCM token registered on backend")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to register FCM token", e)
-                    // РЎРѕС…СЂР°РЅСЏРµРј РґР»СЏ РїРѕРІС‚РѕСЂРЅРѕР№ РїРѕРїС‹С‚РєРё РїСЂРё СЃР»РµРґСѓСЋС‰РµРј Р·Р°РїСѓСЃРєРµ
                     PendingTokenStore.savePendingToken(applicationContext, token)
                 }
             }
@@ -739,15 +752,29 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
         super.onMessageReceived(remoteMessage)
         Log.d(TAG, "FCM message received: ${remoteMessage.data}")
 
-        val chatId = remoteMessage.data["chat_id"] ?: return
-        val messageId = remoteMessage.data["message_id"] ?: return
-        val senderId = remoteMessage.data["sender_id"]
+        val data = remoteMessage.data
+
+        // в”Ђв”Ђ action=dismiss: СЃР»СѓР¶РµР±РЅС‹Р№ СЃРёРіРЅР°Р» СЃРєСЂС‹С‚РёСЏ СѓРІРµРґРѕРјР»РµРЅРёР№ в”Ђв”Ђ
+        val action = data["action"]
+        if (action == "dismiss") {
+            val chatId = data["chat_id"] ?: return
+            val ids = (data["message_ids"] ?: "")
+                .split(",")
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+            NotificationDismisser.dismiss(applicationContext, chatId, ids)
+            return
+        }
+
+        // в”Ђв”Ђ РѕР±С‹С‡РЅРѕРµ СѓРІРµРґРѕРјР»РµРЅРёРµ Рѕ РЅРѕРІРѕРј СЃРѕРѕР±С‰РµРЅРёРё в”Ђв”Ђ
+        val chatId = data["chat_id"] ?: return
+        val messageId = data["message_id"] ?: return
 
         val title = remoteMessage.notification?.title
-            ?: remoteMessage.data["title"]
+            ?: data["title"]
             ?: "РќРѕРІРѕРµ СЃРѕРѕР±С‰РµРЅРёРµ"
         val body = remoteMessage.notification?.body
-            ?: remoteMessage.data["body"]
+            ?: data["body"]
             ?: ""
 
         // Р•СЃР»Рё РїСЂРёР»РѕР¶РµРЅРёРµ РІ foreground Рё СЌС‚РѕС‚ С‡Р°С‚ РѕС‚РєСЂС‹С‚ вЂ” РЅРµ РїРѕРєР°Р·С‹РІР°РµРј
@@ -755,21 +782,59 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             return
         }
 
-        showNotification(chatId, messageId, title, body)
+        // Р›РѕРєР°Р»СЊРЅР°СЏ С„РёР»СЊС‚СЂР°С†РёСЏ РїРѕ notification_settings (РЅР° СЃР»СѓС‡Р°Р№ РµСЃР»Рё Р±СЌРє
+        // РµС‰С‘ РЅРµ СѓСЃРїРµР» РїРѕР»СѓС‡РёС‚СЊ РѕР±РЅРѕРІР»С‘РЅРЅС‹Рµ РЅР°СЃС‚СЂРѕР№РєРё)
+        if (!shouldShowByLocalSettings(chatId)) {
+            return
+        }
+
+        showOrUpdateGroupNotification(
+            chatId = chatId,
+            chatName = title,
+            messageId = messageId,
+            senderNameOrTitle = title,
+            body = body,
+        )
     }
 
-    private fun showNotification(
+    private fun shouldShowByLocalSettings(chatId: String): Boolean {
+        val mode = NotificationSettingsCache.getMode(applicationContext)
+        return when (mode) {
+            "all" -> true
+            "none" -> false
+            "whitelist" -> NotificationSettingsCache.getWhitelist(applicationContext).contains(chatId)
+            // personal_only Р»РѕРєР°Р»СЊРЅРѕ РЅРµ РѕРїСЂРµРґРµР»РёС‚СЊ РЅР°РґС‘Р¶РЅРѕ (С‡Р°С‚С‹ РЅРµ РєСЌС€РёСЂСѓРµРј),
+            // РїРѕР»Р°РіР°РµРјСЃСЏ РЅР° СЃРµСЂРІРµСЂРЅС‹Р№ С„РёР»СЊС‚СЂ
+            else -> true
+        }
+    }
+
+    private fun showOrUpdateGroupNotification(
         chatId: String,
+        chatName: String,
         messageId: String,
-        title: String,
-        body: String
+        senderNameOrTitle: String,
+        body: String,
     ) {
+        // РЎРѕС…СЂР°РЅСЏРµРј Р·Р°РїРёСЃСЊ РґР»СЏ РіСЂСѓРїРїРёСЂРѕРІРєРё
+        NotificationGroupStore.addMessage(
+            context = applicationContext,
+            chatId = chatId,
+            chatName = chatName,
+            entry = NotificationGroupStore.Entry(
+                messageId = messageId,
+                senderName = senderNameOrTitle,
+                text = body,
+                timestamp = System.currentTimeMillis(),
+            ),
+        )
+
+        val groupKey = GROUP_CHAT_PREFIX + chatId
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_CHAT_ID, chatId)
-            putExtra(EXTRA_CHAT_NAME, title)
+            putExtra(EXTRA_CHAT_NAME, chatName)
         }
-
         val pendingIntent = PendingIntent.getActivity(
             this,
             chatId.hashCode(),
@@ -777,19 +842,44 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(this, MessengerApplication.CHANNEL_CHAT_MESSAGES)
+        // РћРґРёРЅРѕС‡РЅРѕРµ СѓРІРµРґРѕРјР»РµРЅРёРµ РґР»СЏ РєРѕРЅРєСЂРµС‚РЅРѕРіРѕ СЃРѕРѕР±С‰РµРЅРёСЏ
+        val singleNotif = NotificationCompat.Builder(this, MessengerApplication.CHANNEL_CHAT_MESSAGES)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle(title)
+            .setContentTitle(chatName)
             .setContentText(body)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
-            .setGroup(GROUP_CHAT_PREFIX + chatId)
+            .setGroup(groupKey)
+            .build()
+
+        // Summary-СѓРІРµРґРѕРјР»РµРЅРёРµ СЃ InboxStyle
+        val entries = NotificationGroupStore.getEntries(applicationContext, chatId)
+        val inboxStyle = NotificationCompat.InboxStyle()
+            .setBigContentTitle(chatName)
+        entries.takeLast(5).forEach { e ->
+            val display = if (e.text.isBlank()) e.senderName else "${e.senderName}: ${e.text}"
+            inboxStyle.addLine(display)
+        }
+        val summaryText = if (entries.size > 1) "${entries.size} РЅРѕРІС‹С… СЃРѕРѕР±С‰РµРЅРёР№" else body
+        inboxStyle.setSummaryText(summaryText)
+
+        val summaryNotif = NotificationCompat.Builder(this, MessengerApplication.CHANNEL_CHAT_MESSAGES)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentTitle(chatName)
+            .setContentText(summaryText)
+            .setStyle(inboxStyle)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .setGroup(groupKey)
+            .setGroupSummary(true)
             .build()
 
         try {
-            NotificationManagerCompat.from(this)
-                .notify(messageId.hashCode(), notification)
+            val nm = NotificationManagerCompat.from(this)
+            nm.notify(messageId.hashCode(), singleNotif)
+            nm.notify(NotificationDismisser.summaryIdFor(chatId), summaryNotif)
         } catch (e: SecurityException) {
             Log.w(TAG, "No notification permission", e)
         }
@@ -844,6 +934,221 @@ object FcmTokenManager {
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\service\NotificationDismisser.kt
+SIZE: 1.6 KB
+----------------------------------------------------------------------
+package org.messenger.app.service
+
+import android.content.Context
+import android.util.Log
+import androidx.core.app.NotificationManagerCompat
+
+object NotificationDismisser {
+    private const val TAG = "NotificationDismisser"
+
+    fun dismiss(context: Context, chatId: String, messageIds: List<String>) {
+        val nm = NotificationManagerCompat.from(context)
+        try {
+            val store = NotificationGroupStore
+            if (messageIds.isEmpty() || messageIds.contains("all")) {
+                // РЎРЅРёРјР°РµРј РІСЃРµ СѓРІРµРґРѕРјР»РµРЅРёСЏ С‡Р°С‚Р°
+                val ids = store.getMessageIds(context, chatId)
+                ids.forEach { mid ->
+                    nm.cancel(mid.hashCode())
+                }
+                store.clearChat(context, chatId)
+                // Summary
+                nm.cancel(summaryIdFor(chatId))
+            } else {
+                messageIds.forEach { mid ->
+                    nm.cancel(mid.hashCode())
+                }
+                store.removeMessageIds(context, chatId, messageIds)
+                val remaining = store.getMessageIds(context, chatId)
+                if (remaining.isEmpty()) {
+                    nm.cancel(summaryIdFor(chatId))
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "dismiss error", e)
+        }
+    }
+
+    fun summaryIdFor(chatId: String): Int {
+        // РЎС‚Р°Р±РёР»СЊРЅС‹Р№ РѕС‚РґРµР»СЊРЅС‹Р№ id РґР»СЏ summary, РѕС‚Р»РёС‡РЅС‹Р№ РѕС‚ Р»СЋР±РѕРіРѕ messageId.hashCode()
+        return ("summary_$chatId").hashCode()
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\service\NotificationGroupStore.kt
+SIZE: 3.1 KB
+----------------------------------------------------------------------
+package org.messenger.app.service
+
+import android.content.Context
+
+object NotificationGroupStore {
+    private const val PREFS = "notification_groups"
+
+    data class Entry(
+        val messageId: String,
+        val senderName: String,
+        val text: String,
+        val timestamp: Long,
+    )
+
+    private fun prefs(context: Context) =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    fun addMessage(
+        context: Context,
+        chatId: String,
+        chatName: String,
+        entry: Entry,
+    ) {
+        val p = prefs(context)
+        val existingIds = p.getStringSet(idsKey(chatId), emptySet())?.toMutableSet() ?: mutableSetOf()
+        existingIds.add(entry.messageId)
+        p.edit()
+            .putStringSet(idsKey(chatId), existingIds)
+            .putString(chatNameKey(chatId), chatName)
+            .putString(entryKey(chatId, entry.messageId),
+                "${entry.senderName}\u0001${entry.text}\u0001${entry.timestamp}")
+            .apply()
+    }
+
+    fun getMessageIds(context: Context, chatId: String): List<String> {
+        val ids = prefs(context).getStringSet(idsKey(chatId), emptySet()) ?: return emptyList()
+        return ids.toList()
+    }
+
+    fun getEntries(context: Context, chatId: String): List<Entry> {
+        val p = prefs(context)
+        val ids = p.getStringSet(idsKey(chatId), emptySet()) ?: return emptyList()
+        return ids.mapNotNull { mid ->
+            val raw = p.getString(entryKey(chatId, mid), null) ?: return@mapNotNull null
+            val parts = raw.split('\u0001')
+            if (parts.size < 3) return@mapNotNull null
+            Entry(
+                messageId = mid,
+                senderName = parts[0],
+                text = parts[1],
+                timestamp = parts[2].toLongOrNull() ?: 0L,
+            )
+        }.sortedBy { it.timestamp }
+    }
+
+    fun getChatName(context: Context, chatId: String): String {
+        return prefs(context).getString(chatNameKey(chatId), "") ?: ""
+    }
+
+    fun removeMessageIds(context: Context, chatId: String, messageIds: List<String>) {
+        val p = prefs(context)
+        val existing = p.getStringSet(idsKey(chatId), emptySet())?.toMutableSet() ?: return
+        val ed = p.edit()
+        messageIds.forEach { mid ->
+            existing.remove(mid)
+            ed.remove(entryKey(chatId, mid))
+        }
+        if (existing.isEmpty()) {
+            ed.remove(idsKey(chatId)).remove(chatNameKey(chatId))
+        } else {
+            ed.putStringSet(idsKey(chatId), existing)
+        }
+        ed.apply()
+    }
+
+    fun clearChat(context: Context, chatId: String) {
+        val p = prefs(context)
+        val ids = p.getStringSet(idsKey(chatId), emptySet()) ?: emptySet()
+        val ed = p.edit()
+        ids.forEach { mid -> ed.remove(entryKey(chatId, mid)) }
+        ed.remove(idsKey(chatId)).remove(chatNameKey(chatId)).apply()
+    }
+
+    private fun idsKey(chatId: String) = "ids:$chatId"
+    private fun chatNameKey(chatId: String) = "chat_name:$chatId"
+    private fun entryKey(chatId: String, messageId: String) = "entry:$chatId:$messageId"
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\service\NotificationSettingsCache.kt
+SIZE: 1.3 KB
+----------------------------------------------------------------------
+package org.messenger.app.service
+
+import android.content.Context
+
+/**
+ * Р›РѕРєР°Р»СЊРЅС‹Р№ РєСЌС€ notification_settings РґР»СЏ РїР»Р°С‚С„РѕСЂРјС‹ android.
+ * РСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РІ FCM-СЃРµСЂРІРёСЃРµ РґР»СЏ С„РёР»СЊС‚СЂР°С†РёРё РїРѕРєР°Р·Р° СѓРІРµРґРѕРјР»РµРЅРёР№.
+ * Default (РЅРµС‚ Р·Р°РїРёСЃРё) = ALL.
+ */
+object NotificationSettingsCache {
+    private const val PREFS = "notification_settings_cache"
+    private const val KEY_MODE = "mode"
+    private const val KEY_WHITELIST = "whitelist"
+
+    fun saveSettings(context: Context, mode: String, whitelistChatIds: List<String>) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_MODE, mode)
+            .putStringSet(KEY_WHITELIST, whitelistChatIds.toSet())
+            .apply()
+    }
+
+    fun getMode(context: Context): String {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_MODE, "all") ?: "all"
+    }
+
+    fun getWhitelist(context: Context): Set<String> {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getStringSet(KEY_WHITELIST, emptySet()) ?: emptySet()
+    }
+
+    fun clear(context: Context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().clear().apply()
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\service\NotificationSettingsSync.kt
+SIZE: 1 KB
+----------------------------------------------------------------------
+package org.messenger.app.service
+
+import android.content.Context
+import org.messenger.app.shared.di.AppModule
+
+object NotificationSettingsSync {
+
+    suspend fun refresh(context: Context, appModule: AppModule) {
+        try {
+            val list = appModule.notificationsRepository.getSettings()
+            val androidItem = list.items.firstOrNull { it.platform == "android" }
+            if (androidItem != null) {
+                NotificationSettingsCache.saveSettings(
+                    context = context,
+                    mode = androidItem.mode,
+                    whitelistChatIds = androidItem.whitelistChatIds,
+                )
+            } else {
+                NotificationSettingsCache.saveSettings(
+                    context = context,
+                    mode = "all",
+                    whitelistChatIds = emptyList(),
+                )
+            }
+        } catch (_: Exception) {
+            // РРіРЅРѕСЂРёСЂСѓРµРј вЂ” РЅР° СЃР»РµРґСѓСЋС‰РµРј Р·Р°РїСѓСЃРєРµ РїРѕРїСЂРѕР±СѓРµРј СЃРЅРѕРІР°
+        }
+    }
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\service\PendingTokenStore.kt
 SIZE: 0.8 KB
 ----------------------------------------------------------------------
@@ -873,6 +1178,41 @@ object PendingTokenStore {
             .edit()
             .remove(KEY_TOKEN)
             .apply()
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\service\WsNotificationBridge.kt
+SIZE: 1.2 KB
+----------------------------------------------------------------------
+package org.messenger.app.service
+
+import android.content.Context
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import org.messenger.app.shared.data.remote.WsService
+
+object WsNotificationBridge {
+    fun observe(scope: CoroutineScope, context: Context, wsService: WsService) {
+        scope.launch {
+            wsService.events.collect { event ->
+                if (event.type != "notification_dismiss") return@collect
+                try {
+                    val obj: JsonObject = event.data.jsonObject
+                    val chatId = obj["chat_id"]?.jsonPrimitive?.content ?: return@collect
+                    val ids: List<String> = (obj["message_ids"] as? JsonArray)
+                        ?.map { it.jsonPrimitive.content }
+                        ?: emptyList()
+                    NotificationDismisser.dismiss(context, chatId, ids)
+                } catch (_: Exception) {}
+            }
+        }
     }
 }
 
@@ -1387,7 +1727,7 @@ SIZE: 1.5 KB
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\App.kt
-SIZE: 11 KB
+SIZE: 11.1 KB
 ----------------------------------------------------------------------
 package org.messenger.app
 
@@ -1474,7 +1814,7 @@ fun App(
                 }
 
                 is Screen.ForwardPicker -> {
-                    updateCurrentChatId(null)
+                    setActiveChatId(null)
                     ForwardTargetScreen(
                         appModule = currentAppModule,
                         sourceChatId = screen.sourceChatId,
@@ -1544,10 +1884,13 @@ fun App(
 
 private var pendingPhoneForOtp: String? = null
 private var pendingServerAddress: String? = null
-
 expect fun updateCurrentChatId(chatId: String?)
 expect fun onLoginSuccessCallback(appModule: AppModule)
 expect fun syncAppModule(appModule: AppModule)
+fun setActiveChatId(chatId: String?) {
+    ActiveChatHolder.set(chatId)
+    updateCurrentChatId(chatId)
+}
 
 expect fun observeDeepLinks(): kotlinx.coroutines.flow.Flow<Pair<String, String>>?
 
@@ -1623,9 +1966,9 @@ private fun MobileNavigation(
             )
         }
         is Screen.Chat -> {
-            updateCurrentChatId(screen.chatId)
+            setActiveChatId(screen.chatId)
             PlatformBackHandler(enabled = true) {
-                updateCurrentChatId(null)
+                setActiveChatId(null)
                 onScreenChange(Screen.ChatList)
             }
             ChatScreen(
@@ -1633,7 +1976,7 @@ private fun MobileNavigation(
                 chatName = screen.chatName,
                 appModule = currentAppModule,
                 onBack = {
-                    updateCurrentChatId(null)
+                    setActiveChatId(null)
                     onScreenChange(Screen.ChatList)
                 },
                 onPickForwardTarget = { sourceChatId, messageIds ->
@@ -1653,6 +1996,41 @@ private fun MobileNavigation(
         // Auth Рё ForwardPicker РѕР±СЂР°Р±Р°С‚С‹РІР°СЋС‚СЃСЏ РІС‹С€Рµ, РґРѕ РІС‹Р·РѕРІР° MobileNavigation
         is Screen.Auth, is Screen.ForwardPicker -> Unit
     }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ChatListResyncBus.kt
+SIZE: 0.9 KB
+----------------------------------------------------------------------
+package org.messenger.app
+
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+object ChatListResyncBus {
+    private val _events = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
+    val events = _events.asSharedFlow()
+
+    fun requestResync() {
+        _events.tryEmit(Unit)
+    }
+}
+
+/**
+ * Р•РґРёРЅС‹Р№ holder В«РєР°РєРѕР№ С‡Р°С‚ СЃРµР№С‡Р°СЃ РѕС‚РєСЂС‹С‚В» вЂ” РѕР±С‰РёР№ РґР»СЏ mobile Рё desktop.
+ * РћР±РЅРѕРІР»СЏРµС‚СЃСЏ РёР· ChatScreen / split-pane.
+ */
+object ActiveChatHolder {
+    private val _activeChatId = MutableStateFlow<String?>(null)
+    val activeChatId = _activeChatId.asStateFlow()
+
+    fun set(chatId: String?) {
+        _activeChatId.value = chatId
+    }
+
+    fun get(): String? = _activeChatId.value
 }
 
 ----------------------------------------------------------------------
@@ -4203,7 +4581,7 @@ private fun androidx.compose.ui.graphics.Color.takeOrDefault(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chatlist\ChatListScreen.kt
-SIZE: 9.8 KB
+SIZE: 10.1 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chatlist
 
@@ -4251,8 +4629,15 @@ fun ChatListScreen(
     val viewModel = remember {
         ChatListViewModel(
             chatRepository = appModule.chatRepository,
-            wsService = appModule.wsService
+            wsService = appModule.wsService,
+            tokenStorage = appModule.tokenStorage,
+            activeChatIdProvider = { org.messenger.app.ActiveChatHolder.get() },
         )
+    }
+    LaunchedEffect(Unit) {
+        org.messenger.app.ChatListResyncBus.events.collect {
+            viewModel.loadChats()
+        }
     }
     val state by viewModel.state.collectAsState()
 
@@ -5441,7 +5826,7 @@ private fun ContactFormDialog(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\forward\ForwardTargetScreen.kt
-SIZE: 4.8 KB
+SIZE: 4.9 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.forward
 
@@ -5476,6 +5861,8 @@ fun ForwardTargetScreen(
         ChatListViewModel(
             chatRepository = appModule.chatRepository,
             wsService = appModule.wsService,
+            tokenStorage = appModule.tokenStorage,
+            activeChatIdProvider = { org.messenger.app.ActiveChatHolder.get() },
         )
     }
     val state by viewModel.state.collectAsState()
@@ -7514,7 +7901,7 @@ actual fun PlatformMainScreen(
 
     // РћР±РЅРѕРІР»СЏРµРј currentChatId РґР»СЏ FCM-С„РёР»СЊС‚СЂР°/lifecycle
     LaunchedEffect(currentChatId) {
-        org.messenger.app.updateCurrentChatId(currentChatId)
+        org.messenger.app.setActiveChatId(currentChatId)
     }
 
     Box(
@@ -9677,6 +10064,58 @@ data class MarkReadBody(
 )
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\model\NotificationModels.kt
+SIZE: 1.1 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.data.model
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+object NotificationMode {
+    const val ALL = "all"
+    const val PERSONAL_ONLY = "personal_only"
+    const val WHITELIST = "whitelist"
+    const val NONE = "none"
+}
+
+object NotificationPlatform {
+    const val ANDROID = "android"
+    const val IOS = "ios"
+    const val DESKTOP = "desktop"
+    const val WEB = "web"
+}
+
+@Serializable
+data class NotificationSettingsItemDto(
+    val platform: String,
+    val mode: String,
+    @SerialName("whitelist_chat_ids")
+    val whitelistChatIds: List<String> = emptyList(),
+)
+
+@Serializable
+data class NotificationSettingsListDto(
+    val items: List<NotificationSettingsItemDto>,
+)
+
+@Serializable
+data class UpdateNotificationSettingsBody(
+    val mode: String,
+    @SerialName("chat_ids")
+    val chatIds: List<String> = emptyList(),
+)
+
+@Serializable
+data class WsNotificationDismiss(
+    @SerialName("chat_id")
+    val chatId: String,
+    @SerialName("message_ids")
+    val messageIds: List<String>,
+    val reason: String, // "read" | "deleted" | "manual"
+)
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\model\ProfileModels.kt
 SIZE: 2.9 KB
 ----------------------------------------------------------------------
@@ -9885,7 +10324,7 @@ data class WsAttachmentReady(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\remote\ApiService.kt
-SIZE: 11.5 KB
+SIZE: 12.2 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.remote
 
@@ -9896,6 +10335,9 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.client.plugins.auth.*
 import org.messenger.app.shared.data.model.*
+import org.messenger.app.shared.data.model.NotificationSettingsListDto
+import org.messenger.app.shared.data.model.NotificationSettingsItemDto
+import org.messenger.app.shared.data.model.UpdateNotificationSettingsBody
 
 class ApiException(val statusCode: Int, val errorBody: String) :
     Exception("HTTP $statusCode: $errorBody")
@@ -10207,6 +10649,21 @@ class ApiService(private val client: HttpClient) {
             throw ApiException(response.status.value, response.bodyAsText())
         }
     }
+
+    // в”Ђв”Ђ Notification settings в”Ђв”Ђ
+    suspend fun getNotificationSettings(): NotificationSettingsListDto =
+        requestAndParse { client.get("api/v1/me/notification-settings") }
+
+    suspend fun updateNotificationSettings(
+        platform: String,
+        mode: String,
+        chatIds: List<String>,
+    ): NotificationSettingsItemDto =
+        requestAndParse {
+            client.put("api/v1/me/notification-settings/$platform") {
+                setBody(UpdateNotificationSettingsBody(mode = mode, chatIds = chatIds))
+            }
+        }
 }
 
 ----------------------------------------------------------------------
@@ -10328,7 +10785,7 @@ fun createHttpClient(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\remote\WsService.kt
-SIZE: 5.6 KB
+SIZE: 5.8 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.remote
 
@@ -10352,7 +10809,11 @@ class WsService(
     private val tokenStorage: TokenStorage,
     private val wsBaseUrl: String
 ) {
-    private val _events = MutableSharedFlow<WsEvent>(extraBufferCapacity = 64)
+    private val _events = MutableSharedFlow<WsEvent>(
+        replay = 0,
+        extraBufferCapacity = 256,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
     val events: SharedFlow<WsEvent> = _events.asSharedFlow()
 
     private val _connected = MutableStateFlow(false)
@@ -10497,7 +10958,7 @@ class WsService(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\di\AppModule.kt
-SIZE: 2.5 KB
+SIZE: 2.6 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.di
 
@@ -10550,6 +11011,10 @@ class AppModule(
 
     val profileRepository by lazy {
         org.messenger.app.shared.domain.repository.ProfileRepository(apiService)
+    }
+
+    val notificationsRepository by lazy {
+        org.messenger.app.shared.domain.repository.NotificationsRepository(apiService)
     }
 
     companion object {
@@ -10822,6 +11287,29 @@ class ContactsRepository(private val api: ApiService) {
     suspend fun deleteContact(contactId: String) = api.deleteContact(contactId)
 
     suspend fun dismissPeer(peerUserId: String) = api.dismissPeer(peerUserId)
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\domain\repository\NotificationsRepository.kt
+SIZE: 0.6 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.domain.repository
+
+import org.messenger.app.shared.data.model.NotificationSettingsItemDto
+import org.messenger.app.shared.data.model.NotificationSettingsListDto
+import org.messenger.app.shared.data.remote.ApiService
+
+class NotificationsRepository(private val api: ApiService) {
+
+    suspend fun getSettings(): NotificationSettingsListDto =
+        api.getNotificationSettings()
+
+    suspend fun updateSettings(
+        platform: String,
+        mode: String,
+        chatIds: List<String>,
+    ): NotificationSettingsItemDto =
+        api.updateNotificationSettings(platform, mode, chatIds)
 }
 
 ----------------------------------------------------------------------
@@ -11722,7 +12210,7 @@ class ChatViewModel(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\chatlist\ChatListViewModel.kt
-SIZE: 4.6 KB
+SIZE: 6.8 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.ui.chatlist
 
@@ -11734,9 +12222,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.decodeFromJsonElement
+import org.messenger.app.shared.data.local.TokenStorage
 import org.messenger.app.shared.data.model.ChatDto
 import org.messenger.app.shared.data.model.WsMessageDeleted
 import org.messenger.app.shared.data.model.WsMessageEdited
+import org.messenger.app.shared.data.model.WsMessageRead
 import org.messenger.app.shared.data.model.WsNewMessage
 import org.messenger.app.shared.data.remote.WsService
 import org.messenger.app.shared.data.remote.appJson
@@ -11750,9 +12240,18 @@ data class ChatListUiState(
 
 class ChatListViewModel(
     private val chatRepository: ChatRepository,
-    private val wsService: WsService
+    private val wsService: WsService,
+    private val tokenStorage: TokenStorage? = null,
+    /**
+     * РСЃС‚РѕС‡РЅРёРє В«РєР°РєРѕР№ С‡Р°С‚ СЃРµР№С‡Р°СЃ РѕС‚РєСЂС‹С‚В». РќР° desktop вЂ” СЌС‚Рѕ РїСЂР°РІР°СЏ РїР°РЅРµР»СЊ;
+     * РЅР° mobile вЂ” С‚РµРєСѓС‰РёР№ СЌРєСЂР°РЅ Chat. Р•СЃР»Рё РѕС‚РєСЂС‹С‚ С‡Р°С‚ вЂ” РќР• РёРЅРєСЂРµРјРµРЅС‚РёРј unread
+     * РґР»СЏ РЅРµРіРѕ Рё СЃСЂР°Р·Сѓ РѕР±РЅСѓР»СЏРµРј РїСЂРё РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё.
+     */
+    private val activeChatIdProvider: () -> String? = { null },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    private val currentUserId: String? = tokenStorage?.getUserId()
 
     private val _state = MutableStateFlow(ChatListUiState())
     val state: StateFlow<ChatListUiState> = _state.asStateFlow()
@@ -11760,6 +12259,7 @@ class ChatListViewModel(
     init {
         loadChats()
         observeWs()
+        observeWsConnection()
     }
 
     fun loadChats() {
@@ -11773,6 +12273,14 @@ class ChatListViewModel(
                     isLoading = false,
                     error = e.message ?: "РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё"
                 )
+            }
+        }
+    }
+
+    private fun observeWsConnection() {
+        scope.launch {
+            wsService.connected.collect { connected ->
+                if (connected) loadChats()
             }
         }
     }
@@ -11796,7 +12304,6 @@ class ChatListViewModel(
                     "message_deleted" -> {
                         try {
                             val ev = appJson.decodeFromJsonElement<WsMessageDeleted>(event.data)
-                            // Р•СЃР»Рё СѓРґР°Р»РµРЅРѕ last_message вЂ” РїСЂРѕС‰Рµ РїРµСЂРµР·Р°РіСЂСѓР·РёС‚СЊ СЃРїРёСЃРѕРє
                             val affected = _state.value.chats.any { chat ->
                                 chat.id == ev.chatId &&
                                         chat.lastMessage != null &&
@@ -11808,9 +12315,29 @@ class ChatListViewModel(
                     "message_pinned", "message_unpinned" -> {
                         loadChats()
                     }
+                    "message_read" -> {
+                        try {
+                            val ev = appJson.decodeFromJsonElement<WsMessageRead>(event.data)
+                            if (currentUserId != null && ev.userId == currentUserId) {
+                                clearUnreadForChat(ev.chatId)
+                            }
+                        } catch (_: Exception) {}
+                    }
                 }
             }
         }
+    }
+
+    private fun clearUnreadForChat(chatId: String) {
+        val list = _state.value.chats
+        val idx = list.indexOfFirst { it.id == chatId }
+        if (idx < 0) return
+        val current = list[idx]
+        if (current.unreadCount == 0) return
+        val newList = list.toMutableList().also {
+            it[idx] = current.copy(unreadCount = 0)
+        }
+        _state.value = _state.value.copy(chats = newList)
     }
 
     private fun updateLastIfMatches(chatId: String, messageId: String, newContent: String) {
@@ -11829,16 +12356,26 @@ class ChatListViewModel(
     private fun updateChatWithNewMessage(msg: WsNewMessage) {
         val current = _state.value.chats.toMutableList()
         val idx = current.indexOfFirst { it.id == msg.chatId }
+        val activeChatId = activeChatIdProvider()
+        val isChatOpen = activeChatId == msg.chatId
+        val isOwn = currentUserId != null && msg.message.senderId == currentUserId
+
         if (idx >= 0) {
             val chat = current[idx]
+            val newUnread = when {
+                isOwn -> chat.unreadCount
+                isChatOpen -> 0  // РѕС‚РєСЂС‹С‚С‹Р№ С‡Р°С‚ СЃР°Рј РїСЂРѕС‡РёС‚Р°РµС‚, РЅРµ РёРЅРєСЂРµРјРµРЅС‚РёСЂСѓРµРј Рё СЃР±СЂР°СЃС‹РІР°РµРј
+                else -> chat.unreadCount + 1
+            }
             current[idx] = chat.copy(
                 lastMessage = msg.message,
-                unreadCount = chat.unreadCount + 1
+                unreadCount = newUnread,
             )
             val updated = current.removeAt(idx)
             current.add(0, updated)
             _state.value = _state.value.copy(chats = current)
         } else {
+            // РЅРѕРІРѕРіРѕ С‡Р°С‚Р° РµС‰С‘ РЅРµС‚ РІ СЃРїРёСЃРєРµ вЂ” РїРѕРґРіСЂСѓР·РёРј СЃРїРёСЃРѕРє
             loadChats()
         }
     }
@@ -12627,6 +13164,6 @@ SIZE: 0.2 KB
 }
 
 ======================================================================
-Total files dumped: 154
+Total files dumped: 162
 ======================================================================
 

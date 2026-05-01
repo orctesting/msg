@@ -7,6 +7,9 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.client.plugins.auth.*
 import org.messenger.app.shared.data.model.*
+import org.messenger.app.shared.data.model.NotificationSettingsListDto
+import org.messenger.app.shared.data.model.NotificationSettingsItemDto
+import org.messenger.app.shared.data.model.UpdateNotificationSettingsBody
 
 class ApiException(val statusCode: Int, val errorBody: String) :
     Exception("HTTP $statusCode: $errorBody")
@@ -318,4 +321,19 @@ class ApiService(private val client: HttpClient) {
             throw ApiException(response.status.value, response.bodyAsText())
         }
     }
+
+    // ── Notification settings ──
+    suspend fun getNotificationSettings(): NotificationSettingsListDto =
+        requestAndParse { client.get("api/v1/me/notification-settings") }
+
+    suspend fun updateNotificationSettings(
+        platform: String,
+        mode: String,
+        chatIds: List<String>,
+    ): NotificationSettingsItemDto =
+        requestAndParse {
+            client.put("api/v1/me/notification-settings/$platform") {
+                setBody(UpdateNotificationSettingsBody(mode = mode, chatIds = chatIds))
+            }
+        }
 }

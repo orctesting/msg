@@ -85,6 +85,62 @@ def _send_to_provider(token: str, token_type: str, payload: dict) -> dict:
         "provider_message_id": str(uuid.uuid4()),
         "provider": token_type,
     }
+    
+
+def _should_deliver(
+    session: Session,
+    user_id: uuid.UUID,
+    platform: str,
+    chat_id: uuid.UUID,
+) -> bool:
+    """
+    Возвращает True, если пуш нужно доставить пользователю на платформу
+    с учётом notification_settings + notification_chat_whitelist.
+    Default (нет записи) = доставлять.
+    """
+    from app.db.models.notification_settings import (
+        NotificationSettings,
+        NotificationChatWhitelist,
+    )
+    from app.db.models.chat import Chat
+
+    settings_row = session.execute(
+        select(NotificationSettings).where(
+            NotificationSettings.user_id == user_id,
+            NotificationSettings.platform == platform,
+        )
+    ).scalar_one_or_none()
+
+    if settings_row is None:
+        return True  # default: all
+
+    mode = settings_row.mode
+
+    if mode == "all":
+        return True
+    if mode == "none":
+        return False
+
+    if mode == "personal_only":
+        chat = session.execute(
+            select(Chat).where(Chat.id == chat_id)
+        ).scalar_one_or_none()
+        if chat is None:
+            return False
+        return chat.type == "personal"
+
+    if mode == "whitelist":
+        wl = session.execute(
+            select(NotificationChatWhitelist).where(
+                NotificationChatWhitelist.user_id == user_id,
+                NotificationChatWhitelist.platform == platform,
+                NotificationChatWhitelist.chat_id == chat_id,
+            )
+        ).scalar_one_or_none()
+        return wl is not None
+
+    # неизвестный режим → fail-safe: доставлять
+    return True
 
 
 @celery_app.task(bind=True, max_retries=0)
@@ -146,6 +202,7 @@ def send_push_to_device(self, message_id: str, device_id: str):
     """
     Sends a push to ONE device. Retries only on transient errors.
     Permanent errors (invalid token) -> mark token invalid, no retry.
+    Также фильтрует доставку по notification_settings (mode/whitelist).
     """
     session: Session = _sync_db_session()
     try:
@@ -176,12 +233,38 @@ def send_push_to_device(self, message_id: str, device_id: str):
             message.id, device.id, attempt_number,
         )
 
-        # Idempotency check — если уже отправляли на этой попытке, не повторяем
+        # Idempotency check
         existing_log = session.execute(
             select(PushLog).where(PushLog.idempotency_key == log_idempotency_key)
         ).scalar_one_or_none()
         if existing_log is not None:
-            logger.info("push_already_logged", message_id=message_id, device_id=device_id, attempt=attempt_number)
+            logger.info(
+                "push_already_logged",
+                message_id=message_id,
+                device_id=device_id,
+                attempt=attempt_number,
+            )
+            return
+
+        # ── Фильтрация по notification_settings ──
+        if not _should_deliver(session, device.user_id, device.platform, message.chat_id):
+            log = PushLog(
+                message_id=message.id,
+                device_id=device.id,
+                push_token_id=push_token.id if push_token else None,
+                status="skipped_settings",
+                attempt_number=attempt_number,
+                error_details="Filtered by notification_settings",
+                idempotency_key=log_idempotency_key,
+            )
+            session.add(log)
+            session.commit()
+            logger.info(
+                "push_skipped_settings",
+                device_id=str(device.id),
+                user_id=str(device.user_id),
+                platform=device.platform,
+            )
             return
 
         # Нет валидного токена → skipped, без ретрая
@@ -212,7 +295,6 @@ def send_push_to_device(self, message_id: str, device_id: str):
                 push_token.token, push_token.token_type, payload,
             )
 
-            # Успех: логируем, обновляем last_used_at, сбрасываем failure_count
             log = PushLog(
                 message_id=message.id,
                 device_id=device.id,
@@ -235,14 +317,13 @@ def send_push_to_device(self, message_id: str, device_id: str):
                 provider=provider_response.get("provider"),
                 attempt=attempt_number,
             )
-            return  # УСПЕХ — никогда не ретраим
+            return
 
         except Exception as exc:
             session.rollback()
             error_class = _classify_fcm_error(exc)
             error_text = f"{type(exc).__name__}: {str(exc)[:400]}"
 
-            # Записываем лог об ошибке
             log = PushLog(
                 message_id=message.id,
                 device_id=device.id,
@@ -258,7 +339,6 @@ def send_push_to_device(self, message_id: str, device_id: str):
             push_token.last_failure_reason = error_text[:255]
 
             if error_class == "permanent":
-                # Инвалидируем токен, ретраить бессмысленно
                 push_token.is_valid = False
                 push_token.last_used_at = datetime.now(timezone.utc)
                 session.commit()
@@ -269,7 +349,6 @@ def send_push_to_device(self, message_id: str, device_id: str):
                 )
                 return
 
-            # Transient/unknown: сохраняем лог и ретраим
             session.commit()
             logger.error(
                 "push_failed_transient",
@@ -287,11 +366,94 @@ def send_push_to_device(self, message_id: str, device_id: str):
     except self.MaxRetriesExceededError:
         pass
     except Exception as exc:
-        # Retry'ы Celery ре-поднимают Retry-исключение — не логируем его как ошибку
         from celery.exceptions import Retry
         if not isinstance(exc, Retry):
-            logger.error("push_subtask_error", message_id=message_id, device_id=device_id, error=str(exc))
+            logger.error(
+                "push_subtask_error",
+                message_id=message_id,
+                device_id=device_id,
+                error=str(exc),
+            )
         session.rollback()
         raise
     finally:
         session.close()
+        
+        
+def _send_fcm_data_only(token: str, token_type: str, data: dict) -> bool:
+    """Отправляет data-only FCM. Возвращает True/False, не бросает исключений наружу."""
+    if token_type != "fcm":
+        return False
+    try:
+        from app.services.fcm_service import send_fcm_push
+        # send_fcm_push использует только data-payload (см. сервис), title/body уйдут в data
+        send_fcm_push(
+            token=token,
+            title="",
+            body="",
+            data=data,
+        )
+        return True
+    except Exception as e:
+        logger.warning("fcm_dismiss_send_error", error=str(e))
+        return False
+
+
+@celery_app.task(bind=True, max_retries=0)
+def send_dismiss_push_for_user(
+    self,
+    user_id: str,
+    chat_id: str,
+    message_ids: list,
+    reason: str,
+):
+    """
+    Шлёт FCM data-only с action=dismiss всем активным Android/iOS-устройствам пользователя.
+    Лог в push_logs не пишется (служебный сигнал).
+    """
+    session: Session = _sync_db_session()
+    try:
+        devices = session.execute(
+            select(Device).where(
+                Device.user_id == uuid.UUID(user_id),
+                Device.is_active.is_(True),
+            )
+        ).scalars().all()
+
+        for device in devices:
+            push_token = session.execute(
+                select(PushToken).where(
+                    PushToken.device_id == device.id,
+                    PushToken.is_valid.is_(True),
+                    PushToken.token_type == "fcm",
+                )
+            ).scalar_one_or_none()
+            if push_token is None:
+                continue
+
+            payload = {
+                "action": "dismiss",
+                "chat_id": chat_id,
+                "message_ids": ",".join(message_ids),
+                "reason": reason,
+            }
+            _send_fcm_data_only(push_token.token, push_token.token_type, payload)
+    except Exception as e:
+        logger.error("send_dismiss_push_for_user_error", error=str(e))
+    finally:
+        session.close()
+
+
+@celery_app.task(bind=True, max_retries=0)
+def send_dismiss_push_for_users(
+    self,
+    user_ids: list,
+    chat_id: str,
+    message_ids: list,
+    reason: str,
+):
+    for uid in user_ids:
+        try:
+            send_dismiss_push_for_user.delay(uid, chat_id, message_ids, reason)
+        except Exception as e:
+            logger.error("send_dismiss_push_for_users_enqueue_error", error=str(e), user_id=uid)

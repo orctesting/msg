@@ -12,6 +12,7 @@ from app.config import settings
 logger = structlog.get_logger()
 
 CHANNEL_PREFIX = "chat:"
+USER_CHANNEL_PREFIX = "user:"
 
 
 class WSManager:
@@ -48,6 +49,7 @@ class WSManager:
             self._chat_users[chat_id].add(user_id)
 
         await self._ensure_subscriptions(chat_ids)
+        await self._ensure_user_subscription(user_id)
 
         logger.info(
             "ws_manager_connect",
@@ -89,7 +91,23 @@ class WSManager:
         if self._pubsub_task is None or self._pubsub_task.done():
             self._pubsub_task = asyncio.create_task(self._listen())
             print("=== PUBSUB LISTENER TASK STARTED ===", flush=True)
+                        
+    async def _ensure_user_subscription(self, user_id: uuid.UUID):
+        redis = await self._get_sub_redis()
 
+        if self._pubsub is None:
+            self._pubsub = redis.pubsub()
+
+        ch = f"{USER_CHANNEL_PREFIX}{user_id}"
+        if ch not in self._subscribed_channels:
+            self._subscribed_channels.add(ch)
+            await self._pubsub.subscribe(ch)
+            print(f"=== SUBSCRIBED to {ch} ===", flush=True)
+
+        if self._pubsub_task is None or self._pubsub_task.done():
+            self._pubsub_task = asyncio.create_task(self._listen())
+            print("=== PUBSUB LISTENER TASK STARTED ===", flush=True)
+            
     async def _listen(self):
         print("=== WS PUBSUB LISTENER RUNNING ===", flush=True)
         logger.info("ws_pubsub_listener_started")
@@ -117,13 +135,18 @@ class WSManager:
                     try:
                         data = json.loads(message["data"])
                         channel = message["channel"]
-                        chat_id_str = channel.replace(CHANNEL_PREFIX, "")
-                        chat_id = uuid.UUID(chat_id_str)
-                        exclude_user_id = None
-                        if data.get("_exclude_user_id"):
-                            exclude_user_id = uuid.UUID(data.pop("_exclude_user_id"))
 
-                        await self._broadcast_to_chat(chat_id, data, exclude_user_id)
+                        if channel.startswith(USER_CHANNEL_PREFIX):
+                            user_id_str = channel[len(USER_CHANNEL_PREFIX):]
+                            target_user_id = uuid.UUID(user_id_str)
+                            await self._send_to_user(target_user_id, data)
+                        elif channel.startswith(CHANNEL_PREFIX):
+                            chat_id_str = channel[len(CHANNEL_PREFIX):]
+                            chat_id = uuid.UUID(chat_id_str)
+                            exclude_user_id = None
+                            if data.get("_exclude_user_id"):
+                                exclude_user_id = uuid.UUID(data.pop("_exclude_user_id"))
+                            await self._broadcast_to_chat(chat_id, data, exclude_user_id)
                     except Exception as e:
                         logger.error("ws_pubsub_dispatch_error", error=str(e))
 
@@ -153,6 +176,16 @@ class WSManager:
 
         for user_id, ws in dead_connections:
             await self.disconnect(user_id, ws)
+            
+    async def _send_to_user(self, user_id: uuid.UUID, data: dict):
+        dead_connections = []
+        for ws in self._connections.get(user_id, set()):
+            try:
+                await ws.send_json(data)
+            except Exception:
+                dead_connections.append(ws)
+        for ws in dead_connections:
+            await self.disconnect(user_id, ws)
 
     async def publish_event(
         self,
@@ -164,6 +197,15 @@ class WSManager:
         if exclude_user_id:
             event["_exclude_user_id"] = str(exclude_user_id)
         channel = f"{CHANNEL_PREFIX}{chat_id}"
+        await redis.publish(channel, json.dumps(event, default=str))
+        
+    async def publish_to_user(
+        self,
+        user_id: str | uuid.UUID,
+        event: dict,
+    ):
+        redis = await self._get_pub_redis()
+        channel = f"{USER_CHANNEL_PREFIX}{user_id}"
         await redis.publish(channel, json.dumps(event, default=str))
 
     async def publish_new_message(

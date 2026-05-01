@@ -14,6 +14,7 @@ from app.db.models.user_contact_dismissal import UserContactDismissal  # noqa
 from app.db.models.attachment import Attachment  # noqa
 from app.db.models.message_attachment_link import MessageAttachmentLink  # noqa
 from app.db.models.user_avatar import UserAvatar  # noqa
+from app.db.models.notification_settings import NotificationSettings, NotificationChatWhitelist  # noqa
 
 __all__ = [
     "User",
@@ -33,4 +34,6 @@ __all__ = [
     "Attachment",
     "MessageAttachmentLink",
     "UserAvatar",
+    "NotificationSettings",
+    "NotificationChatWhitelist",
 ]

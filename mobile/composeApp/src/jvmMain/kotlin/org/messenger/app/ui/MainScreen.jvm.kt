@@ -90,7 +90,7 @@ actual fun PlatformMainScreen(
 
     // Обновляем currentChatId для FCM-фильтра/lifecycle
     LaunchedEffect(currentChatId) {
-        org.messenger.app.updateCurrentChatId(currentChatId)
+        org.messenger.app.setActiveChatId(currentChatId)
     }
 
     Box(

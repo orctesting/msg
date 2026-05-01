@@ -8,6 +8,12 @@ from sqlalchemy.orm import joinedload
 from app.db.models.push_log import PushLog
 from app.db.models.attachment import Attachment
 from app.services import s3_service
+from app.services.notifications_service import (
+    publish_dismiss_to_user,
+    publish_dismiss_to_chat,
+    enqueue_fcm_dismiss_for_user,
+    enqueue_fcm_dismiss_for_chat_recipients
+)
 import structlog
 
 from app.db.session import get_async_session
@@ -391,6 +397,22 @@ async def send_message(
     except Exception as e:
         logger.error("ws_publish_error", error=str(e))
 
+    # Уведомляем ДРУГИЕ устройства самого отправителя (через user-канал),
+    # чтобы у них обновился lastMessage в списке чатов без инкремента unread.
+    try:
+        await ws_manager.publish_to_user(
+            user_id=current_user.id,
+            event={
+                "type": "new_message_self",
+                "data": {
+                    "chat_id": str(chat_id),
+                    "message": message_out.model_dump(mode="json"),
+                },
+            },
+        )
+    except Exception as e:
+        logger.error("ws_publish_self_error", error=str(e))
+
     try:
         members_result = await session.execute(
             select(ChatMember.user_id).where(
@@ -530,6 +552,30 @@ async def delete_message(
         )
     except Exception as e:
         logger.error("ws_delete_publish_error", error=str(e))
+        
+    # Скрыть уведомления у всех получателей удалённого сообщения
+    try:
+        await publish_dismiss_to_chat(
+            chat_id=chat_id,
+            message_ids=[message_id],
+            reason="deleted",
+        )
+    except Exception as e:
+        logger.error("dismiss_chat_ws_error", error=str(e))
+
+    try:
+        members_res = await session.execute(
+            select(ChatMember.user_id).where(ChatMember.chat_id == chat_id)
+        )
+        recipient_ids = [row[0] for row in members_res.all()]
+        enqueue_fcm_dismiss_for_chat_recipients(
+            recipient_user_ids=recipient_ids,
+            chat_id=chat_id,
+            message_ids=[message_id],
+            reason="deleted",
+        )
+    except Exception as e:
+        logger.error("dismiss_fcm_chat_enqueue_error", error=str(e))
 
     return OkResponse(detail="Deleted")
 
@@ -610,6 +656,29 @@ async def bulk_delete_messages(
         )
     except Exception as e:
         logger.error("ws_bulk_delete_publish_error", error=str(e))
+        
+    try:
+        await publish_dismiss_to_chat(
+            chat_id=chat_id,
+            message_ids=deleted_ids,
+            reason="deleted",
+        )
+    except Exception as e:
+        logger.error("dismiss_chat_bulk_ws_error", error=str(e))
+
+    try:
+        members_res = await session.execute(
+            select(ChatMember.user_id).where(ChatMember.chat_id == chat_id)
+        )
+        recipient_ids = [row[0] for row in members_res.all()]
+        enqueue_fcm_dismiss_for_chat_recipients(
+            recipient_user_ids=recipient_ids,
+            chat_id=chat_id,
+            message_ids=deleted_ids,
+            reason="deleted",
+        )
+    except Exception as e:
+        logger.error("dismiss_fcm_chat_bulk_enqueue_error", error=str(e))
 
     return OkResponse(detail=f"Deleted {len(deleted_ids)}")
 
@@ -685,6 +754,20 @@ async def forward_message(
         logger.error("ws_forward_publish_error", error=str(e))
 
     try:
+        await ws_manager.publish_to_user(
+            user_id=current_user.id,
+            event={
+                "type": "new_message_self",
+                "data": {
+                    "chat_id": str(body.target_chat_id),
+                    "message": out.model_dump(mode="json"),
+                },
+            },
+        )
+    except Exception as e:
+        logger.error("ws_forward_publish_self_error", error=str(e))
+
+    try:
         members_result = await session.execute(
             select(ChatMember.user_id).where(
                 ChatMember.chat_id == body.target_chat_id,
@@ -734,19 +817,21 @@ async def mark_messages_read(
     )
     unread_message_ids = [row[0] for row in unread_messages_result.all()]
 
-    if not unread_message_ids:
-        return
-
-    for msg_id in unread_message_ids:
-        session.add(
-            MessageRead(
-                message_id=msg_id,
-                user_id=current_user.id,
+    # Даже если новых "прочитанных" нет — всё равно нужно отослать read_self,
+    # чтобы другие устройства этого пользователя узнали о факте открытия чата
+    # (например, если они показывают unread > 0 из-за рассинхрона).
+    if unread_message_ids:
+        for msg_id in unread_message_ids:
+            session.add(
+                MessageRead(
+                    message_id=msg_id,
+                    user_id=current_user.id,
+                )
             )
-        )
+        await session.commit()
 
-    await session.commit()
-
+    # 1. Шлём message_read ВСЕМ участникам чата (включая отправителей —
+    # для отображения галочек), но НЕ другим устройствам читателя.
     try:
         await ws_manager.publish_event(
             chat_id=chat_id,
@@ -762,3 +847,41 @@ async def mark_messages_read(
         )
     except Exception as e:
         logger.error("ws_read_receipt_error", error=str(e))
+
+    # 2. Отдельно — в user-канал читателя: сообщает ВСЕМ его устройствам
+    # (включая то, с которого он не читал) о факте прочтения.
+    try:
+        await ws_manager.publish_to_user(
+            user_id=current_user.id,
+            event={
+                "type": "message_read_self",
+                "data": {
+                    "chat_id": str(chat_id),
+                    "last_read_message_id": str(body.last_read_message_id),
+                },
+            },
+        )
+    except Exception as e:
+        logger.error("ws_read_self_publish_error", error=str(e))
+
+    # 3. Скрыть уведомления у других устройств этого же пользователя (FCM dismiss)
+    if unread_message_ids:
+        try:
+            await publish_dismiss_to_user(
+                user_id=current_user.id,
+                chat_id=chat_id,
+                message_ids=unread_message_ids,
+                reason="read",
+            )
+        except Exception as e:
+            logger.error("dismiss_ws_publish_error", error=str(e))
+
+        try:
+            enqueue_fcm_dismiss_for_user(
+                user_id=current_user.id,
+                chat_id=chat_id,
+                message_ids=unread_message_ids,
+                reason="read",
+            )
+        except Exception as e:
+            logger.error("dismiss_fcm_enqueue_error", error=str(e))
