@@ -28,6 +28,7 @@ sealed class Screen {
     data object Contacts : Screen()
     data object Profile : Screen()
     data object Avatars : Screen()
+    data object Notifications : Screen()
     data class PeerProfile(val userId: String) : Screen()
     data class Chat(val chatId: String, val chatName: String) : Screen()
     data class ForwardPicker(
@@ -79,7 +80,70 @@ fun App(
         ) {
             when (val screen = currentScreen) {
                 is Screen.Auth -> {
-                    // ... оставить КАК БЫЛО (без изменений)
+                    val viewModel = remember(appModuleRevision) {
+                        AuthViewModel(
+                            authRepository = currentAppModule.authRepository,
+                            deviceInfo = DeviceInfo(
+                                deviceId = "device-${getPlatformName()}",
+                                platform = getPlatformName()
+                            ),
+                            initialServerAddress = currentAppModule.tokenStorage.getServerUrl() ?: ""
+                        )
+                    }
+                    val state by viewModel.state.collectAsState()
+
+                    // Системная кнопка "назад": на шаге CODE возвращает к PHONE,
+                    // на шаге PHONE — не перехватывает (даёт системе свернуть приложение)
+                    PlatformBackHandler(
+                        enabled = state.step == AuthStep.CODE
+                    ) {
+                        viewModel.backToPhone()
+                    }
+
+                    LaunchedEffect(state.isAuthenticated) {
+                        if (state.isAuthenticated) {
+                            val addr = state.serverAddress.trim()
+                            if (addr.isNotBlank()) {
+                                currentAppModule.tokenStorage.saveServerUrl(addr)
+                            }
+                            currentScreen = Screen.ChatList
+                            onLoginSuccessCallback(currentAppModule)
+                        }
+                    }
+
+                    AuthScreen(
+                        viewModel = viewModel,
+                        onRequestOtp = { addr ->
+                            val newBase = AppModule.buildBaseUrl(addr)
+                            if (newBase != currentAppModule.baseUrl) {
+                                val keptPhone = viewModel.state.value.phone
+                                val newModule = AppModule(
+                                    baseUrl = newBase,
+                                    wsBaseUrl = AppModule.buildWsUrl(addr)
+                                )
+                                newModule.tokenStorage.saveServerUrl(addr)
+                                currentAppModule = newModule
+                                appModuleRevision++
+                                syncAppModule(newModule)
+                                pendingPhoneForOtp = keptPhone
+                                pendingServerAddress = addr
+                            } else {
+                                viewModel.requestOtp()
+                            }
+                        }
+                    )
+
+                    LaunchedEffect(appModuleRevision) {
+                        val phone = pendingPhoneForOtp
+                        val addr = pendingServerAddress
+                        if (phone != null && addr != null && appModuleRevision > 0) {
+                            viewModel.onServerAddressChanged(addr)
+                            viewModel.onPhoneChanged(phone)
+                            viewModel.requestOtp()
+                            pendingPhoneForOtp = null
+                            pendingServerAddress = null
+                        }
+                    }
                 }
 
                 is Screen.ForwardPicker -> {
@@ -188,11 +252,19 @@ private fun MobileNavigation(
                 onBack = { onScreenChange(Screen.ChatList) },
                 onOpenContacts = { onScreenChange(Screen.Contacts) },
                 onOpenProfile = { onScreenChange(Screen.Profile) },
+                onOpenNotifications = { onScreenChange(Screen.Notifications) },
                 onLogout = {
                     currentAppModule.tokenStorage.clear()
                     currentAppModule.wsService.disconnect()
                     onScreenChange(Screen.Auth)
                 }
+            )
+        }
+        is Screen.Notifications -> {
+            PlatformBackHandler(enabled = true) { onScreenChange(Screen.Settings) }
+            org.messenger.app.ui.settings.NotificationSettingsScreen(
+                appModule = currentAppModule,
+                onBack = { onScreenChange(Screen.Settings) },
             )
         }
         is Screen.Contacts -> {

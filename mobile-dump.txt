@@ -1,6 +1,6 @@
 ﻿======================================================================
 MOBILE PROJECT DUMP
-Generated: 2026-05-02 02:49:31
+Generated: 2026-05-03 00:34:40
 Root: D:\messenger_proj\source\mobile
 ======================================================================
 
@@ -14,6 +14,7 @@ Root: D:\messenger_proj\source\mobile
                   org/
                     messenger/
                       app/
+                        notifications/
                         service/
                         ui/
                           chat/
@@ -38,6 +39,7 @@ Root: D:\messenger_proj\source\mobile
                     messenger/
                       app/
                         navigation/
+                        notifications/
                         ui/
                           auth/
                           chat/
@@ -59,6 +61,7 @@ Root: D:\messenger_proj\source\mobile
                   org/
                     messenger/
                       app/
+                        notifications/
                         ui/
                           chat/
                           common/
@@ -105,6 +108,7 @@ Root: D:\messenger_proj\source\mobile
                             chat/
                             chatlist/
                             contacts/
+                            notifications/
                             profile/
                           util/
               commonTest/
@@ -210,7 +214,7 @@ plugins {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\build.gradle.kts
-SIZE: 3.1 KB
+SIZE: 3.2 KB
 ----------------------------------------------------------------------
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -261,6 +265,7 @@ kotlin {
             implementation(compose.desktop.currentOs)
             implementation(libs.kotlinx.coroutinesSwing)
             implementation(libs.multiplatformSettings)
+            implementation(libs.kotlinx.serialization.json)
         }
     }
 }
@@ -687,6 +692,39 @@ class MessengerApplication : Application() {
         lateinit var instance: MessengerApplication
             private set
     }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\notifications\PlatformNotifications.android.kt
+SIZE: 0.6 KB
+----------------------------------------------------------------------
+package org.messenger.app.notifications
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import org.messenger.app.MessengerApplication
+import org.messenger.app.service.NotificationSettingsSync
+
+actual fun reloadDesktopNotificationSettings() {
+    try {
+        val app = MessengerApplication.instance
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            NotificationSettingsSync.refresh(app, app.appModule)
+        }
+    } catch (_: Exception) {}
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\notifications\PlatformNotificationsBridge.android.kt
+SIZE: 0.2 KB
+----------------------------------------------------------------------
+package org.messenger.app.notifications
+
+internal actual fun loadInitialPlacement(): String = "system_overlay"
+internal actual fun savePlacement(value: String) {
+    // РќР° Android placement РЅРµ РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ вЂ” no-op.
 }
 
 ----------------------------------------------------------------------
@@ -1727,7 +1765,7 @@ SIZE: 1.5 KB
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\App.kt
-SIZE: 11.1 KB
+SIZE: 14.7 KB
 ----------------------------------------------------------------------
 package org.messenger.app
 
@@ -1759,6 +1797,7 @@ sealed class Screen {
     data object Contacts : Screen()
     data object Profile : Screen()
     data object Avatars : Screen()
+    data object Notifications : Screen()
     data class PeerProfile(val userId: String) : Screen()
     data class Chat(val chatId: String, val chatName: String) : Screen()
     data class ForwardPicker(
@@ -1810,7 +1849,70 @@ fun App(
         ) {
             when (val screen = currentScreen) {
                 is Screen.Auth -> {
-                    // ... РѕСЃС‚Р°РІРёС‚СЊ РљРђРљ Р‘Р«Р›Рћ (Р±РµР· РёР·РјРµРЅРµРЅРёР№)
+                    val viewModel = remember(appModuleRevision) {
+                        AuthViewModel(
+                            authRepository = currentAppModule.authRepository,
+                            deviceInfo = DeviceInfo(
+                                deviceId = "device-${getPlatformName()}",
+                                platform = getPlatformName()
+                            ),
+                            initialServerAddress = currentAppModule.tokenStorage.getServerUrl() ?: ""
+                        )
+                    }
+                    val state by viewModel.state.collectAsState()
+
+                    // РЎРёСЃС‚РµРјРЅР°СЏ РєРЅРѕРїРєР° "РЅР°Р·Р°Рґ": РЅР° С€Р°РіРµ CODE РІРѕР·РІСЂР°С‰Р°РµС‚ Рє PHONE,
+                    // РЅР° С€Р°РіРµ PHONE вЂ” РЅРµ РїРµСЂРµС…РІР°С‚С‹РІР°РµС‚ (РґР°С‘С‚ СЃРёСЃС‚РµРјРµ СЃРІРµСЂРЅСѓС‚СЊ РїСЂРёР»РѕР¶РµРЅРёРµ)
+                    PlatformBackHandler(
+                        enabled = state.step == AuthStep.CODE
+                    ) {
+                        viewModel.backToPhone()
+                    }
+
+                    LaunchedEffect(state.isAuthenticated) {
+                        if (state.isAuthenticated) {
+                            val addr = state.serverAddress.trim()
+                            if (addr.isNotBlank()) {
+                                currentAppModule.tokenStorage.saveServerUrl(addr)
+                            }
+                            currentScreen = Screen.ChatList
+                            onLoginSuccessCallback(currentAppModule)
+                        }
+                    }
+
+                    AuthScreen(
+                        viewModel = viewModel,
+                        onRequestOtp = { addr ->
+                            val newBase = AppModule.buildBaseUrl(addr)
+                            if (newBase != currentAppModule.baseUrl) {
+                                val keptPhone = viewModel.state.value.phone
+                                val newModule = AppModule(
+                                    baseUrl = newBase,
+                                    wsBaseUrl = AppModule.buildWsUrl(addr)
+                                )
+                                newModule.tokenStorage.saveServerUrl(addr)
+                                currentAppModule = newModule
+                                appModuleRevision++
+                                syncAppModule(newModule)
+                                pendingPhoneForOtp = keptPhone
+                                pendingServerAddress = addr
+                            } else {
+                                viewModel.requestOtp()
+                            }
+                        }
+                    )
+
+                    LaunchedEffect(appModuleRevision) {
+                        val phone = pendingPhoneForOtp
+                        val addr = pendingServerAddress
+                        if (phone != null && addr != null && appModuleRevision > 0) {
+                            viewModel.onServerAddressChanged(addr)
+                            viewModel.onPhoneChanged(phone)
+                            viewModel.requestOtp()
+                            pendingPhoneForOtp = null
+                            pendingServerAddress = null
+                        }
+                    }
                 }
 
                 is Screen.ForwardPicker -> {
@@ -1919,11 +2021,19 @@ private fun MobileNavigation(
                 onBack = { onScreenChange(Screen.ChatList) },
                 onOpenContacts = { onScreenChange(Screen.Contacts) },
                 onOpenProfile = { onScreenChange(Screen.Profile) },
+                onOpenNotifications = { onScreenChange(Screen.Notifications) },
                 onLogout = {
                     currentAppModule.tokenStorage.clear()
                     currentAppModule.wsService.disconnect()
                     onScreenChange(Screen.Auth)
                 }
+            )
+        }
+        is Screen.Notifications -> {
+            PlatformBackHandler(enabled = true) { onScreenChange(Screen.Settings) }
+            org.messenger.app.ui.settings.NotificationSettingsScreen(
+                appModule = currentAppModule,
+                onBack = { onScreenChange(Screen.Settings) },
             )
         }
         is Screen.Contacts -> {
@@ -2085,6 +2195,46 @@ fun AppNavHost(
         }
     }
 }
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\notifications\PlatformNotifications.kt
+SIZE: 1.4 KB
+----------------------------------------------------------------------
+package org.messenger.app.notifications
+
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+/**
+ * РЎРѕРѕР±С‰Р°РµС‚ РїР»Р°С‚С„РѕСЂРјРµРЅРЅРѕРјСѓ РјРµРЅРµРґР¶РµСЂСѓ СѓРІРµРґРѕРјР»РµРЅРёР№, С‡С‚Рѕ РЅР°СЃС‚СЂРѕР№РєРё РёР·РјРµРЅРёР»РёСЃСЊ.
+ * РќР° Desktop вЂ” РїРµСЂРµС‡РёС‚С‹РІР°РµС‚ СЃ СЃРµСЂРІРµСЂР°. РќР° Android/iOS вЂ” СЃРёРЅС…СЂРѕРЅРёР·РёСЂСѓРµС‚ Р»РѕРєР°Р»СЊРЅС‹Р№ РєСЌС€.
+ */
+expect fun reloadDesktopNotificationSettings()
+
+/**
+ * РњРѕСЃС‚ commonв†”jvm РґР»СЏ placement С‚РѕСЃС‚РѕРІ РЅР° desktop.
+ * РќР° Android/iOS Р±СЂРёРґР¶ С‚РѕР¶Рµ РµСЃС‚СЊ, РЅРѕ С‚Р°Рј Р·РЅР°С‡РµРЅРёСЏ РЅРёРєРѕРіРґР° РЅРµ РёСЃРїРѕР»СЊР·СѓСЋС‚СЃСЏ (placement С‚РѕР»СЊРєРѕ РґР»СЏ desktop).
+ */
+object DesktopPlacementBridge {
+    private val _placement = MutableStateFlow(loadInitialPlacement())
+    val placement: StateFlow<String> = _placement.asStateFlow()
+
+    fun set(value: String) {
+        _placement.value = value
+        savePlacement(value)
+    }
+
+    /** Р’С‹Р·С‹РІР°РµС‚СЃСЏ РёР· jvm-СЃС‚РѕСЂРѕРЅС‹ РїСЂРё РёР·РјРµРЅРµРЅРёРё placement С‡РµСЂРµР· DesktopNotificationManager. */
+    fun syncFromPlatform(value: String) {
+        if (_placement.value != value) {
+            _placement.value = value
+        }
+    }
+}
+
+internal expect fun loadInitialPlacement(): String
+internal expect fun savePlacement(value: String)
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\PlatformFlags.kt
@@ -3703,7 +3853,7 @@ fun StickyDateHeader(label: String) {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chat\ChatScreen.kt
-SIZE: 31.7 KB
+SIZE: 32.8 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chat
 
@@ -3833,6 +3983,10 @@ fun ChatScreen(
             coroutineScope.launch { listState.animateScrollToItem(0) }
             unreadCount = 0
             firstUnreadMessageId = null
+            // РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ СЂРµР°Р»СЊРЅРѕ РІРёРґРёС‚ РЅРѕРІРѕРµ СЃРѕРѕР±С‰РµРЅРёРµ РІРЅРёР·Сѓ вЂ” РѕС‚РјРµС‡Р°РµРј РїСЂРѕС‡РёС‚Р°РЅРЅС‹Рј
+            if (!isOwn) {
+                viewModel.markReadExplicit(topMsg.id)
+            }
         } else {
             unreadCount += 1
             if (firstUnreadMessageId == null) firstUnreadMessageId = topMsg.id
@@ -3844,6 +3998,22 @@ fun ChatScreen(
         if (isAtBottom) {
             unreadCount = 0
             firstUnreadMessageId = null
+            // РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РґРѕСЃРєСЂРѕР»Р»РёР» РґРѕ РЅРёР·Р° вЂ” РѕС‚РјРµС‡Р°РµРј РїСЂРѕС‡РёС‚Р°РЅРЅС‹Рј
+            val topMsg = state.messages.firstOrNull()
+            if (topMsg != null && topMsg.senderId != currentUserId) {
+                viewModel.markReadExplicit(topMsg.id)
+            }
+        }
+    }
+
+    // РџСЂРё РїРµСЂРІРѕРј РІС…РѕРґРµ РІ С‡Р°С‚ (РёР»Рё РѕР±РЅРѕРІР»РµРЅРёРё СЃРѕРѕР±С‰РµРЅРёР№) вЂ” markRead,
+    // РµСЃР»Рё РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ СѓР¶Рµ РІРЅРёР·Сѓ (РѕР±С‹С‡РЅС‹Р№ РєРµР№СЃ РѕС‚РєСЂС‹С‚РёСЏ С‡Р°С‚Р°).
+    LaunchedEffect(state.messages.size > 0) {
+        if (state.messages.isNotEmpty() && isAtBottom) {
+            val topMsg = state.messages.first()
+            if (topMsg.senderId != currentUserId) {
+                viewModel.markReadExplicit(topMsg.id)
+            }
         }
     }
 
@@ -7225,8 +7395,305 @@ private fun ProfileAvatarImage(
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\settings\NotificationSettingsScreen.kt
+SIZE: 11.6 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.settings
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import org.messenger.app.getPlatformName
+import org.messenger.app.shared.data.model.NotificationMode
+import org.messenger.app.shared.di.AppModule
+import org.messenger.app.shared.ui.notifications.NotificationSettingsViewModel
+import org.messenger.app.notifications.reloadDesktopNotificationSettings
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun NotificationSettingsScreen(
+    appModule: AppModule,
+    onBack: () -> Unit,
+) {
+    val platform = remember { getPlatformName() }
+    val viewModel = remember {
+        NotificationSettingsViewModel(
+            platform = platform,
+            notificationsRepository = appModule.notificationsRepository,
+            chatRepository = appModule.chatRepository,
+        )
+    }
+    val state by viewModel.state.collectAsState()
+
+    var showChatPicker by remember { mutableStateOf(false) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("РЈРІРµРґРѕРјР»РµРЅРёСЏ") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "РќР°Р·Р°Рґ")
+                    }
+                },
+            )
+        }
+    ) { padding ->
+        Box(
+            modifier = Modifier.fillMaxSize().padding(padding)
+        ) {
+            if (state.isLoading) {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp),
+                ) {
+                    Text(
+                        text = "РџР»Р°С‚С„РѕСЂРјР°: $platform",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(16.dp))
+
+                    if (platform == "desktop") {
+                        DesktopPlacementSelector()
+                        Spacer(Modifier.height(16.dp))
+                    }
+
+                    Text("РџРѕРєР°Р·С‹РІР°С‚СЊ СѓРІРµРґРѕРјР»РµРЅРёСЏ:", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(8.dp))
+
+                    ModeRow(
+                        label = "Р’СЃРµ",
+                        selected = state.mode == NotificationMode.ALL,
+                        onClick = { viewModel.setMode(NotificationMode.ALL) },
+                    )
+                    ModeRow(
+                        label = "РўРѕР»СЊРєРѕ РёР· Р»РёС‡РЅС‹С… С‡Р°С‚РѕРІ",
+                        selected = state.mode == NotificationMode.PERSONAL_ONLY,
+                        onClick = { viewModel.setMode(NotificationMode.PERSONAL_ONLY) },
+                    )
+                    ModeRow(
+                        label = "РР· РІС‹Р±СЂР°РЅРЅС‹С… С‡Р°С‚РѕРІ",
+                        selected = state.mode == NotificationMode.WHITELIST,
+                        onClick = { viewModel.setMode(NotificationMode.WHITELIST) },
+                    )
+                    ModeRow(
+                        label = "РќРµ РїРѕРєР°Р·С‹РІР°С‚СЊ",
+                        selected = state.mode == NotificationMode.NONE,
+                        onClick = { viewModel.setMode(NotificationMode.NONE) },
+                    )
+
+                    if (state.mode == NotificationMode.WHITELIST) {
+                        Spacer(Modifier.height(16.dp))
+                        Surface(
+                            tonalElevation = 1.dp,
+                            shape = MaterialTheme.shapes.medium,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { showChatPicker = true },
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Р’С‹Р±СЂР°РЅРЅС‹Рµ С‡Р°С‚С‹", style = MaterialTheme.typography.bodyLarge)
+                                    Text(
+                                        text = "${state.whitelistChatIds.size} РёР· ${state.allChats.size}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                TextButton(onClick = { showChatPicker = true }) {
+                                    Text("РР·РјРµРЅРёС‚СЊ")
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(24.dp))
+
+                    Button(
+                        onClick = {
+                            viewModel.save {
+                                reloadDesktopNotificationSettings()
+                            }
+                        },
+                        enabled = !state.isSaving,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        if (state.isSaving) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Text("РЎРѕС…СЂР°РЅРёС‚СЊ")
+                        }
+                    }
+
+                    if (state.savedSuccess) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "РЎРѕС…СЂР°РЅРµРЅРѕ",
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+
+                    state.error?.let { err ->
+                        Spacer(Modifier.height(8.dp))
+                        Text(err, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        }
+    }
+
+    if (showChatPicker) {
+        NotificationChatPickerDialog(
+            allChats = state.allChats,
+            selectedIds = state.whitelistChatIds,
+            onDismiss = { showChatPicker = false },
+            onConfirm = { ids ->
+                viewModel.setWhitelist(ids)
+                showChatPicker = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun ModeRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Spacer(Modifier.width(8.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NotificationChatPickerDialog(
+    allChats: List<org.messenger.app.shared.data.model.ChatDto>,
+    selectedIds: Set<String>,
+    onDismiss: () -> Unit,
+    onConfirm: (Set<String>) -> Unit,
+) {
+    var localSelected by remember { mutableStateOf(selectedIds) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Р§Р°С‚С‹ РґР»СЏ СѓРІРµРґРѕРјР»РµРЅРёР№") },
+        text = {
+            if (allChats.isEmpty()) {
+                Text("РќРµС‚ С‡Р°С‚РѕРІ")
+            } else {
+                LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
+                    items(allChats, key = { it.id }) { chat ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    localSelected = if (localSelected.contains(chat.id))
+                                        localSelected - chat.id
+                                    else localSelected + chat.id
+                                }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = localSelected.contains(chat.id),
+                                onCheckedChange = {
+                                    localSelected = if (it)
+                                        localSelected + chat.id
+                                    else localSelected - chat.id
+                                },
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = chat.name ?: "Р§Р°С‚",
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(localSelected) }) { Text("РћРљ") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("РћС‚РјРµРЅР°") }
+        },
+    )
+}
+
+@Composable
+private fun DesktopPlacementSelector() {
+    val placement by org.messenger.app.notifications.DesktopPlacementBridge.placement.collectAsState()
+
+    Surface(
+        tonalElevation = 1.dp,
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text("РўРёРї СѓРІРµРґРѕРјР»РµРЅРёР№:", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+
+            PlacementRow(
+                label = "РџРѕРІРµСЂС… РІСЃРµС… РѕРєРѕРЅ",
+                selected = placement == "system_overlay",
+                onClick = { org.messenger.app.notifications.DesktopPlacementBridge.set("system_overlay") },
+            )
+            PlacementRow(
+                label = "Р’РЅСѓС‚СЂРё РѕРєРЅР° РїСЂРёР»РѕР¶РµРЅРёСЏ",
+                selected = placement == "in_app",
+                onClick = { org.messenger.app.notifications.DesktopPlacementBridge.set("in_app") },
+            )
+        }
+    }
+}
+
+@Composable
+private fun PlacementRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Spacer(Modifier.width(8.dp))
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\settings\SettingsScreen.kt
-SIZE: 4.5 KB
+SIZE: 5.1 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.settings
 
@@ -7242,6 +7709,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Notifications
 import org.messenger.app.shared.di.AppModule
 
 const val APP_NAME = "Messenger Oreshnik"
@@ -7254,6 +7722,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onOpenContacts: () -> Unit,
     onOpenProfile: () -> Unit,
+    onOpenNotifications: () -> Unit,
     onLogout: () -> Unit
 ) {
     val phone = appModule.tokenStorage.getUserPhone()
@@ -7312,6 +7781,18 @@ fun SettingsScreen(
                     headlineContent = { Text("РљРѕРЅС‚Р°РєС‚С‹") },
                     leadingContent = {
                         Icon(Icons.Default.Contacts, contentDescription = null)
+                    }
+                )
+                HorizontalDivider()
+
+                ListItem(
+                    modifier = Modifier.clickable(onClick = onOpenNotifications),
+                    headlineContent = { Text("РЈРІРµРґРѕРјР»РµРЅРёСЏ") },
+                    leadingContent = {
+                        Icon(
+                            androidx.compose.material.icons.Icons.Default.Notifications,
+                            contentDescription = null,
+                        )
                     }
                 )
                 HorizontalDivider()
@@ -7583,7 +8064,7 @@ actual fun observeDeepLinks(): Flow<Pair<String, String>>? = null
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\DesktopLifecycle.kt
-SIZE: 2.4 KB
+SIZE: 2.5 KB
 ----------------------------------------------------------------------
 package org.messenger.app
 
@@ -7594,13 +8075,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.messenger.app.notifications.DesktopNotificationManager
 import org.messenger.app.shared.di.AppModule
 
-/**
- * РђРЅР°Р»РѕРі AppLifecycleObserver РёР· Android.
- * РџСЂРё Р·Р°РїСѓСЃРєРµ РїСЂРёР»РѕР¶РµРЅРёСЏ / СЂР°Р·РІРѕСЂР°С‡РёРІР°РЅРёРё РѕРєРЅР° вЂ” РїРѕРґРєР»СЋС‡Р°РµС‚ WS.
- * РџСЂРё СЃРІРѕСЂР°С‡РёРІР°РЅРёРё вЂ” РґР°С‘С‚ 30 СЃРµРєСѓРЅРґ, РїРѕС‚РѕРј РѕС‚РєР»СЋС‡Р°РµС‚ WS (РµСЃР»Рё РЅРµ РІРµСЂРЅСѓР»РёСЃСЊ).
- */
 class DesktopLifecycle(
     @Volatile private var appModule: AppModule
 ) {
@@ -7613,6 +8090,7 @@ class DesktopLifecycle(
 
     fun onAppStart(parentScope: CoroutineScope) {
         startWs(parentScope)
+        startNotificationManager()
     }
 
     fun onWindowRestored(parentScope: CoroutineScope) {
@@ -7637,9 +8115,6 @@ class DesktopLifecycle(
         internalScope.cancel()
     }
 
-    /**
-     * Р—Р°РјРµРЅРёС‚СЊ AppModule (РЅР°РїСЂРёРјРµСЂ РїРѕСЃР»Рµ СЃРјРµРЅС‹ СЃРµСЂРІРµСЂР° РЅР° СЌРєСЂР°РЅРµ Р»РѕРіРёРЅР°).
-     */
     fun updateAppModule(newModule: AppModule, parentScope: CoroutineScope) {
         try {
             appModule.wsService.disconnect()
@@ -7649,6 +8124,18 @@ class DesktopLifecycle(
 
         appModule = newModule
         startWs(parentScope)
+        startNotificationManager()
+    }
+
+    private fun startNotificationManager() {
+        try {
+            DesktopNotificationManager.start(
+                wsService = appModule.wsService,
+                notificationsRepository = appModule.notificationsRepository,
+                chatRepository = appModule.chatRepository,
+                tokenStorage = appModule.tokenStorage,
+            )
+        } catch (_: Exception) {}
     }
 
     private fun startWs(parentScope: CoroutineScope) {
@@ -7767,6 +8254,590 @@ fun main() = application {
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\notifications\DesktopNotificationManager.kt
+SIZE: 8.4 KB
+----------------------------------------------------------------------
+package org.messenger.app.notifications
+
+import com.russhwolf.settings.Settings
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.coroutines.cancel
+import org.messenger.app.ActiveChatHolder
+import org.messenger.app.shared.data.local.TokenStorage
+import org.messenger.app.shared.data.model.NotificationMode
+import org.messenger.app.shared.data.model.NotificationPlatform
+import org.messenger.app.shared.data.model.WsMessageDeleted
+import org.messenger.app.shared.data.model.WsNewMessage
+import org.messenger.app.shared.data.model.WsNotificationDismiss
+import org.messenger.app.shared.data.remote.WsService
+import org.messenger.app.shared.data.remote.appJson
+import org.messenger.app.shared.domain.repository.ChatRepository
+import org.messenger.app.shared.domain.repository.NotificationsRepository
+
+private const val TOAST_PLACEMENT_KEY = "desktop_toast_placement"
+
+enum class ToastPlacement { IN_APP, SYSTEM_OVERLAY }
+
+data class DesktopToast(
+    val id: Long,
+    val chatId: String,
+    val chatName: String,
+    val senderName: String,
+    val text: String,
+    val messageId: String,
+)
+
+object DesktopNotificationManager {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var idCounter = 0L
+
+    private val mode: MutableStateFlow<String> = MutableStateFlow(NotificationMode.ALL)
+    private val whitelist: MutableStateFlow<Set<String>> = MutableStateFlow(emptySet())
+
+    private val _toasts = MutableStateFlow<List<DesktopToast>>(emptyList())
+    val toasts: StateFlow<List<DesktopToast>> = _toasts.asStateFlow()
+
+    private val _placement = MutableStateFlow(loadPlacement())
+    val placement: StateFlow<ToastPlacement> = _placement.asStateFlow()
+
+    private var currentUserId: String? = null
+    private var notificationsRepoRef: NotificationsRepository? = null
+    private var wsScope: CoroutineScope? = null
+
+    private fun loadPlacement(): ToastPlacement {
+        return try {
+            val raw = Settings().getStringOrNull(TOAST_PLACEMENT_KEY) ?: return ToastPlacement.SYSTEM_OVERLAY
+            when (raw) {
+                "in_app", "IN_APP" -> ToastPlacement.IN_APP
+                "system_overlay", "SYSTEM_OVERLAY" -> ToastPlacement.SYSTEM_OVERLAY
+                else -> ToastPlacement.SYSTEM_OVERLAY
+            }
+        } catch (_: Exception) {
+            ToastPlacement.SYSTEM_OVERLAY
+        }
+    }
+
+    fun setPlacement(p: ToastPlacement) {
+        _placement.value = p
+        val str = when (p) {
+            ToastPlacement.IN_APP -> "in_app"
+            ToastPlacement.SYSTEM_OVERLAY -> "system_overlay"
+        }
+        try { Settings().putString(TOAST_PLACEMENT_KEY, str) } catch (_: Exception) {}
+    }
+
+    /**
+     * РџРµСЂРµР·Р°РїСѓСЃРєР°РµС‚СЃСЏ РїСЂРё РєР°Р¶РґРѕРј РІС‹Р·РѕРІРµ: РѕС‚РјРµРЅСЏРµС‚ СЃС‚Р°СЂСѓСЋ WS-РїРѕРґРїРёСЃРєСѓ,
+     * РїРµСЂРµС‡РёС‚С‹РІР°РµС‚ РЅР°СЃС‚СЂРѕР№РєРё Рё Р·Р°РїСѓСЃРєР°РµС‚ Р·Р°РЅРѕРІРѕ. Р­С‚Рѕ РЅСѓР¶РЅРѕ РїРѕС‚РѕРјСѓ С‡С‚Рѕ
+     * WsService РїРѕСЃР»Рµ СЃРјРµРЅС‹ AppModule РјРѕР¶РµС‚ Р±С‹С‚СЊ РґСЂСѓРіРёРј РёРЅСЃС‚Р°РЅСЃРѕРј, Рё
+     * РЅР°СЃС‚СЂРѕР№РєРё РјРѕРіСѓС‚ РёР·РјРµРЅРёС‚СЊСЃСЏ (РёР·-Р·Р° Р»РѕРіРёРЅР°/СЃРјРµРЅС‹ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ).
+     */
+    fun start(
+        wsService: WsService,
+        notificationsRepository: NotificationsRepository,
+        chatRepository: ChatRepository,
+        tokenStorage: TokenStorage,
+    ) {
+        wsScope?.cancel()
+        wsScope = null
+
+        currentUserId = tokenStorage.getUserId()
+        notificationsRepoRef = notificationsRepository
+
+        // РџРµСЂРµС‡РёС‚С‹РІР°РµРј РЅР°СЃС‚СЂРѕР№РєРё СѓРІРµРґРѕРјР»РµРЅРёР№ СЃ СЃРµСЂРІРµСЂР°
+        scope.launch {
+            try {
+                val list = notificationsRepository.getSettings()
+                val item = list.items.firstOrNull { it.platform == NotificationPlatform.DESKTOP }
+                if (item != null) {
+                    mode.value = item.mode
+                    whitelist.value = item.whitelistChatIds.toSet()
+                } else {
+                    mode.value = NotificationMode.ALL
+                    whitelist.value = emptySet()
+                }
+            } catch (_: Exception) {}
+        }
+
+        // РџРѕРґРїРёСЃРєР° РЅР° WS
+        val newScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+        wsScope = newScope
+        newScope.launch {
+            wsService.events.collect { event ->
+                when (event.type) {
+                    "new_message" -> handleNewMessage(event.data, chatRepository)
+                    "notification_dismiss" -> handleDismiss(event.data)
+                    "message_deleted" -> handleDeleted(event.data)
+                }
+            }
+        }
+    }
+
+    /** РџСЂРёРЅСѓРґРёС‚РµР»СЊРЅРѕ РїРµСЂРµС‡РёС‚Р°С‚СЊ РЅР°СЃС‚СЂРѕР№РєРё СѓРІРµРґРѕРјР»РµРЅРёР№ СЃ СЃРµСЂРІРµСЂР°. */
+    fun reloadSettings() {
+        val repo = notificationsRepoRef ?: return
+        scope.launch {
+            try {
+                val list = repo.getSettings()
+                val item = list.items.firstOrNull { it.platform == NotificationPlatform.DESKTOP }
+                if (item != null) {
+                    mode.value = item.mode
+                    whitelist.value = item.whitelistChatIds.toSet()
+                } else {
+                    mode.value = NotificationMode.ALL
+                    whitelist.value = emptySet()
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun dismissToast(id: Long) {
+        _toasts.update { list -> list.filterNot { it.id == id } }
+    }
+
+    private suspend fun handleNewMessage(data: JsonElement, chatRepository: ChatRepository) {
+        val payload = try {
+            appJson.decodeFromJsonElement<WsNewMessage>(data)
+        } catch (_: Exception) {
+            return
+        }
+
+        // РќРµ СЃРІРѕС‘ СЃРѕРѕР±С‰РµРЅРёРµ
+        val senderId = payload.message.senderId
+        if (senderId != null && senderId == currentUserId) return
+
+        // Р§Р°С‚ СѓР¶Рµ РѕС‚РєСЂС‹С‚
+        if (ActiveChatHolder.get() == payload.chatId) return
+
+        // Р¤РёР»СЊС‚СЂ РїРѕ mode
+        when (mode.value) {
+            NotificationMode.NONE -> return
+            NotificationMode.WHITELIST -> {
+                if (!whitelist.value.contains(payload.chatId)) return
+            }
+            NotificationMode.PERSONAL_ONLY -> {
+                val chatType = try {
+                    chatRepository.getChat(payload.chatId).type
+                } catch (_: Exception) { null }
+                if (chatType != "personal") return
+            }
+            // ALL вЂ” РїСЂРѕРїСѓСЃРєР°РµРј
+        }
+
+        val chatName = try {
+            chatRepository.getChat(payload.chatId).name ?: "Р§Р°С‚"
+        } catch (_: Exception) { "Р§Р°С‚" }
+
+        val senderName = payload.message.senderName ?: "РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ"
+        val text = payload.message.content.take(200)
+
+        val toast = DesktopToast(
+            id = ++idCounter,
+            chatId = payload.chatId,
+            chatName = chatName,
+            senderName = senderName,
+            text = text,
+            messageId = payload.message.id,
+        )
+        _toasts.update { list -> (listOf(toast) + list).take(5) }
+
+        scope.launch {
+            delay(6000)
+            dismissToast(toast.id)
+        }
+    }
+
+    private fun handleDismiss(data: JsonElement) {
+        val payload = try {
+            appJson.decodeFromJsonElement<WsNotificationDismiss>(data)
+        } catch (_: Exception) { return }
+        val ids = payload.messageIds.toSet()
+        _toasts.update { list ->
+            list.filterNot { it.chatId == payload.chatId && ids.contains(it.messageId) }
+        }
+    }
+
+    private fun handleDeleted(data: JsonElement) {
+        val payload = try {
+            appJson.decodeFromJsonElement<WsMessageDeleted>(data)
+        } catch (_: Exception) { return }
+        val ids = payload.messageIds.toSet()
+        _toasts.update { list ->
+            list.filterNot { it.chatId == payload.chatId && ids.contains(it.messageId) }
+        }
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\notifications\DesktopToastWindow.kt
+SIZE: 7.7 KB
+----------------------------------------------------------------------
+package org.messenger.app.notifications
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPosition
+import androidx.compose.ui.window.rememberWindowState
+import org.messenger.app.ui.theme.AppTheme
+import java.awt.GraphicsEnvironment
+import java.awt.Insets
+import java.awt.Toolkit
+
+/**
+ * РћС‚РґРµР»СЊРЅРѕРµ undecorated РѕРєРЅРѕ РїРѕРІРµСЂС… РІСЃРµС… РІ РїСЂР°РІРѕРј РЅРёР¶РЅРµРј СѓРіР»Сѓ СЌРєСЂР°РЅР°.
+ * РСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РєРѕРіРґР° РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ РІС‹Р±СЂР°Р» СЂРµР¶РёРј "system overlay".
+ */
+@Composable
+fun DesktopToastWindow(
+    onClickToast: (chatId: String, chatName: String) -> Unit,
+) {
+    val toasts by DesktopNotificationManager.toasts.collectAsState()
+
+    if (toasts.isEmpty()) return
+
+    val (screenW, screenH) = remember {
+        try {
+            val ge = GraphicsEnvironment.getLocalGraphicsEnvironment()
+            val gd = ge.defaultScreenDevice
+            val gc = gd.defaultConfiguration
+            val bounds = gc.bounds
+            val insets: Insets = Toolkit.getDefaultToolkit().getScreenInsets(gc)
+            val w = bounds.width - insets.left - insets.right
+            val h = bounds.height - insets.top - insets.bottom
+            w to h
+        } catch (_: Exception) {
+            1280 to 800
+        }
+    }
+
+    val toastsWidth = 380
+    // РћС†РµРЅРєР° РІС‹СЃРѕС‚С‹ РѕРґРЅРѕР№ РєР°СЂС‚РѕС‡РєРё: С‚РµРєСЃС‚ РјРѕР¶РµС‚ Р·Р°РЅРёРјР°С‚СЊ РґРѕ 3 СЃС‚СЂРѕРє + РѕС‚СЃС‚СѓРїС‹.
+    val perToastHeight = 140
+    val spacing = 8
+    val paddingV = 16
+    // РћРіСЂР°РЅРёС‡РёРІР°РµРј РІС‹СЃРѕС‚Сѓ РѕРєРЅР° РјР°РєСЃРёРјР°Р»СЊРЅРѕР№ СЂР°Р·СѓРјРЅРѕР№ РІРµР»РёС‡РёРЅРѕР№.
+    val maxToastsHeight = (screenH * 0.7f).toInt().coerceAtLeast(240)
+    val toastsHeight = (toasts.size * perToastHeight + (toasts.size - 1).coerceAtLeast(0) * spacing + paddingV)
+        .coerceAtMost(maxToastsHeight)
+    val marginX = 16
+    val marginY = 16
+
+    val posX = (screenW - toastsWidth - marginX).coerceAtLeast(0)
+    val posY = (screenH - toastsHeight - marginY).coerceAtLeast(0)
+
+    val state = rememberWindowState(
+        position = WindowPosition(posX.dp, posY.dp),
+        width = toastsWidth.dp,
+        height = toastsHeight.dp,
+    )
+
+    // Р”РёРЅР°РјРёС‡РµСЃРєРё РѕР±РЅРѕРІР»СЏРµРј СЂР°Р·РјРµСЂ Рё РїРѕР·РёС†РёСЋ РїСЂРё РёР·РјРµРЅРµРЅРёРё РєРѕР»РёС‡РµСЃС‚РІР° С‚РѕСЃС‚РѕРІ
+    LaunchedEffect(toastsHeight, posY) {
+        state.size = androidx.compose.ui.unit.DpSize(toastsWidth.dp, toastsHeight.dp)
+        state.position = WindowPosition(posX.dp, posY.dp)
+    }
+
+    Window(
+        onCloseRequest = {},
+        state = state,
+        visible = true,
+        undecorated = true,
+        transparent = true,
+        resizable = false,
+        alwaysOnTop = true,
+        focusable = false,
+        title = "Notifications",
+    ) {
+        AppTheme {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = androidx.compose.ui.graphics.Color.Transparent,
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    // РўРѕСЃС‚С‹ РїСЂРёР¶РёРјР°РµРј Рє РЅРёР·Сѓ РѕРєРЅР° Рё СЂР°СЃРїРѕР»Р°РіР°РµРј СЃРІРµСЂС…Сѓ РІРЅРёР·:
+                    // РЅРѕРІС‹Рµ РІРЅРёР·Сѓ, СЃС‚Р°СЂС‹Рµ СѓРїРѕР»Р·Р°СЋС‚ РІРІРµСЂС… РІ РїСЂРµРґРµР»Р°С… РѕРєРЅР°.
+                    verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.Bottom),
+                    horizontalAlignment = Alignment.End,
+                ) {
+                    // Р Р°Р·РІРѕСЂР°С‡РёРІР°РµРј СЃРїРёСЃРѕРє: РїРµСЂРІС‹Р№ РІ СЃРїРёСЃРєРµ (СЃР°РјС‹Р№ РЅРѕРІС‹Р№) вЂ” РїРѕСЃР»РµРґРЅРёРј РІ Column,
+                    // С‚.Рµ. РІРЅРёР·Сѓ. РЎС‚Р°СЂС‹Рµ вЂ” РІС‹С€Рµ.
+                    toasts.asReversed().forEach { toast ->
+                        key(toast.id) {
+                            AnimatedVisibility(
+                                visible = true,
+                                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+                            ) {
+                                ToastCardSystem(
+                                    toast = toast,
+                                    onClick = {
+                                        onClickToast(toast.chatId, toast.chatName)
+                                        DesktopNotificationManager.dismissToast(toast.id)
+                                    },
+                                    onClose = {
+                                        DesktopNotificationManager.dismissToast(toast.id)
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToastCardSystem(
+    toast: DesktopToast,
+    onClick: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .widthIn(min = 280.dp, max = 380.dp)
+            .heightIn(min = 110.dp, max = 130.dp)
+            .clickable(onClick = onClick),
+        tonalElevation = 6.dp,
+        shadowElevation = 12.dp,
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = toast.chatName,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = toast.senderName,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = toast.text.ifBlank { "Р’Р»РѕР¶РµРЅРёРµ" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "Р—Р°РєСЂС‹С‚СЊ",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\notifications\NotificationToastOverlay.kt
+SIZE: 4.4 KB
+----------------------------------------------------------------------
+package org.messenger.app.notifications
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun NotificationToastOverlay(
+    onClickToast: (chatId: String, chatName: String) -> Unit,
+) {
+    val toasts by DesktopNotificationManager.toasts.collectAsState()
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalAlignment = Alignment.End,
+        ) {
+            toasts.forEach { toast ->
+                key(toast.id) {
+                    AnimatedVisibility(
+                        visible = true,
+                        enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                        exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+                    ) {
+                        ToastCard(
+                            toast = toast,
+                            onClick = {
+                                onClickToast(toast.chatId, toast.chatName)
+                                DesktopNotificationManager.dismissToast(toast.id)
+                            },
+                            onClose = {
+                                DesktopNotificationManager.dismissToast(toast.id)
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToastCard(
+    toast: DesktopToast,
+    onClick: () -> Unit,
+    onClose: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .widthIn(min = 280.dp, max = 380.dp)
+            .clickable(onClick = onClick),
+        tonalElevation = 6.dp,
+        shadowElevation = 8.dp,
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = toast.chatName,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = toast.senderName,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = toast.text.ifBlank { "Р’Р»РѕР¶РµРЅРёРµ" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "Р—Р°РєСЂС‹С‚СЊ",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun key(key: Any, content: @Composable () -> Unit) {
+    androidx.compose.runtime.key(key) { content() }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\notifications\PlatformNotifications.jvm.kt
+SIZE: 1 KB
+----------------------------------------------------------------------
+package org.messenger.app.notifications
+
+import com.russhwolf.settings.Settings
+
+private const val TOAST_PLACEMENT_KEY = "desktop_toast_placement"
+
+actual fun reloadDesktopNotificationSettings() {
+    DesktopNotificationManager.reloadSettings()
+}
+
+internal actual fun loadInitialPlacement(): String {
+    return try {
+        val raw = Settings().getStringOrNull(TOAST_PLACEMENT_KEY) ?: return "system_overlay"
+        // РџРѕРґРґРµСЂР¶РєР° СЃС‚Р°СЂС‹С… Р·РЅР°С‡РµРЅРёР№ РІ С„РѕСЂРјР°С‚Рµ enum.name
+        when (raw) {
+            "SYSTEM_OVERLAY", "system_overlay" -> "system_overlay"
+            "IN_APP", "in_app" -> "in_app"
+            else -> "system_overlay"
+        }
+    } catch (_: Exception) {
+        "system_overlay"
+    }
+}
+
+internal actual fun savePlacement(value: String) {
+    try {
+        Settings().putString(TOAST_PLACEMENT_KEY, value)
+    } catch (_: Exception) {}
+    val placement = if (value == "in_app") ToastPlacement.IN_APP else ToastPlacement.SYSTEM_OVERLAY
+    DesktopNotificationManager.setPlacement(placement)
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\PlatformFlags.jvm.kt
 SIZE: 0.1 KB
 ----------------------------------------------------------------------
@@ -7807,7 +8878,7 @@ actual fun decodeImageBitmap(bytes: ByteArray): ImageBitmap? {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\ui\MainScreen.jvm.kt
-SIZE: 10.8 KB
+SIZE: 12.2 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui
 
@@ -7856,6 +8927,7 @@ private sealed class RightPane {
     data object Contacts : RightPane()
     data object Profile : RightPane()
     data object Avatars : RightPane()
+    data object Notifications : RightPane()
     data class PeerProfile(val userId: String) : RightPane()
 }
 
@@ -7884,7 +8956,6 @@ actual fun PlatformMainScreen(
         )
     }
 
-    // Р РµР°РєС†РёСЏ РЅР° СЂРµР·СѓР»СЊС‚Р°С‚ forward'Р°: РѕС‚РєСЂС‹С‚СЊ РІС‹Р±СЂР°РЅРЅС‹Р№ С‡Р°С‚ СЃРїСЂР°РІР°
     LaunchedEffect(forwardResultChatId) {
         val id = forwardResultChatId ?: return@LaunchedEffect
         rightPane = RightPane.Chat(id, "")
@@ -7896,97 +8967,115 @@ actual fun PlatformMainScreen(
     var totalWidth by remember { mutableStateOf(0) }
     val density = LocalDensity.current
 
-    // РўРµРєСѓС‰РёР№ РІС‹Р±СЂР°РЅРЅС‹Р№ С‡Р°С‚ вЂ” РґР»СЏ РїРѕРґСЃРІРµС‚РєРё РІ СЃРїРёСЃРєРµ (РµСЃР»Рё СЂРµС€РёРј РґРѕР±Р°РІРёС‚СЊ РїРѕР·Р¶Рµ)
     val currentChatId = (rightPane as? RightPane.Chat)?.chatId
 
-    // РћР±РЅРѕРІР»СЏРµРј currentChatId РґР»СЏ FCM-С„РёР»СЊС‚СЂР°/lifecycle
     LaunchedEffect(currentChatId) {
         org.messenger.app.setActiveChatId(currentChatId)
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .onSizeChanged { totalWidth = it.width },
-    ) {
-        if (totalWidth > 0) {
-            val leftWidthPx = (totalWidth * ratio).toInt()
-            val splitterPx = with(density) { SPLITTER_WIDTH_DP.dp.toPx() }.toInt()
-            val rightWidthPx = (totalWidth - leftWidthPx - splitterPx).coerceAtLeast(0)
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .onSizeChanged { totalWidth = it.width },
-            ) {
-                Row(modifier = Modifier.fillMaxSize()) {
-                    // Р›РµРІР°СЏ РїР°РЅРµР»СЊ
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .weight(ratio),
-                    ) {
-                        ChatListScreen(
-                            appModule = appModule,
-                            onChatClick = { id, name ->
-                                rightPane = RightPane.Chat(id, name)
-                            },
-                            onOpenSettings = { rightPane = RightPane.Settings },
-                            onOpenProfile = { rightPane = RightPane.Profile },
-                        )
-                    }
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { totalWidth = it.width },
+        ) {
+            if (totalWidth > 0) {
+                val leftWidthPx = (totalWidth * ratio).toInt()
+                val splitterPx = with(density) { SPLITTER_WIDTH_DP.dp.toPx() }.toInt()
+                val rightWidthPx = (totalWidth - leftWidthPx - splitterPx).coerceAtLeast(0)
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onSizeChanged { totalWidth = it.width },
+                ) {
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .weight(ratio),
+                        ) {
+                            ChatListScreen(
+                                appModule = appModule,
+                                onChatClick = { id, name ->
+                                    rightPane = RightPane.Chat(id, name)
+                                },
+                                onOpenSettings = { rightPane = RightPane.Settings },
+                                onOpenProfile = { rightPane = RightPane.Profile },
+                            )
+                        }
 
-                    // РЎРїР»РёС‚С‚РµСЂ
-                    SplitterHandle(
-                        onDrag = { deltaPx ->
-                            val width = totalWidth
-                            if (width <= 0) return@SplitterHandle
-                            val newRatio = (ratio + deltaPx / width.toFloat())
-                                .coerceIn(MIN_RATIO, MAX_RATIO)
-                            ratio = newRatio
-                        },
-                        onDragEnd = {
-                            try { settings.putFloat(SPLIT_RATIO_KEY, ratio) } catch (_: Exception) {}
-                        },
-                    )
-
-                    // РџСЂР°РІР°СЏ РїР°РЅРµР»СЊ
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .weight(1f - ratio),
-                    ) {
-                        RightPaneContent(
-                            pane = rightPane,
-                            appModule = appModule,
-                            onClose = { rightPane = RightPane.Empty },
-                            onOpenSettings = { rightPane = RightPane.Settings },
-                            onOpenContacts = { rightPane = RightPane.Contacts },
-                            onOpenProfile = { rightPane = RightPane.Profile },
-                            onOpenAvatars = { rightPane = RightPane.Avatars },
-                            onOpenPeerProfile = { userId -> rightPane = RightPane.PeerProfile(userId) },
-                            onOpenChat = { id, name -> rightPane = RightPane.Chat(id, name) },
-                            onLogout = onLogout,
-                            onPickForwardTarget = { sourceChatId, ids ->
-                                val sourceName = (rightPane as? RightPane.Chat)?.chatName ?: ""
-                                onOpenForwardPicker(sourceChatId, sourceName, ids)
+                        SplitterHandle(
+                            onDrag = { deltaPx ->
+                                val width = totalWidth
+                                if (width <= 0) return@SplitterHandle
+                                val newRatio = (ratio + deltaPx / width.toFloat())
+                                    .coerceIn(MIN_RATIO, MAX_RATIO)
+                                ratio = newRatio
                             },
-                            onContactClick = { contact ->
-                                forwardScope.launch {
-                                    try {
-                                        val chat = appModule.chatRepository
-                                            .createPersonalChat(contactId = contact.id)
-                                        rightPane = RightPane.Chat(
-                                            chat.id,
-                                            chat.name ?: contact.displayName,
-                                        )
-                                    } catch (_: Exception) {}
-                                }
+                            onDragEnd = {
+                                try { settings.putFloat(SPLIT_RATIO_KEY, ratio) } catch (_: Exception) {}
                             },
                         )
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .weight(1f - ratio),
+                        ) {
+                            RightPaneContent(
+                                pane = rightPane,
+                                appModule = appModule,
+                                onClose = { rightPane = RightPane.Empty },
+                                onOpenSettings = { rightPane = RightPane.Settings },
+                                onOpenContacts = { rightPane = RightPane.Contacts },
+                                onOpenProfile = { rightPane = RightPane.Profile },
+                                onOpenAvatars = { rightPane = RightPane.Avatars },
+                                onOpenNotifications = { rightPane = RightPane.Notifications },
+                                onOpenPeerProfile = { userId -> rightPane = RightPane.PeerProfile(userId) },
+                                onOpenChat = { id, name -> rightPane = RightPane.Chat(id, name) },
+                                onLogout = onLogout,
+                                onPickForwardTarget = { sourceChatId, ids ->
+                                    val sourceName = (rightPane as? RightPane.Chat)?.chatName ?: ""
+                                    onOpenForwardPicker(sourceChatId, sourceName, ids)
+                                },
+                                onContactClick = { contact ->
+                                    forwardScope.launch {
+                                        try {
+                                            val chat = appModule.chatRepository
+                                                .createPersonalChat(contactId = contact.id)
+                                            rightPane = RightPane.Chat(
+                                                chat.id,
+                                                chat.name ?: contact.displayName,
+                                            )
+                                        } catch (_: Exception) {}
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             }
         }
+
+        // In-app overlay (РІРЅСѓС‚СЂРё РѕРєРЅР° РїСЂРёР»РѕР¶РµРЅРёСЏ)
+        val placement by org.messenger.app.notifications.DesktopNotificationManager.placement.collectAsState()
+        if (placement == org.messenger.app.notifications.ToastPlacement.IN_APP) {
+            org.messenger.app.notifications.NotificationToastOverlay(
+                onClickToast = { chatId, chatName ->
+                    rightPane = RightPane.Chat(chatId, chatName)
+                },
+            )
+        }
+    }
+
+    // System overlay вЂ” РѕС‚РґРµР»СЊРЅРѕРµ undecorated always-on-top РѕРєРЅРѕ РїРѕРІРµСЂС… РІСЃРµС… РїСЂРёР»РѕР¶РµРЅРёР№
+    val placementOuter by org.messenger.app.notifications.DesktopNotificationManager.placement.collectAsState()
+    if (placementOuter == org.messenger.app.notifications.ToastPlacement.SYSTEM_OVERLAY) {
+        org.messenger.app.notifications.DesktopToastWindow(
+            onClickToast = { chatId, chatName ->
+                rightPane = RightPane.Chat(chatId, chatName)
+            },
+        )
     }
 }
 
@@ -8021,6 +9110,7 @@ private fun RightPaneContent(
     onOpenAvatars: () -> Unit,
     onOpenPeerProfile: (String) -> Unit,
     onOpenChat: (String, String) -> Unit,
+    onOpenNotifications: () -> Unit,
     onLogout: () -> Unit,
     onPickForwardTarget: (sourceChatId: String, messageIds: List<String>) -> Unit,
     onContactClick: (org.messenger.app.shared.data.model.ContactDto) -> Unit,
@@ -8049,7 +9139,13 @@ private fun RightPaneContent(
             onBack = onClose,
             onOpenContacts = onOpenContacts,
             onOpenProfile = onOpenProfile,
+            onOpenNotifications = onOpenNotifications,
             onLogout = onLogout,
+        )
+
+        is RightPane.Notifications -> org.messenger.app.ui.settings.NotificationSettingsScreen(
+            appModule = appModule,
+            onBack = onOpenSettings,
         )
 
         is RightPane.Contacts -> ContactsScreen(
@@ -10323,6 +11419,39 @@ data class WsAttachmentReady(
 )
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\model\WsSelfModels.kt
+SIZE: 0.9 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.data.model
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+/**
+ * РЎРѕР±С‹С‚РёРµ `new_message_self` вЂ” РїСЂРёС…РѕРґРёС‚ РІ user-РєР°РЅР°Р» РїСЂРё РѕС‚РїСЂР°РІРєРµ
+ * СЃРІРѕРµРіРѕ СЃРѕРѕР±С‰РµРЅРёСЏ СЃ СЌС‚РѕРіРѕ Р¶Рµ Р°РєРєР°СѓРЅС‚Р° (РЅРѕ СЃ РґСЂСѓРіРѕРіРѕ СѓСЃС‚СЂРѕР№СЃС‚РІР°).
+ * РќСѓР¶РЅРѕ РґР»СЏ СЃРёРЅС…СЂРѕРЅРёР·Р°С†РёРё lastMessage Р±РµР· РёРЅРєСЂРµРјРµРЅС‚Р° unread.
+ */
+@Serializable
+data class WsNewMessageSelf(
+    @SerialName("chat_id")
+    val chatId: String,
+    val message: MessageDto,
+)
+
+/**
+ * РЎРѕР±С‹С‚РёРµ `message_read_self` вЂ” РґСЂСѓРіРѕР№ РјРѕР№ РґРµРІР°Р№СЃ РїСЂРѕС‡РёС‚Р°Р» СЃРѕРѕР±С‰РµРЅРёСЏ.
+ * РћР±РЅСѓР»СЏРµРј unread РЅР° С‚РµРєСѓС‰РµРј СѓСЃС‚СЂРѕР№СЃС‚РІРµ.
+ */
+@Serializable
+data class WsMessageReadSelf(
+    @SerialName("chat_id")
+    val chatId: String,
+    @SerialName("last_read_message_id")
+    val lastReadMessageId: String,
+)
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\remote\ApiService.kt
 SIZE: 12.2 KB
 ----------------------------------------------------------------------
@@ -11642,7 +12771,7 @@ class AuthViewModel(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\chat\ChatViewModel.kt
-SIZE: 21 KB
+SIZE: 21.7 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.ui.chat
 
@@ -11762,10 +12891,7 @@ class ChatViewModel(
                     )
                 }
                 loadRetryCount = 0
-
-                page.messages.lastOrNull()?.let { msg ->
-                    try { chatRepository.markRead(chatId, msg.id) } catch (_: Exception) {}
-                }
+                // РќР• РґРµР»Р°РµРј Р°РІС‚Рѕ-markRead Р·РґРµСЃСЊ вЂ” UI СЃР°Рј СЂРµС€РёС‚.
             } catch (e: ApiException) {
                 if (e.statusCode == 401 || e.statusCode == 403) {
                     _state.update {
@@ -12095,6 +13221,20 @@ class ChatViewModel(
         _state.update { it.copy(error = null) }
     }
 
+    /**
+     * РћС‚РјРµС‡Р°РµС‚ С‡Р°С‚ РїСЂРѕС‡РёС‚Р°РЅРЅС‹Рј РґРѕ СѓРєР°Р·Р°РЅРЅРѕРіРѕ СЃРѕРѕР±С‰РµРЅРёСЏ (РёР»Рё РґРѕ РїРѕСЃР»РµРґРЅРµРіРѕ,
+     * РµСЃР»Рё id = null). Р’С‹Р·С‹РІР°РµС‚СЃСЏ РёР· UI С‚РѕР»СЊРєРѕ РєРѕРіРґР° РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ СЂРµР°Р»СЊРЅРѕ
+     * РІРёРґРёС‚ РЅРёР· С‡Р°С‚Р°.
+     */
+    fun markReadExplicit(messageId: String? = null) {
+        scope.launch {
+            val targetId = messageId ?: _state.value.messages.firstOrNull()?.id ?: return@launch
+            try {
+                chatRepository.markRead(chatId, targetId)
+            } catch (_: Exception) {}
+        }
+    }
+
     private fun observeWs() {
         scope.launch {
             wsService.events.collect { event ->
@@ -12118,7 +13258,8 @@ class ChatViewModel(
             val current = _state.value.messages
             if (current.none { it.id == payload.message.id }) {
                 _state.update { it.copy(messages = listOf(payload.message) + it.messages) }
-                try { chatRepository.markRead(chatId, payload.message.id) } catch (_: Exception) {}
+                // РќР• РґРµР»Р°РµРј Р°РІС‚Рѕ-markRead Р·РґРµСЃСЊ вЂ” РµРіРѕ РґРµР»Р°РµС‚ UI-СЃР»РѕР№
+                // (ChatScreen) С‚РѕР»СЊРєРѕ РєРѕРіРґР° РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ СЂРµР°Р»СЊРЅРѕ Сѓ РЅРёР·Р° СЃРїРёСЃРєР°.
             }
         } catch (_: Exception) {}
     }
@@ -12210,7 +13351,7 @@ class ChatViewModel(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\chatlist\ChatListViewModel.kt
-SIZE: 6.8 KB
+SIZE: 8.7 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.ui.chatlist
 
@@ -12227,7 +13368,9 @@ import org.messenger.app.shared.data.model.ChatDto
 import org.messenger.app.shared.data.model.WsMessageDeleted
 import org.messenger.app.shared.data.model.WsMessageEdited
 import org.messenger.app.shared.data.model.WsMessageRead
+import org.messenger.app.shared.data.model.WsMessageReadSelf
 import org.messenger.app.shared.data.model.WsNewMessage
+import org.messenger.app.shared.data.model.WsNewMessageSelf
 import org.messenger.app.shared.data.remote.WsService
 import org.messenger.app.shared.data.remote.appJson
 import org.messenger.app.shared.domain.repository.ChatRepository
@@ -12242,11 +13385,6 @@ class ChatListViewModel(
     private val chatRepository: ChatRepository,
     private val wsService: WsService,
     private val tokenStorage: TokenStorage? = null,
-    /**
-     * РСЃС‚РѕС‡РЅРёРє В«РєР°РєРѕР№ С‡Р°С‚ СЃРµР№С‡Р°СЃ РѕС‚РєСЂС‹С‚В». РќР° desktop вЂ” СЌС‚Рѕ РїСЂР°РІР°СЏ РїР°РЅРµР»СЊ;
-     * РЅР° mobile вЂ” С‚РµРєСѓС‰РёР№ СЌРєСЂР°РЅ Chat. Р•СЃР»Рё РѕС‚РєСЂС‹С‚ С‡Р°С‚ вЂ” РќР• РёРЅРєСЂРµРјРµРЅС‚РёРј unread
-     * РґР»СЏ РЅРµРіРѕ Рё СЃСЂР°Р·Сѓ РѕР±РЅСѓР»СЏРµРј РїСЂРё РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё.
-     */
     private val activeChatIdProvider: () -> String? = { null },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -12292,7 +13430,23 @@ class ChatListViewModel(
                     "new_message" -> {
                         try {
                             val msg = appJson.decodeFromJsonElement<WsNewMessage>(event.data)
-                            updateChatWithNewMessage(msg)
+                            updateChatWithNewMessage(
+                                chatId = msg.chatId,
+                                messageId = msg.message.id,
+                                senderId = msg.message.senderId,
+                                newLast = msg,
+                            )
+                        } catch (_: Exception) {}
+                    }
+                    "new_message_self" -> {
+                        // РЎРІРѕС‘ СЃРѕРѕР±С‰РµРЅРёРµ, РїСЂРёС€РµРґС€РµРµ СЃ РґСЂСѓРіРѕРіРѕ РјРѕРµРіРѕ СѓСЃС‚СЂРѕР№СЃС‚РІР°.
+                        // РћР±РЅРѕРІР»СЏРµРј lastMessage, unread РќР• С‚СЂРѕРіР°РµРј.
+                        try {
+                            val ev = appJson.decodeFromJsonElement<WsNewMessageSelf>(event.data)
+                            updateChatWithOwnMessage(
+                                chatId = ev.chatId,
+                                newLast = WsNewMessage(chatId = ev.chatId, message = ev.message),
+                            )
                         } catch (_: Exception) {}
                     }
                     "message_edited" -> {
@@ -12316,11 +13470,22 @@ class ChatListViewModel(
                         loadChats()
                     }
                     "message_read" -> {
+                        // Р”СЂСѓРіРѕР№ РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ РїСЂРѕС‡РёС‚Р°Р» вЂ” РќРђРЎ СЌС‚Рѕ РЅРµ РєР°СЃР°РµС‚СЃСЏ РґР»СЏ unread.
+                        // (Р±СЌРє С‚РµРїРµСЂСЊ С€Р»С‘С‚ message_read РґСЂСѓРіРёРј, РЅРµ РЅР°Рј)
+                        // РќРѕ РЅР° РІСЃСЏРєРёР№ СЃР»СѓС‡Р°Р№, РµСЃР»Рё СЃРѕР±С‹С‚РёРµ РїСЂРёС€Р»Рѕ СЃ РЅР°С€РёРј user_id вЂ” С‚РѕР¶Рµ
+                        // СЃР±СЂРѕСЃРёРј (legacy fallback).
                         try {
                             val ev = appJson.decodeFromJsonElement<WsMessageRead>(event.data)
                             if (currentUserId != null && ev.userId == currentUserId) {
                                 clearUnreadForChat(ev.chatId)
                             }
+                        } catch (_: Exception) {}
+                    }
+                    "message_read_self" -> {
+                        // Р”СЂСѓРіРѕРµ РјРѕС‘ СѓСЃС‚СЂРѕР№СЃС‚РІРѕ РїСЂРѕС‡РёС‚Р°Р»Рѕ С‡Р°С‚ вЂ” СЃР±СЂР°СЃС‹РІР°РµРј unread.
+                        try {
+                            val ev = appJson.decodeFromJsonElement<WsMessageReadSelf>(event.data)
+                            clearUnreadForChat(ev.chatId)
                         } catch (_: Exception) {}
                     }
                 }
@@ -12353,29 +13518,43 @@ class ChatListViewModel(
         }
     }
 
-    private fun updateChatWithNewMessage(msg: WsNewMessage) {
+    private fun updateChatWithNewMessage(
+        chatId: String,
+        messageId: String,
+        senderId: String?,
+        newLast: WsNewMessage,
+    ) {
         val current = _state.value.chats.toMutableList()
-        val idx = current.indexOfFirst { it.id == msg.chatId }
-        val activeChatId = activeChatIdProvider()
-        val isChatOpen = activeChatId == msg.chatId
-        val isOwn = currentUserId != null && msg.message.senderId == currentUserId
-
+        val idx = current.indexOfFirst { it.id == chatId }
         if (idx >= 0) {
             val chat = current[idx]
-            val newUnread = when {
-                isOwn -> chat.unreadCount
-                isChatOpen -> 0  // РѕС‚РєСЂС‹С‚С‹Р№ С‡Р°С‚ СЃР°Рј РїСЂРѕС‡РёС‚Р°РµС‚, РЅРµ РёРЅРєСЂРµРјРµРЅС‚РёСЂСѓРµРј Рё СЃР±СЂР°СЃС‹РІР°РµРј
-                else -> chat.unreadCount + 1
-            }
+            val isOwn = currentUserId != null && senderId == currentUserId
             current[idx] = chat.copy(
-                lastMessage = msg.message,
-                unreadCount = newUnread,
+                lastMessage = newLast.message,
+                unreadCount = if (isOwn) chat.unreadCount else chat.unreadCount + 1
             )
             val updated = current.removeAt(idx)
             current.add(0, updated)
             _state.value = _state.value.copy(chats = current)
         } else {
-            // РЅРѕРІРѕРіРѕ С‡Р°С‚Р° РµС‰С‘ РЅРµС‚ РІ СЃРїРёСЃРєРµ вЂ” РїРѕРґРіСЂСѓР·РёРј СЃРїРёСЃРѕРє
+            loadChats()
+        }
+    }
+
+    /**
+     * РћР±РЅРѕРІР»РµРЅРёРµ lastMessage РґР»СЏ СЃРѕР±СЃС‚РІРµРЅРЅРѕРіРѕ СЃРѕРѕР±С‰РµРЅРёСЏ (РїСЂРёС€РµРґС€РµРіРѕ СЃ РґСЂСѓРіРѕРіРѕ СѓСЃС‚СЂРѕР№СЃС‚РІР°).
+     * unread РќР• РјРµРЅСЏРµРј.
+     */
+    private fun updateChatWithOwnMessage(chatId: String, newLast: WsNewMessage) {
+        val current = _state.value.chats.toMutableList()
+        val idx = current.indexOfFirst { it.id == chatId }
+        if (idx >= 0) {
+            val chat = current[idx]
+            current[idx] = chat.copy(lastMessage = newLast.message)
+            val updated = current.removeAt(idx)
+            current.add(0, updated)
+            _state.value = _state.value.copy(chats = current)
+        } else {
             loadChats()
         }
     }
@@ -12479,6 +13658,123 @@ class ContactsViewModel(
                 }
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message ?: "РћС€РёР±РєР° СѓРґР°Р»РµРЅРёСЏ") }
+            }
+        }
+    }
+
+    fun clearError() {
+        _state.update { it.copy(error = null) }
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\notifications\NotificationSettingsViewModel.kt
+SIZE: 4.2 KB
+----------------------------------------------------------------------
+package org.messenger.app.shared.ui.notifications
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import org.messenger.app.shared.data.model.ChatDto
+import org.messenger.app.shared.data.model.NotificationMode
+import org.messenger.app.shared.data.model.NotificationSettingsItemDto
+import org.messenger.app.shared.domain.repository.ChatRepository
+import org.messenger.app.shared.domain.repository.NotificationsRepository
+
+data class NotificationSettingsUiState(
+    val platform: String = "",
+    val mode: String = NotificationMode.ALL,
+    val whitelistChatIds: Set<String> = emptySet(),
+    val allChats: List<ChatDto> = emptyList(),
+    val isLoading: Boolean = false,
+    val isSaving: Boolean = false,
+    val error: String? = null,
+    val savedSuccess: Boolean = false,
+)
+
+class NotificationSettingsViewModel(
+    private val platform: String,
+    private val notificationsRepository: NotificationsRepository,
+    private val chatRepository: ChatRepository,
+) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    private val _state = MutableStateFlow(NotificationSettingsUiState(platform = platform))
+    val state: StateFlow<NotificationSettingsUiState> = _state.asStateFlow()
+
+    init {
+        load()
+    }
+
+    fun load() {
+        scope.launch {
+            _state.update { it.copy(isLoading = true, error = null) }
+            try {
+                val list = notificationsRepository.getSettings()
+                val item: NotificationSettingsItemDto = list.items.firstOrNull { it.platform == platform }
+                    ?: NotificationSettingsItemDto(
+                        platform = platform,
+                        mode = NotificationMode.ALL,
+                        whitelistChatIds = emptyList(),
+                    )
+                val chats = try { chatRepository.getChats() } catch (_: Exception) { emptyList() }
+                _state.update {
+                    it.copy(
+                        mode = item.mode,
+                        whitelistChatIds = item.whitelistChatIds.toSet(),
+                        allChats = chats,
+                        isLoading = false,
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(isLoading = false, error = e.message ?: "РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё")
+                }
+            }
+        }
+    }
+
+    fun setMode(mode: String) {
+        _state.update { it.copy(mode = mode, savedSuccess = false) }
+    }
+
+    fun toggleChat(chatId: String) {
+        _state.update { s ->
+            val newSet = if (s.whitelistChatIds.contains(chatId))
+                s.whitelistChatIds - chatId
+            else s.whitelistChatIds + chatId
+            s.copy(whitelistChatIds = newSet, savedSuccess = false)
+        }
+    }
+
+    fun setWhitelist(ids: Set<String>) {
+        _state.update { it.copy(whitelistChatIds = ids, savedSuccess = false) }
+    }
+
+    fun save(onSuccess: () -> Unit = {}) {
+        scope.launch {
+            _state.update { it.copy(isSaving = true, error = null, savedSuccess = false) }
+            try {
+                val s = _state.value
+                val ids = if (s.mode == NotificationMode.WHITELIST)
+                    s.whitelistChatIds.toList() else emptyList()
+                notificationsRepository.updateSettings(
+                    platform = platform,
+                    mode = s.mode,
+                    chatIds = ids,
+                )
+                _state.update { it.copy(isSaving = false, savedSuccess = true) }
+                onSuccess()
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(isSaving = false, error = e.message ?: "РћС€РёР±РєР° СЃРѕС…СЂР°РЅРµРЅРёСЏ")
+                }
             }
         }
     }
@@ -13164,6 +14460,6 @@ SIZE: 0.2 KB
 }
 
 ======================================================================
-Total files dumped: 162
+Total files dumped: 172
 ======================================================================
 

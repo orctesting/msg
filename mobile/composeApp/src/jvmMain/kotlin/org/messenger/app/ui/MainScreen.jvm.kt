@@ -45,6 +45,7 @@ private sealed class RightPane {
     data object Contacts : RightPane()
     data object Profile : RightPane()
     data object Avatars : RightPane()
+    data object Notifications : RightPane()
     data class PeerProfile(val userId: String) : RightPane()
 }
 
@@ -73,7 +74,6 @@ actual fun PlatformMainScreen(
         )
     }
 
-    // Реакция на результат forward'а: открыть выбранный чат справа
     LaunchedEffect(forwardResultChatId) {
         val id = forwardResultChatId ?: return@LaunchedEffect
         rightPane = RightPane.Chat(id, "")
@@ -85,97 +85,115 @@ actual fun PlatformMainScreen(
     var totalWidth by remember { mutableStateOf(0) }
     val density = LocalDensity.current
 
-    // Текущий выбранный чат — для подсветки в списке (если решим добавить позже)
     val currentChatId = (rightPane as? RightPane.Chat)?.chatId
 
-    // Обновляем currentChatId для FCM-фильтра/lifecycle
     LaunchedEffect(currentChatId) {
         org.messenger.app.setActiveChatId(currentChatId)
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .onSizeChanged { totalWidth = it.width },
-    ) {
-        if (totalWidth > 0) {
-            val leftWidthPx = (totalWidth * ratio).toInt()
-            val splitterPx = with(density) { SPLITTER_WIDTH_DP.dp.toPx() }.toInt()
-            val rightWidthPx = (totalWidth - leftWidthPx - splitterPx).coerceAtLeast(0)
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .onSizeChanged { totalWidth = it.width },
-            ) {
-                Row(modifier = Modifier.fillMaxSize()) {
-                    // Левая панель
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .weight(ratio),
-                    ) {
-                        ChatListScreen(
-                            appModule = appModule,
-                            onChatClick = { id, name ->
-                                rightPane = RightPane.Chat(id, name)
-                            },
-                            onOpenSettings = { rightPane = RightPane.Settings },
-                            onOpenProfile = { rightPane = RightPane.Profile },
-                        )
-                    }
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { totalWidth = it.width },
+        ) {
+            if (totalWidth > 0) {
+                val leftWidthPx = (totalWidth * ratio).toInt()
+                val splitterPx = with(density) { SPLITTER_WIDTH_DP.dp.toPx() }.toInt()
+                val rightWidthPx = (totalWidth - leftWidthPx - splitterPx).coerceAtLeast(0)
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onSizeChanged { totalWidth = it.width },
+                ) {
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .weight(ratio),
+                        ) {
+                            ChatListScreen(
+                                appModule = appModule,
+                                onChatClick = { id, name ->
+                                    rightPane = RightPane.Chat(id, name)
+                                },
+                                onOpenSettings = { rightPane = RightPane.Settings },
+                                onOpenProfile = { rightPane = RightPane.Profile },
+                            )
+                        }
 
-                    // Сплиттер
-                    SplitterHandle(
-                        onDrag = { deltaPx ->
-                            val width = totalWidth
-                            if (width <= 0) return@SplitterHandle
-                            val newRatio = (ratio + deltaPx / width.toFloat())
-                                .coerceIn(MIN_RATIO, MAX_RATIO)
-                            ratio = newRatio
-                        },
-                        onDragEnd = {
-                            try { settings.putFloat(SPLIT_RATIO_KEY, ratio) } catch (_: Exception) {}
-                        },
-                    )
-
-                    // Правая панель
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .weight(1f - ratio),
-                    ) {
-                        RightPaneContent(
-                            pane = rightPane,
-                            appModule = appModule,
-                            onClose = { rightPane = RightPane.Empty },
-                            onOpenSettings = { rightPane = RightPane.Settings },
-                            onOpenContacts = { rightPane = RightPane.Contacts },
-                            onOpenProfile = { rightPane = RightPane.Profile },
-                            onOpenAvatars = { rightPane = RightPane.Avatars },
-                            onOpenPeerProfile = { userId -> rightPane = RightPane.PeerProfile(userId) },
-                            onOpenChat = { id, name -> rightPane = RightPane.Chat(id, name) },
-                            onLogout = onLogout,
-                            onPickForwardTarget = { sourceChatId, ids ->
-                                val sourceName = (rightPane as? RightPane.Chat)?.chatName ?: ""
-                                onOpenForwardPicker(sourceChatId, sourceName, ids)
+                        SplitterHandle(
+                            onDrag = { deltaPx ->
+                                val width = totalWidth
+                                if (width <= 0) return@SplitterHandle
+                                val newRatio = (ratio + deltaPx / width.toFloat())
+                                    .coerceIn(MIN_RATIO, MAX_RATIO)
+                                ratio = newRatio
                             },
-                            onContactClick = { contact ->
-                                forwardScope.launch {
-                                    try {
-                                        val chat = appModule.chatRepository
-                                            .createPersonalChat(contactId = contact.id)
-                                        rightPane = RightPane.Chat(
-                                            chat.id,
-                                            chat.name ?: contact.displayName,
-                                        )
-                                    } catch (_: Exception) {}
-                                }
+                            onDragEnd = {
+                                try { settings.putFloat(SPLIT_RATIO_KEY, ratio) } catch (_: Exception) {}
                             },
                         )
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .weight(1f - ratio),
+                        ) {
+                            RightPaneContent(
+                                pane = rightPane,
+                                appModule = appModule,
+                                onClose = { rightPane = RightPane.Empty },
+                                onOpenSettings = { rightPane = RightPane.Settings },
+                                onOpenContacts = { rightPane = RightPane.Contacts },
+                                onOpenProfile = { rightPane = RightPane.Profile },
+                                onOpenAvatars = { rightPane = RightPane.Avatars },
+                                onOpenNotifications = { rightPane = RightPane.Notifications },
+                                onOpenPeerProfile = { userId -> rightPane = RightPane.PeerProfile(userId) },
+                                onOpenChat = { id, name -> rightPane = RightPane.Chat(id, name) },
+                                onLogout = onLogout,
+                                onPickForwardTarget = { sourceChatId, ids ->
+                                    val sourceName = (rightPane as? RightPane.Chat)?.chatName ?: ""
+                                    onOpenForwardPicker(sourceChatId, sourceName, ids)
+                                },
+                                onContactClick = { contact ->
+                                    forwardScope.launch {
+                                        try {
+                                            val chat = appModule.chatRepository
+                                                .createPersonalChat(contactId = contact.id)
+                                            rightPane = RightPane.Chat(
+                                                chat.id,
+                                                chat.name ?: contact.displayName,
+                                            )
+                                        } catch (_: Exception) {}
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             }
         }
+
+        // In-app overlay (внутри окна приложения)
+        val placement by org.messenger.app.notifications.DesktopNotificationManager.placement.collectAsState()
+        if (placement == org.messenger.app.notifications.ToastPlacement.IN_APP) {
+            org.messenger.app.notifications.NotificationToastOverlay(
+                onClickToast = { chatId, chatName ->
+                    rightPane = RightPane.Chat(chatId, chatName)
+                },
+            )
+        }
+    }
+
+    // System overlay — отдельное undecorated always-on-top окно поверх всех приложений
+    val placementOuter by org.messenger.app.notifications.DesktopNotificationManager.placement.collectAsState()
+    if (placementOuter == org.messenger.app.notifications.ToastPlacement.SYSTEM_OVERLAY) {
+        org.messenger.app.notifications.DesktopToastWindow(
+            onClickToast = { chatId, chatName ->
+                rightPane = RightPane.Chat(chatId, chatName)
+            },
+        )
     }
 }
 
@@ -210,6 +228,7 @@ private fun RightPaneContent(
     onOpenAvatars: () -> Unit,
     onOpenPeerProfile: (String) -> Unit,
     onOpenChat: (String, String) -> Unit,
+    onOpenNotifications: () -> Unit,
     onLogout: () -> Unit,
     onPickForwardTarget: (sourceChatId: String, messageIds: List<String>) -> Unit,
     onContactClick: (org.messenger.app.shared.data.model.ContactDto) -> Unit,
@@ -238,7 +257,13 @@ private fun RightPaneContent(
             onBack = onClose,
             onOpenContacts = onOpenContacts,
             onOpenProfile = onOpenProfile,
+            onOpenNotifications = onOpenNotifications,
             onLogout = onLogout,
+        )
+
+        is RightPane.Notifications -> org.messenger.app.ui.settings.NotificationSettingsScreen(
+            appModule = appModule,
+            onBack = onOpenSettings,
         )
 
         is RightPane.Contacts -> ContactsScreen(

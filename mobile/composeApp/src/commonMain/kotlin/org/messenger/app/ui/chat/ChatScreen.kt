@@ -73,13 +73,19 @@ fun ChatScreen(
             bytes = picked.bytes,
         )
     }
-    val listState = rememberLazyListState()
+    val listState = remember(chatId) {
+        androidx.compose.foundation.lazy.LazyListState(
+            firstVisibleItemIndex = 0,
+            firstVisibleItemScrollOffset = 0,
+        )
+    }
     val coroutineScope = rememberCoroutineScope()
 
     var unreadCount by remember { mutableStateOf(0) }
     var firstUnreadMessageId by remember { mutableStateOf<String?>(null) }
     var lastKnownTopMessageId by remember { mutableStateOf<String?>(null) }
     var showMessageMenuFor by remember { mutableStateOf<MessageDto?>(null) }
+    var initialScrollDone by remember(chatId) { mutableStateOf(false) }
 
     val focusBounds = remember { mutableStateMapOf<String, androidx.compose.ui.geometry.Rect>() }
     var overlayRootCoords by remember {
@@ -114,6 +120,21 @@ fun ChatScreen(
             val msgId = key.removePrefix("msg_")
             val msg = state.messages.firstOrNull { it.id == msgId } ?: return@derivedStateOf null
             dayKeyFromIso(msg.createdAt)
+        }
+    }
+
+    // Гарантированный первоначальный скролл к низу при первом появлении сообщений
+    LaunchedEffect(chatId, state.messages.size > 0) {
+        if (!initialScrollDone && state.messages.isNotEmpty()) {
+            // ждём один кадр, чтобы LazyColumn успел разместить items
+            kotlinx.coroutines.delay(16)
+            try {
+                listState.scrollToItem(0)
+            } catch (_: Exception) {}
+            initialScrollDone = true
+            // помечаем верхнее сообщение как известное, чтобы основной эффект
+            // не перезапускал animateScrollToItem
+            lastKnownTopMessageId = state.messages.first().id
         }
     }
 

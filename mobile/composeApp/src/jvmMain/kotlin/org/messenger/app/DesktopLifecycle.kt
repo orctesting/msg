@@ -7,13 +7,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.messenger.app.notifications.DesktopNotificationManager
 import org.messenger.app.shared.di.AppModule
 
-/**
- * Аналог AppLifecycleObserver из Android.
- * При запуске приложения / разворачивании окна — подключает WS.
- * При сворачивании — даёт 30 секунд, потом отключает WS (если не вернулись).
- */
 class DesktopLifecycle(
     @Volatile private var appModule: AppModule
 ) {
@@ -26,6 +22,7 @@ class DesktopLifecycle(
 
     fun onAppStart(parentScope: CoroutineScope) {
         startWs(parentScope)
+        startNotificationManager()
     }
 
     fun onWindowRestored(parentScope: CoroutineScope) {
@@ -50,9 +47,6 @@ class DesktopLifecycle(
         internalScope.cancel()
     }
 
-    /**
-     * Заменить AppModule (например после смены сервера на экране логина).
-     */
     fun updateAppModule(newModule: AppModule, parentScope: CoroutineScope) {
         try {
             appModule.wsService.disconnect()
@@ -62,6 +56,18 @@ class DesktopLifecycle(
 
         appModule = newModule
         startWs(parentScope)
+        startNotificationManager()
+    }
+
+    private fun startNotificationManager() {
+        try {
+            DesktopNotificationManager.start(
+                wsService = appModule.wsService,
+                notificationsRepository = appModule.notificationsRepository,
+                chatRepository = appModule.chatRepository,
+                tokenStorage = appModule.tokenStorage,
+            )
+        } catch (_: Exception) {}
     }
 
     private fun startWs(parentScope: CoroutineScope) {
