@@ -66,6 +66,8 @@ class ChatViewModel(
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     private var loadRetryCount = 0
+    private var lastWsResyncMs: Long = 0L
+    private var wsWasConnected: Boolean = false
     private val maxLoadRetries = 3
     private var localIdCounter = 0L
 
@@ -73,6 +75,7 @@ class ChatViewModel(
         loadChatInfo()
         loadMessages()
         observeWs()
+        observeWsReconnect()
     }
 
     fun loadChatInfo() {
@@ -571,5 +574,56 @@ class ChatViewModel(
                 }
             }
         } catch (_: Exception) {}
+    }
+
+    private fun observeWsReconnect() {
+        scope.launch {
+            wsService.connected.collect { connected ->
+                if (connected) {
+                    if (wsWasConnected) {
+                        val now = nowMsSafe()
+                        if (now - lastWsResyncMs >= 10_000L && _state.value.messages.isNotEmpty()) {
+                            lastWsResyncMs = now
+                            resyncRecentMessages()
+                        }
+                    }
+                    wsWasConnected = true
+                }
+            }
+        }
+    }
+
+    private fun nowMsSafe(): Long = try {
+        kotlinx.datetime.Clock.System.now().toEpochMilliseconds()
+    } catch (_: Throwable) { 0L }
+
+    private fun resyncRecentMessages() {
+        scope.launch {
+            try {
+                // page.messages приходит в "newest-first" виде (как loadMessages его получает).
+                val page = chatRepository.getMessages(chatId, before = null, limit = 50)
+                val freshDesc = page.messages.reversed()
+                // freshDesc теперь newest-first — совпадает с порядком в state.messages
+                _state.update { st ->
+                    if (st.messages.isEmpty()) return@update st
+                    val existingIds = st.messages.map { it.id }.toHashSet()
+                    val newOnes = freshDesc.filterNot { existingIds.contains(it.id) }
+                    if (newOnes.isEmpty()) {
+                        st.copy(
+                            readByOthersUpTo = page.readByOthersUpTo ?: st.readByOthersUpTo
+                        )
+                    } else {
+                        // Мерджим: новые сверху, потом существующие, удаляем дубли по id (на всякий)
+                        val merged = (newOnes + st.messages).distinctBy { it.id }
+                        st.copy(
+                            messages = merged,
+                            readByOthersUpTo = page.readByOthersUpTo ?: st.readByOthersUpTo,
+                        )
+                    }
+                }
+                // Обновим pinned/peer info на всякий случай
+                loadChatInfo()
+            } catch (_: Exception) {}
+        }
     }
 }

@@ -21,6 +21,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.Color
+import org.messenger.app.shared.data.remote.WsService
 import org.messenger.app.shared.data.model.ChatDto
 import org.messenger.app.shared.di.AppModule
 import org.messenger.app.shared.ui.chatlist.ChatListViewModel
@@ -61,7 +65,17 @@ fun ChatListScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Чаты") },
+                title = {
+                    androidx.compose.foundation.layout.Row(
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        Text("Чаты")
+                        androidx.compose.foundation.layout.Spacer(
+                            modifier = androidx.compose.ui.Modifier.width(8.dp)
+                        )
+                        ConnectionDot(wsService = appModule.wsService)
+                    }
+                },
                 actions = {
                     IconButton(onClick = onOpenProfile) {
                         Icon(Icons.Default.AccountCircle, contentDescription = "Профиль")
@@ -266,4 +280,19 @@ private fun ChatItem(
         }
     )
     HorizontalDivider()
+}
+
+@Composable
+private fun ConnectionDot(wsService: WsService) {
+    val status by wsService.status.collectAsState()
+    val color = when (status) {
+        WsService.WsConnectionStatus.CONNECTED -> Color(0xFF2ECC71)
+        WsService.WsConnectionStatus.CONNECTING -> Color(0xFFF1C40F)
+        WsService.WsConnectionStatus.DISCONNECTED -> Color(0xFFE74C3C)
+    }
+    Box(
+        modifier = Modifier
+            .size(10.dp)
+            .background(color = color, shape = CircleShape)
+    )
 }

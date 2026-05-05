@@ -3032,16 +3032,30 @@ async def get_chats(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
 ):
+    # Подзапрос: max(created_at) последнего сообщения по каждому чату
+    last_msg_subq = (
+        select(
+            Message.chat_id.label("chat_id"),
+            func.max(Message.created_at).label("last_at"),
+        )
+        .group_by(Message.chat_id)
+        .subquery()
+    )
+
     result = await session.execute(
-        select(Chat, ChatMember.is_visible)
+        select(Chat, ChatMember.is_visible, last_msg_subq.c.last_at)
         .join(ChatMember, ChatMember.chat_id == Chat.id)
+        .outerjoin(last_msg_subq, last_msg_subq.c.chat_id == Chat.id)
         .where(ChatMember.user_id == current_user.id)
-        .order_by(desc(Chat.created_at))
+        .order_by(
+            desc(func.coalesce(last_msg_subq.c.last_at, Chat.created_at)),
+            desc(Chat.created_at),
+        )
     )
     rows = result.all()
 
     response_items: list[ChatOut] = []
-    for chat, is_visible in rows:
+    for chat, is_visible, _last_at in rows:
         if chat.type == "personal" and not is_visible:
             continue
         response_items.append(await _build_chat_out(session, chat, current_user))
@@ -8273,9 +8287,57 @@ def send_push_to_device(self, message_id: str, device_id: str):
             logger.info("push_skipped", device_id=str(device.id), reason="no_token")
             return
 
+        # ── Формирование title/body для пуша ──
+        from app.db.models.chat import Chat
+        from app.db.models.user import User
+        from app.db.models.message_attachment_link import MessageAttachmentLink
+        from app.db.models.attachment import Attachment
+
+        chat = session.execute(
+            select(Chat).where(Chat.id == message.chat_id)
+        ).scalar_one_or_none()
+        chat_type = chat.type if chat else "group"
+        chat_name = chat.name if chat else ""
+
+        sender_name = ""
+        if message.sender_id is not None:
+            sender = session.execute(
+                select(User).where(User.id == message.sender_id)
+            ).scalar_one_or_none()
+            if sender:
+                sender_name = sender.display_name
+        else:
+            sender_name = "Admin"
+
+        # Тело: текст сообщения, либо описание вложения
+        body_text = (message.content or "").strip()
+        if not body_text:
+            att_res = session.execute(
+                select(Attachment)
+                .join(MessageAttachmentLink, MessageAttachmentLink.attachment_id == Attachment.id)
+                .where(MessageAttachmentLink.message_id == message.id)
+                .limit(1)
+            ).scalar_one_or_none()
+            if att_res is not None:
+                kind = (att_res.file_kind or "").lower()
+                body_text = {
+                    "image": "📷 Изображение",
+                    "video": "🎬 Видео",
+                    "audio": "🎵 Аудио",
+                }.get(kind, "📎 Вложение")
+            else:
+                body_text = "Сообщение"
+
+        if chat_type == "personal":
+            push_title = sender_name or "Сообщение"
+            push_body = body_text[:200]
+        else:
+            push_title = chat_name or "Чат"
+            push_body = f"{sender_name}: {body_text}"[:200] if sender_name else body_text[:200]
+
         payload = {
-            "title": "New message",
-            "body": message.content[:120],
+            "title": push_title,
+            "body": push_body,
             "chat_id": str(message.chat_id),
             "message_id": str(message.id),
         }
@@ -9846,7 +9908,7 @@ FILE: mobile-dump.txt
 ================================================================================
 ======================================================================
 MOBILE PROJECT DUMP
-Generated: 2026-05-05 01:14:07
+Generated: 2026-05-06 00:00:36
 Root: D:\messenger_proj\source\mobile
 ======================================================================
 
@@ -9864,6 +9926,7 @@ Root: D:\messenger_proj\source\mobile
                         service/
                         ui/
                           chat/
+                          chatlist/
                           common/
                         util/
                 res/
@@ -9910,6 +9973,7 @@ Root: D:\messenger_proj\source\mobile
                         notifications/
                         ui/
                           chat/
+                          chatlist/
                           common/
                         util/
           gradle/
@@ -10590,7 +10654,7 @@ actual fun getPlatformName(): String = "android"
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\service\AppFirebaseMessagingService.kt
-SIZE: 7.3 KB
+SIZE: 7.7 KB
 ----------------------------------------------------------------------
 package org.messenger.app.service
 
@@ -10638,7 +10702,6 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
 
         val data = remoteMessage.data
 
-        // в”Ђв”Ђ action=dismiss: СЃР»СѓР¶РµР±РЅС‹Р№ СЃРёРіРЅР°Р» СЃРєСЂС‹С‚РёСЏ СѓРІРµРґРѕРјР»РµРЅРёР№ в”Ђв”Ђ
         val action = data["action"]
         if (action == "dismiss") {
             val chatId = data["chat_id"] ?: return
@@ -10650,35 +10713,42 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             return
         }
 
-        // в”Ђв”Ђ РѕР±С‹С‡РЅРѕРµ СѓРІРµРґРѕРјР»РµРЅРёРµ Рѕ РЅРѕРІРѕРј СЃРѕРѕР±С‰РµРЅРёРё в”Ђв”Ђ
         val chatId = data["chat_id"] ?: return
         val messageId = data["message_id"] ?: return
 
-        val title = remoteMessage.notification?.title
-            ?: data["title"]
-            ?: "РќРѕРІРѕРµ СЃРѕРѕР±С‰РµРЅРёРµ"
-        val body = remoteMessage.notification?.body
-            ?: data["body"]
-            ?: ""
+        val title = data["title"] ?: "РќРѕРІРѕРµ СЃРѕРѕР±С‰РµРЅРёРµ"
+        val body = data["body"] ?: ""
 
-        // Р•СЃР»Рё РїСЂРёР»РѕР¶РµРЅРёРµ РІ foreground Рё СЌС‚РѕС‚ С‡Р°С‚ РѕС‚РєСЂС‹С‚ вЂ” РЅРµ РїРѕРєР°Р·С‹РІР°РµРј
         if (AppLifecycleObserver.currentChatId == chatId) {
             return
         }
 
-        // Р›РѕРєР°Р»СЊРЅР°СЏ С„РёР»СЊС‚СЂР°С†РёСЏ РїРѕ notification_settings (РЅР° СЃР»СѓС‡Р°Р№ РµСЃР»Рё Р±СЌРє
-        // РµС‰С‘ РЅРµ СѓСЃРїРµР» РїРѕР»СѓС‡РёС‚СЊ РѕР±РЅРѕРІР»С‘РЅРЅС‹Рµ РЅР°СЃС‚СЂРѕР№РєРё)
         if (!shouldShowByLocalSettings(chatId)) {
             return
         }
 
+        // title вЂ” СЌС‚Рѕ РЅР°Р·РІР°РЅРёРµ С‡Р°С‚Р° (РґР»СЏ group) РёР»Рё РёРјСЏ РѕС‚РїСЂР°РІРёС‚РµР»СЏ (РґР»СЏ personal).
+        // body вЂ” СЌС‚Рѕ Р»РёР±Рѕ "РРјСЏ: С‚РµРєСЃС‚" (group) Р»РёР±Рѕ РїСЂРѕСЃС‚Рѕ "С‚РµРєСЃС‚" (personal).
+        // Р”Р»СЏ РіСЂСѓРїРїРёСЂРѕРІРєРё СЂР°Р·Р±РёРІР°РµРј "РРјСЏ: С‚РµРєСЃС‚" в†’ senderName + line.
+        val (senderName, lineText) = parseSenderFromBody(body, fallbackTitle = title)
+
         showOrUpdateGroupNotification(
             chatId = chatId,
-            chatName = title,
+            chatTitle = title,
             messageId = messageId,
-            senderNameOrTitle = title,
-            body = body,
+            senderName = senderName,
+            lineText = lineText,
+            rawBody = body,
         )
+    }
+
+    private fun parseSenderFromBody(body: String, fallbackTitle: String): Pair<String, String> {
+        // Р•СЃР»Рё body РёРјРµРµС‚ С„РѕСЂРјР°С‚ "РРјСЏ: С‚РµРєСЃС‚" вЂ” СЂР°Р·РґРµР»СЏРµРј.
+        val idx = body.indexOf(": ")
+        if (idx in 1..40) {
+            return body.substring(0, idx) to body.substring(idx + 2)
+        }
+        return fallbackTitle to body
     }
 
     private fun shouldShowByLocalSettings(chatId: String): Boolean {
@@ -10687,28 +10757,27 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             "all" -> true
             "none" -> false
             "whitelist" -> NotificationSettingsCache.getWhitelist(applicationContext).contains(chatId)
-            // personal_only Р»РѕРєР°Р»СЊРЅРѕ РЅРµ РѕРїСЂРµРґРµР»РёС‚СЊ РЅР°РґС‘Р¶РЅРѕ (С‡Р°С‚С‹ РЅРµ РєСЌС€РёСЂСѓРµРј),
-            // РїРѕР»Р°РіР°РµРјСЃСЏ РЅР° СЃРµСЂРІРµСЂРЅС‹Р№ С„РёР»СЊС‚СЂ
             else -> true
         }
     }
 
     private fun showOrUpdateGroupNotification(
         chatId: String,
-        chatName: String,
+        chatTitle: String,
         messageId: String,
-        senderNameOrTitle: String,
-        body: String,
+        senderName: String,
+        lineText: String,
+        rawBody: String,
     ) {
-        // РЎРѕС…СЂР°РЅСЏРµРј Р·Р°РїРёСЃСЊ РґР»СЏ РіСЂСѓРїРїРёСЂРѕРІРєРё
+        // РЎРѕС…СЂР°РЅСЏРµРј РґР»СЏ РіСЂСѓРїРїРёСЂРѕРІРєРё. senderName = РѕС‚РѕР±СЂР°Р¶Р°РµРјРѕРµ РёРјСЏ РѕС‚РїСЂР°РІРёС‚РµР»СЏ СЃС‚СЂРѕРєРё.
         NotificationGroupStore.addMessage(
             context = applicationContext,
             chatId = chatId,
-            chatName = chatName,
+            chatName = chatTitle,
             entry = NotificationGroupStore.Entry(
                 messageId = messageId,
-                senderName = senderNameOrTitle,
-                text = body,
+                senderName = senderName,
+                text = lineText,
                 timestamp = System.currentTimeMillis(),
             ),
         )
@@ -10717,7 +10786,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_CHAT_ID, chatId)
-            putExtra(EXTRA_CHAT_NAME, chatName)
+            putExtra(EXTRA_CHAT_NAME, chatTitle)
         }
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -10726,31 +10795,37 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // РћРґРёРЅРѕС‡РЅРѕРµ СѓРІРµРґРѕРјР»РµРЅРёРµ РґР»СЏ РєРѕРЅРєСЂРµС‚РЅРѕРіРѕ СЃРѕРѕР±С‰РµРЅРёСЏ
+        // РћРґРёРЅРѕС‡РЅРѕРµ СѓРІРµРґРѕРјР»РµРЅРёРµ: Р·Р°РіРѕР»РѕРІРѕРє = chatTitle, РєРѕРЅС‚РµРЅС‚ = rawBody
         val singleNotif = NotificationCompat.Builder(this, MessengerApplication.CHANNEL_CHAT_MESSAGES)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle(chatName)
-            .setContentText(body)
+            .setContentTitle(chatTitle)
+            .setContentText(rawBody)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .setGroup(groupKey)
             .build()
 
-        // Summary-СѓРІРµРґРѕРјР»РµРЅРёРµ СЃ InboxStyle
+        // Summary: InboxStyle
         val entries = NotificationGroupStore.getEntries(applicationContext, chatId)
         val inboxStyle = NotificationCompat.InboxStyle()
-            .setBigContentTitle(chatName)
-        entries.takeLast(5).forEach { e ->
-            val display = if (e.text.isBlank()) e.senderName else "${e.senderName}: ${e.text}"
+            .setBigContentTitle(chatTitle)
+        entries.takeLast(7).forEach { e ->
+            // Р•СЃР»Рё sender СЃРѕРІРїР°РґР°РµС‚ СЃ chatTitle (personal chat), РїРѕРєР°Р·С‹РІР°РµРј С‚РѕР»СЊРєРѕ text;
+            // РёРЅР°С‡Рµ "sender: text".
+            val display = when {
+                e.text.isBlank() -> e.senderName
+                e.senderName == chatTitle -> e.text
+                else -> "${e.senderName}: ${e.text}"
+            }
             inboxStyle.addLine(display)
         }
-        val summaryText = if (entries.size > 1) "${entries.size} РЅРѕРІС‹С… СЃРѕРѕР±С‰РµРЅРёР№" else body
+        val summaryText = if (entries.size > 1) "${entries.size} РЅРѕРІС‹С… СЃРѕРѕР±С‰РµРЅРёР№" else rawBody
         inboxStyle.setSummaryText(summaryText)
 
         val summaryNotif = NotificationCompat.Builder(this, MessengerApplication.CHANNEL_CHAT_MESSAGES)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle(chatName)
+            .setContentTitle(chatTitle)
             .setContentText(summaryText)
             .setStyle(inboxStyle)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -11107,6 +11182,14 @@ SIZE: 0.1 KB
 package org.messenger.app.ui.chat
 
 internal actual fun currentTimeMillis(): Long = System.currentTimeMillis()
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\ui\chatlist\ChatListTime.android.kt
+SIZE: 0.1 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.chatlist
+
+internal actual fun currentChatListTimeMillis(): Long = System.currentTimeMillis()
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\androidMain\kotlin\org\messenger\app\ui\common\CachedAsyncImage.android.kt
@@ -12100,7 +12183,7 @@ expect fun getPlatformName(): String
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\auth\AuthScreen.kt
-SIZE: 5.4 KB
+SIZE: 5.7 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.auth
 
@@ -12108,13 +12191,16 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import org.messenger.app.isDesktop
 import org.messenger.app.shared.ui.auth.AuthStep
 import org.messenger.app.shared.ui.auth.AuthViewModel
+
+// 30% РѕС‚ РјРёРЅРёРјР°Р»СЊРЅРѕР№ С€РёСЂРёРЅС‹ РѕРєРЅР° (800 dp) = 240 dp
+private val DESKTOP_FORM_WIDTH = 320.dp
 
 @Composable
 fun AuthScreen(
@@ -12124,46 +12210,54 @@ fun AuthScreen(
     val state by viewModel.state.collectAsState()
 
     Surface(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+        Box(
+            modifier = Modifier.fillMaxSize().padding(32.dp),
+            contentAlignment = Alignment.Center,
         ) {
-            Text(
-                text = "РњРµСЃСЃРµРЅРґР¶РµСЂ",
-                style = MaterialTheme.typography.headlineMedium
-            )
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            when (state.step) {
-                AuthStep.PHONE -> PhoneStep(
-                    phone = state.phone,
-                    serverAddress = state.serverAddress,
-                    onPhoneChanged = viewModel::onPhoneChanged,
-                    onServerAddressChanged = viewModel::onServerAddressChanged,
-                    onSubmit = { onRequestOtp(state.serverAddress.trim()) },
-                    isLoading = state.isLoading
-                )
-                AuthStep.CODE -> CodeStep(
-                    phone = state.phone,
-                    code = state.code,
-                    onCodeChanged = viewModel::onCodeChanged,
-                    onSubmit = viewModel::verifyOtp,
-                    onBack = viewModel::backToPhone,
-                    isLoading = state.isLoading
-                )
+            val formModifier = if (isDesktop) {
+                Modifier.width(DESKTOP_FORM_WIDTH)
+            } else {
+                Modifier.fillMaxWidth()
             }
 
-            state.error?.let { error ->
-                Spacer(modifier = Modifier.height(16.dp))
+            Column(
+                modifier = formModifier,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
                 Text(
-                    text = error,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall
+                    text = "РњРµСЃСЃРµРЅРґР¶РµСЂ",
+                    style = MaterialTheme.typography.headlineMedium
                 )
+
+                Spacer(modifier = Modifier.height(32.dp))
+
+                when (state.step) {
+                    AuthStep.PHONE -> PhoneStep(
+                        phone = state.phone,
+                        serverAddress = state.serverAddress,
+                        onPhoneChanged = viewModel::onPhoneChanged,
+                        onServerAddressChanged = viewModel::onServerAddressChanged,
+                        onSubmit = { onRequestOtp(state.serverAddress.trim()) },
+                        isLoading = state.isLoading
+                    )
+                    AuthStep.CODE -> CodeStep(
+                        phone = state.phone,
+                        code = state.code,
+                        onCodeChanged = viewModel::onCodeChanged,
+                        onSubmit = viewModel::verifyOtp,
+                        onBack = viewModel::backToPhone,
+                        isLoading = state.isLoading
+                    )
+                }
+
+                state.error?.let { error ->
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = error,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
             }
         }
     }
@@ -12178,7 +12272,6 @@ private fun PhoneStep(
     onSubmit: () -> Unit,
     isLoading: Boolean
 ) {
-    // РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ "+7" РµСЃР»Рё РїРѕР»Рµ РїСѓСЃС‚РѕРµ
     LaunchedEffect(Unit) {
         if (phone.isBlank()) {
             onPhoneChanged("+7")
@@ -12199,7 +12292,6 @@ private fun PhoneStep(
     OutlinedTextField(
         value = phone,
         onValueChange = { newValue ->
-            // Р“Р°СЂР°РЅС‚РёСЂСѓРµРј, С‡С‚Рѕ "+" РІСЃРµРіРґР° РІ РЅР°С‡Р°Р»Рµ
             val sanitized = when {
                 newValue.isEmpty() -> "+"
                 !newValue.startsWith("+") -> "+$newValue"
@@ -14618,7 +14710,7 @@ private fun androidx.compose.ui.graphics.Color.takeOrDefault(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chatlist\ChatListScreen.kt
-SIZE: 10.1 KB
+SIZE: 10.8 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chatlist
 
@@ -14648,6 +14740,7 @@ import org.messenger.app.shared.di.AppModule
 import org.messenger.app.shared.ui.chatlist.ChatListViewModel
 import org.messenger.app.util.mouseScrollGestures
 import org.messenger.app.util.PlatformVerticalScrollbar
+import org.messenger.app.ui.chatlist.formatChatListTime
 
 private enum class ChatsTab(val title: String) {
     ALL("Р’СЃРµ"),
@@ -14663,17 +14756,11 @@ fun ChatListScreen(
     onOpenSettings: () -> Unit,
     onOpenProfile: () -> Unit,
 ) {
-    val viewModel = remember {
-        ChatListViewModel(
-            chatRepository = appModule.chatRepository,
-            wsService = appModule.wsService,
-            tokenStorage = appModule.tokenStorage,
-            activeChatIdProvider = { org.messenger.app.ActiveChatHolder.get() },
-        )
-    }
+    val viewModel = remember(appModule) { appModule.chatListViewModel }
     LaunchedEffect(Unit) {
         org.messenger.app.ChatListResyncBus.events.collect {
-            viewModel.loadChats()
+            // Lifecycle-resync: СЃРїРёСЃРѕРє РѕР±РЅРѕРІРёС‚СЃСЏ С‡РµСЂРµР· WS-reconnect Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё.
+            // РџСЂРёРЅСѓРґРёС‚РµР»СЊРЅР°СЏ РїРµСЂРµР·Р°РіСЂСѓР·РєР° РЅРµ РЅСѓР¶РЅР°.
         }
     }
     val state by viewModel.state.collectAsState()
@@ -14847,7 +14934,7 @@ private fun ChatItem(
         supportingContent = {
             chat.lastMessage?.let { msg ->
                 Text(
-                    text = msg.content,
+                    text = msg.content.ifBlank { "Р’Р»РѕР¶РµРЅРёРµ" },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -14872,13 +14959,92 @@ private fun ChatItem(
             }
         },
         trailingContent = {
-            if (chat.unreadCount > 0) {
-                Badge { Text("${chat.unreadCount}") }
+            val ts = chat.lastMessage?.createdAt
+            if (!ts.isNullOrBlank() || chat.unreadCount > 0) {
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (!ts.isNullOrBlank()) {
+                        Text(
+                            text = formatChatListTime(ts),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (chat.unreadCount > 0) {
+                        Badge { Text("${chat.unreadCount}") }
+                    }
+                }
             }
         }
     )
     HorizontalDivider()
 }
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chatlist\ChatListTime.kt
+SIZE: 2.2 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.chatlist
+
+import org.messenger.app.ui.chat.dayKeyFromIso
+
+/**
+ * Р¤РѕСЂРјР°С‚РёСЂСѓРµС‚ ISO-С‚Р°Р№РјСЃС‚Р°РјРї РґР»СЏ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ РІ СЃРїРёСЃРєРµ С‡Р°С‚РѕРІ:
+ * - СЃРµРіРѕРґРЅСЏ в†’ HH:MM
+ * - С‚РµРєСѓС‰РёР№ РіРѕРґ в†’ DD.MM
+ * - РёРЅР°С‡Рµ в†’ DD.MM.YY
+ */
+fun formatChatListTime(iso: String): String {
+    return try {
+        if (iso.length < 10) return ""
+        val day = dayKeyFromIso(iso) // YYYY-MM-DD
+        val parts = day.split("-")
+        if (parts.size != 3) return ""
+        val y = parts[0].toInt()
+        val m = parts[1].toInt()
+        val d = parts[2].toInt()
+
+        val nowMs = currentChatListTimeMillis()
+        val today = millisToDayKey(nowMs)
+        val todayParts = today.split("-").map { it.toInt() }
+        val isToday = y == todayParts[0] && m == todayParts[1] && d == todayParts[2]
+
+        if (isToday) {
+            // HH:MM РёР· ISO
+            val timePart = if (iso.contains("T")) {
+                iso.substringAfter("T").substringBefore(".")
+                    .substringBefore("+").substringBefore("Z")
+            } else iso
+            timePart.take(5)
+        } else if (y == todayParts[0]) {
+            "${d.toString().padStart(2, '0')}.${m.toString().padStart(2, '0')}"
+        } else {
+            val yy = (y % 100).toString().padStart(2, '0')
+            "${d.toString().padStart(2, '0')}.${m.toString().padStart(2, '0')}.$yy"
+        }
+    } catch (_: Exception) {
+        ""
+    }
+}
+
+private fun millisToDayKey(ms: Long): String {
+    val daysSinceEpoch = ms / (24L * 60 * 60 * 1000)
+    var days = daysSinceEpoch + 719468
+    val era = if (days >= 0) days / 146097 else (days - 146096) / 146097
+    val doe = (days - era * 146097).toInt()
+    val yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    val y = yoe + (era * 400).toInt()
+    val doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    val mp = (5 * doy + 2) / 153
+    val d = doy - (153 * mp + 2) / 5 + 1
+    val m = if (mp < 10) mp + 3 else mp - 9
+    val year = if (m <= 2) y + 1 else y
+    return "${year.toString().padStart(4, '0')}-${m.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}"
+}
+
+internal expect fun currentChatListTimeMillis(): Long
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chatlist\CreateGroupChatDialog.kt
@@ -15863,7 +16029,7 @@ private fun ContactFormDialog(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\forward\ForwardTargetScreen.kt
-SIZE: 5 KB
+SIZE: 4.8 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.forward
 
@@ -15894,14 +16060,7 @@ fun ForwardTargetScreen(
     onPicked: (targetChatId: String) -> Unit,
 ) {
 
-    val viewModel = remember {
-        ChatListViewModel(
-            chatRepository = appModule.chatRepository,
-            wsService = appModule.wsService,
-            tokenStorage = appModule.tokenStorage,
-            activeChatIdProvider = { org.messenger.app.ActiveChatHolder.get() },
-        )
-    }
+    val viewModel = remember(appModule) { appModule.chatListViewModel }
     val state by viewModel.state.collectAsState()
 
     // РџРѕРґС‚РІРµСЂР¶РґРµРЅРёРµ
@@ -18728,6 +18887,14 @@ package org.messenger.app.ui.chat
 internal actual fun currentTimeMillis(): Long = System.currentTimeMillis()
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\ui\chatlist\ChatListTime.jvm.kt
+SIZE: 0.1 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.chatlist
+
+internal actual fun currentChatListTimeMillis(): Long = System.currentTimeMillis()
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\ui\common\CachedAsyncImage.jvm.kt
 SIZE: 0.4 KB
 ----------------------------------------------------------------------
@@ -19194,7 +19361,7 @@ actual fun PlatformContextMenu(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\util\FileDrop.jvm.kt
-SIZE: 4.2 KB
+SIZE: 7.6 KB
 ----------------------------------------------------------------------
 package org.messenger.app.util
 
@@ -19203,8 +19370,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
-import androidx.compose.ui.layout.onGloballyPositioned
 import java.awt.Component
+import java.awt.Container
 import java.awt.Window
 import java.awt.datatransfer.DataFlavor
 import java.awt.dnd.DnDConstants
@@ -19215,34 +19382,98 @@ import java.awt.dnd.DropTargetDropEvent
 import java.io.File
 import java.nio.file.Files
 
-@Composable
-actual fun Modifier.fileDropTarget(
-    enabled: Boolean,
-    onDragStateChange: (Boolean) -> Unit,
-    onFilesDropped: (List<DroppedFile>) -> Unit,
-): Modifier = composed {
-    val dragCb = rememberUpdatedState(onDragStateChange)
-    val dropCb = rememberUpdatedState(onFilesDropped)
-    val enabledState = rememberUpdatedState(enabled)
+/**
+ * Р“Р»РѕР±Р°Р»СЊРЅС‹Р№ holder: РІСЃРµ Р°РєС‚РёРІРЅС‹Рµ callback'Рё РґР»СЏ drop.
+ * Drop-event РІ Р»СЋР±РѕРј РѕРєРЅРµ СЂР°СЃРїСЂРѕСЃС‚СЂР°РЅСЏРµС‚СЃСЏ РЅР° РІСЃРµ Р·Р°СЂРµРіРёСЃС‚СЂРёСЂРѕРІР°РЅРЅС‹Рµ callback'Рё.
+ * Р­С‚Рѕ РїРѕР·РІРѕР»СЏРµС‚ РЅРµСЃРєРѕР»СЊРєРёРј РєРѕРјРїРѕРЅРµРЅС‚Р°Рј (РЅР°РїСЂРёРјРµСЂ, MessageInput РІ РѕС‚РєСЂС‹С‚РѕРј С‡Р°С‚Рµ)
+ * РїСЂРёРЅРёРјР°С‚СЊ drop, РЅРµ РєРѕРЅС„Р»РёРєС‚СѓСЏ РјРµР¶РґСѓ СЃРѕР±РѕР№.
+ */
+private object DropRegistry {
+    data class Entry(
+        val enabled: () -> Boolean,
+        val onDragState: (Boolean) -> Unit,
+        val onFiles: (List<DroppedFile>) -> Unit,
+    )
 
-    DisposableEffect(Unit) {
-        val window = findActiveWindow()
-        var oldTarget: DropTarget? = null
-        if (window != null) {
-            oldTarget = window.dropTarget
-            val dt = object : DropTargetAdapter() {
+    private val entries = java.util.concurrent.CopyOnWriteArrayList<Entry>()
+    private var installed = false
+
+    @Synchronized
+    fun register(entry: Entry) {
+        entries.add(entry)
+        ensureInstalled()
+    }
+
+    @Synchronized
+    fun unregister(entry: Entry) {
+        entries.remove(entry)
+    }
+
+    fun hasEnabled(): Boolean = entries.any { it.enabled() }
+
+    fun notifyDragState(active: Boolean) {
+        entries.forEach {
+            if (it.enabled()) {
+                try { it.onDragState(active) } catch (_: Exception) {}
+            }
+        }
+    }
+
+    fun notifyFiles(files: List<DroppedFile>) {
+        // РћС‚РґР°С‘Рј С‚РѕР»СЊРєРѕ РїРµСЂРІРѕРјСѓ Р°РєС‚РёРІРЅРѕРјСѓ (РѕР±С‹С‡РЅРѕ СЌС‚Рѕ РѕС‚РєСЂС‹С‚С‹Р№ С‡Р°С‚)
+        val first = entries.firstOrNull { it.enabled() } ?: return
+        try { first.onFiles(files) } catch (_: Exception) {}
+    }
+
+    private fun ensureInstalled() {
+        if (installed) return
+        installed = true
+        // Р–РґС‘Рј РїРѕСЏРІР»РµРЅРёСЏ РѕРєРЅР° Рё РЅР°РІРµС€РёРІР°РµРј DropTarget СЂРµРєСѓСЂСЃРёРІРЅРѕ
+        Thread {
+            var attempts = 0
+            while (attempts < 50) {
+                val windows = try { Window.getWindows() } catch (_: Exception) { emptyArray() }
+                val mainWindow = windows.firstOrNull { w ->
+                    try { w.isShowing && !isAuxiliaryWindow(w) } catch (_: Exception) { false }
+                }
+                if (mainWindow != null) {
+                    try {
+                        installDropTargetRecursive(mainWindow)
+                    } catch (_: Exception) {}
+                    return@Thread
+                }
+                attempts++
+                try { Thread.sleep(100) } catch (_: Exception) {}
+            }
+        }.apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun isAuxiliaryWindow(w: Window): Boolean {
+        return try {
+            w.isAlwaysOnTop
+        } catch (_: Exception) { false }
+    }
+
+    private fun installDropTargetRecursive(component: Component) {
+        try {
+            val listener = object : DropTargetAdapter() {
                 override fun dragEnter(dtde: DropTargetDragEvent) {
-                    if (!enabledState.value) return
+                    if (!hasEnabled()) {
+                        dtde.rejectDrag(); return
+                    }
                     if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
                         dtde.acceptDrag(DnDConstants.ACTION_COPY)
-                        dragCb.value(true)
+                        notifyDragState(true)
                     } else {
                         dtde.rejectDrag()
                     }
                 }
 
                 override fun dragOver(dtde: DropTargetDragEvent) {
-                    if (!enabledState.value) {
+                    if (!hasEnabled()) {
                         dtde.rejectDrag(); return
                     }
                     if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
@@ -19251,12 +19482,12 @@ actual fun Modifier.fileDropTarget(
                 }
 
                 override fun dragExit(dte: java.awt.dnd.DropTargetEvent) {
-                    dragCb.value(false)
+                    notifyDragState(false)
                 }
 
                 override fun drop(dtde: DropTargetDropEvent) {
-                    dragCb.value(false)
-                    if (!enabledState.value) {
+                    notifyDragState(false)
+                    if (!hasEnabled()) {
                         dtde.rejectDrop(); return
                     }
                     try {
@@ -19276,29 +19507,59 @@ actual fun Modifier.fileDropTarget(
                                 DroppedFile(f.name, mime, f.readBytes())
                             } catch (_: Exception) { null }
                         }
-                        if (items.isNotEmpty()) dropCb.value(items)
+                        if (items.isNotEmpty()) notifyFiles(items)
                         dtde.dropComplete(true)
                     } catch (_: Exception) {
                         try { dtde.dropComplete(false) } catch (_: Exception) {}
                     }
                 }
             }
-            window.dropTarget = DropTarget(window, DnDConstants.ACTION_COPY, dt, true)
-        }
-        onDispose {
-            if (window != null) {
-                window.dropTarget = oldTarget
+
+            // Р’РµС€Р°РµРј DropTarget РЅР° С‚РµРєСѓС‰РёР№ РєРѕРјРїРѕРЅРµРЅС‚
+            DropTarget(component, DnDConstants.ACTION_COPY, listener, true)
+
+            // Р РµРєСѓСЂСЃРёРІРЅРѕ РЅР° РІСЃРµ РґРѕС‡РµСЂРЅРёРµ
+            if (component is Container) {
+                for (child in component.components) {
+                    installDropTargetRecursive(child)
+                }
             }
+
+            // РЎР»СѓС€Р°С‚РµР»СЊ РґРѕР±Р°РІР»РµРЅРёСЏ РЅРѕРІС‹С… РєРѕРјРїРѕРЅРµРЅС‚РѕРІ вЂ” РЅР° СЃР»СѓС‡Р°Р№ РµСЃР»Рё Compose
+            // РїРµСЂРµСЃРѕР·РґР°С‘С‚ РґРµСЂРµРІРѕ
+            if (component is Container) {
+                component.addContainerListener(object : java.awt.event.ContainerAdapter() {
+                    override fun componentAdded(e: java.awt.event.ContainerEvent) {
+                        try { installDropTargetRecursive(e.child) } catch (_: Exception) {}
+                    }
+                })
+            }
+        } catch (_: Exception) {}
+    }
+}
+
+@Composable
+actual fun Modifier.fileDropTarget(
+    enabled: Boolean,
+    onDragStateChange: (Boolean) -> Unit,
+    onFilesDropped: (List<DroppedFile>) -> Unit,
+): Modifier = composed {
+    val dragCb = rememberUpdatedState(onDragStateChange)
+    val dropCb = rememberUpdatedState(onFilesDropped)
+    val enabledState = rememberUpdatedState(enabled)
+
+    DisposableEffect(Unit) {
+        val entry = DropRegistry.Entry(
+            enabled = { enabledState.value },
+            onDragState = { dragCb.value(it) },
+            onFiles = { dropCb.value(it) },
+        )
+        DropRegistry.register(entry)
+        onDispose {
+            DropRegistry.unregister(entry)
         }
     }
     this
-}
-
-private fun findActiveWindow(): Window? {
-    return try {
-        Window.getWindows().firstOrNull { it.isShowing && it.isFocused }
-            ?: Window.getWindows().firstOrNull { it.isShowing }
-    } catch (_: Exception) { null }
 }
 
 ----------------------------------------------------------------------
@@ -21781,7 +22042,7 @@ fun createHttpClient(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\remote\WsService.kt
-SIZE: 5.8 KB
+SIZE: 6.2 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.remote
 
@@ -21795,6 +22056,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.withLock
 import kotlin.math.pow
+import org.messenger.app.shared.util.JwtUtil
 import org.messenger.app.shared.data.local.TokenStorage
 import org.messenger.app.shared.data.model.RefreshTokenBody
 import org.messenger.app.shared.data.model.RefreshTokenResponse
@@ -21863,28 +22125,40 @@ class WsService(
      */
     private suspend fun getValidToken(): String? {
         val current = tokenStorage.getAccessToken()
-        if (current != null) return current
-        return tryRefreshToken()
+
+        if (current != null && !JwtUtil.isExpiredOrExpiringSoon(current, leewaySeconds = 60)) {
+            return current
+        }
+
+        return refreshAccessToken(forceNetwork = false)
     }
 
-    private suspend fun tryRefreshToken(): String? {
+    private suspend fun refreshAccessToken(forceNetwork: Boolean = false): String? {
         return refreshMutex.withLock {
-            // Р•СЃР»Рё РґСЂСѓРіРѕР№ РїРѕС‚РѕРє СѓР¶Рµ РѕР±РЅРѕРІРёР» С‚РѕРєРµРЅ вЂ” РёСЃРїРѕР»СЊР·СѓРµРј РµРіРѕ
             val existing = tokenStorage.getAccessToken()
-            if (existing != null) return@withLock existing
+
+            if (
+                !forceNetwork &&
+                existing != null &&
+                !JwtUtil.isExpiredOrExpiringSoon(existing, leewaySeconds = 60)
+            ) {
+                return@withLock existing
+            }
 
             val refresh = tokenStorage.getRefreshToken() ?: return@withLock null
+
             try {
                 val response = client.post("api/v1/auth/refresh") {
+                    attributes.put(io.ktor.client.plugins.auth.AuthCircuitBreaker, Unit)
                     contentType(ContentType.Application.Json)
                     setBody(RefreshTokenBody(refresh))
                 }
+
                 if (response.status == HttpStatusCode.OK) {
                     val tokens: RefreshTokenResponse = response.body()
                     tokenStorage.saveTokens(tokens.accessToken, tokens.refreshToken)
                     tokens.accessToken
                 } else {
-                    tokenStorage.clear()
                     null
                 }
             } catch (_: Exception) {
@@ -21937,12 +22211,19 @@ class WsService(
             }
         } catch (e: Exception) {
             _connected.value = false
-            // If connection was rejected (likely 403 due to expired token),
-            // try refreshing so next attempt has a fresh token
+
             val message = e.message ?: ""
-            if (message.contains("403") || message.contains("401")) {
-                tryRefreshToken()
+
+            if (
+                message.contains("403") ||
+                message.contains("401") ||
+                message.contains("4001") ||
+                message.contains("Unauthorized", ignoreCase = true) ||
+                message.contains("Forbidden", ignoreCase = true)
+            ) {
+                refreshAccessToken(forceNetwork = true)
             }
+
             throw e
         }
     }
@@ -21954,7 +22235,7 @@ class WsService(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\di\AppModule.kt
-SIZE: 2.6 KB
+SIZE: 3 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.di
 
@@ -22011,6 +22292,15 @@ class AppModule(
 
     val notificationsRepository by lazy {
         org.messenger.app.shared.domain.repository.NotificationsRepository(apiService)
+    }
+
+    val chatListViewModel by lazy {
+        org.messenger.app.shared.ui.chatlist.ChatListViewModel(
+            chatRepository = chatRepository,
+            wsService = wsService,
+            tokenStorage = tokenStorage,
+            activeChatIdProvider = { null }, // РїРµСЂРµРѕРїСЂРµРґРµР»СЏРµС‚СЃСЏ СЃРЅР°СЂСѓР¶Рё РµСЃР»Рё РЅСѓР¶РЅРѕ
+        )
     }
 
     companion object {
@@ -23218,7 +23508,7 @@ class ChatViewModel(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\chatlist\ChatListViewModel.kt
-SIZE: 8.7 KB
+SIZE: 9.5 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.ui.chatlist
 
@@ -23230,6 +23520,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.datetime.Clock
 import org.messenger.app.shared.data.local.TokenStorage
 import org.messenger.app.shared.data.model.ChatDto
 import org.messenger.app.shared.data.model.WsMessageDeleted
@@ -23272,7 +23563,7 @@ class ChatListViewModel(
             _state.value = _state.value.copy(isLoading = true, error = null)
             try {
                 val chats = chatRepository.getChats()
-                _state.value = _state.value.copy(chats = chats, isLoading = false)
+                _state.value = _state.value.copy(chats = sortChats(chats), isLoading = false)
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     isLoading = false,
@@ -23282,13 +23573,26 @@ class ChatListViewModel(
         }
     }
 
+    private var lastResyncMs: Long = 0L
+    private val resyncCooldownMs: Long = 60_000L // 60 СЃРµРє
+
     private fun observeWsConnection() {
         scope.launch {
             wsService.connected.collect { connected ->
-                if (connected) loadChats()
+                if (connected) {
+                    val now = nowMillis()
+                    if (now - lastResyncMs >= resyncCooldownMs) {
+                        lastResyncMs = now
+                        loadChats()
+                    }
+                }
             }
         }
     }
+
+    private fun nowMillis(): Long = try {
+        Clock.System.now().toEpochMilliseconds()
+    } catch (_: Throwable) { 0L }
 
     private fun observeWs() {
         scope.launch {
@@ -23381,7 +23685,7 @@ class ChatListViewModel(
             val chat = list[idx]
             val updatedLast = chat.lastMessage!!.copy(content = newContent)
             list[idx] = chat.copy(lastMessage = updatedLast)
-            _state.value = _state.value.copy(chats = list)
+            _state.value = _state.value.copy(chats = sortChats(list))
         }
     }
 
@@ -23400,9 +23704,7 @@ class ChatListViewModel(
                 lastMessage = newLast.message,
                 unreadCount = if (isOwn) chat.unreadCount else chat.unreadCount + 1
             )
-            val updated = current.removeAt(idx)
-            current.add(0, updated)
-            _state.value = _state.value.copy(chats = current)
+            _state.value = _state.value.copy(chats = sortChats(current))
         } else {
             loadChats()
         }
@@ -23418,12 +23720,22 @@ class ChatListViewModel(
         if (idx >= 0) {
             val chat = current[idx]
             current[idx] = chat.copy(lastMessage = newLast.message)
-            val updated = current.removeAt(idx)
-            current.add(0, updated)
-            _state.value = _state.value.copy(chats = current)
+            _state.value = _state.value.copy(chats = sortChats(current))
         } else {
             loadChats()
         }
+    }
+
+    private fun sortChats(input: List<ChatDto>): List<ChatDto> {
+        return input.sortedWith(
+            compareByDescending<ChatDto> { sortKey(it) }
+                .thenByDescending { it.createdAt ?: "" }
+        )
+    }
+
+    private fun sortKey(chat: ChatDto): String {
+        val lastTs = chat.lastMessage?.createdAt
+        return if (!lastTs.isNullOrBlank()) lastTs else (chat.createdAt ?: "")
     }
 }
 
@@ -23960,36 +24272,69 @@ expect object ImageCache {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\util\JwtUtil.kt
-SIZE: 1 KB
+SIZE: 1.8 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.util
 
 import io.ktor.util.*
+import io.ktor.util.date.getTimeMillis
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
+
 
 object JwtUtil {
     private val json = Json { ignoreUnknownKeys = true }
 
-    fun extractRole(token: String): String? {
+    private fun payload(token: String): JsonObject? {
         return try {
             val parts = token.split(".")
             if (parts.size < 2) return null
+
             val payloadBase64 = parts[1]
                 .replace('-', '+')
                 .replace('_', '/')
                 .let {
-                    // padding
                     val mod = it.length % 4
                     if (mod == 0) it else it + "=".repeat(4 - mod)
                 }
+
             val decoded = payloadBase64.decodeBase64String()
-            val obj = json.parseToJsonElement(decoded).jsonObject
-            obj["role"]?.jsonPrimitive?.content
+            json.parseToJsonElement(decoded).jsonObject
         } catch (_: Exception) {
             null
         }
+    }
+
+    fun extractRole(token: String): String? {
+        return try {
+            payload(token)
+                ?.get("role")
+                ?.jsonPrimitive
+                ?.content
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun extractExpSeconds(token: String): Long? {
+        return try {
+            payload(token)
+                ?.get("exp")
+                ?.jsonPrimitive
+                ?.longOrNull
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    fun isExpiredOrExpiringSoon(token: String, leewaySeconds: Long = 60): Boolean {
+        val exp = extractExpSeconds(token) ?: return true
+        val now = getTimeMillis() / 1000
+        return exp <= now + leewaySeconds
     }
 }
 
@@ -24327,7 +24672,7 @@ SIZE: 0.2 KB
 }
 
 ======================================================================
-Total files dumped: 172
+Total files dumped: 175
 ======================================================================
 
 

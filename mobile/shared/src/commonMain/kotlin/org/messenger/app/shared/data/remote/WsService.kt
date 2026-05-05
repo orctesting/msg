@@ -29,6 +29,10 @@ class WsService(
     val events: SharedFlow<WsEvent> = _events.asSharedFlow()
 
     private val _connected = MutableStateFlow(false)
+    enum class WsConnectionStatus { CONNECTED, CONNECTING, DISCONNECTED }
+
+    private val _status = MutableStateFlow(WsConnectionStatus.DISCONNECTED)
+    val status: StateFlow<WsConnectionStatus> = _status.asStateFlow()
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
     private var job: Job? = null
@@ -46,6 +50,7 @@ class WsService(
         job = scope.launch {
             while (isActive) {
                 try {
+                    _status.value = WsConnectionStatus.CONNECTING
                     openSession()
                     reconnectAttempt = 0
                 } catch (e: CancellationException) {
@@ -55,6 +60,7 @@ class WsService(
                 }
                 val delayMs = calculateReconnectDelay()
                 reconnectAttempt++
+                _status.value = WsConnectionStatus.CONNECTING
                 delay(delayMs)
             }
         }
@@ -65,6 +71,7 @@ class WsService(
         job = null
         reconnectAttempt = 0
         _connected.value = false
+        _status.value = WsConnectionStatus.DISCONNECTED
     }
 
     private fun calculateReconnectDelay(): Long {
@@ -131,6 +138,7 @@ class WsService(
         try {
             client.webSocket(urlString) {
                 _connected.value = true
+                _status.value = WsConnectionStatus.CONNECTED
                 reconnectAttempt = 0
 
                 val pingJob = launch {
@@ -161,6 +169,7 @@ class WsService(
                 } finally {
                     pingJob.cancel()
                     _connected.value = false
+                    _status.value = WsConnectionStatus.CONNECTING
                 }
             }
         } catch (e: Exception) {
