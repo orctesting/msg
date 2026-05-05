@@ -4,13 +4,16 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import org.messenger.app.isDesktop
 import org.messenger.app.shared.ui.auth.AuthStep
 import org.messenger.app.shared.ui.auth.AuthViewModel
+
+// 30% от минимальной ширины окна (800 dp) = 240 dp
+private val DESKTOP_FORM_WIDTH = 320.dp
 
 @Composable
 fun AuthScreen(
@@ -20,46 +23,54 @@ fun AuthScreen(
     val state by viewModel.state.collectAsState()
 
     Surface(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+        Box(
+            modifier = Modifier.fillMaxSize().padding(32.dp),
+            contentAlignment = Alignment.Center,
         ) {
-            Text(
-                text = "Мессенджер",
-                style = MaterialTheme.typography.headlineMedium
-            )
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            when (state.step) {
-                AuthStep.PHONE -> PhoneStep(
-                    phone = state.phone,
-                    serverAddress = state.serverAddress,
-                    onPhoneChanged = viewModel::onPhoneChanged,
-                    onServerAddressChanged = viewModel::onServerAddressChanged,
-                    onSubmit = { onRequestOtp(state.serverAddress.trim()) },
-                    isLoading = state.isLoading
-                )
-                AuthStep.CODE -> CodeStep(
-                    phone = state.phone,
-                    code = state.code,
-                    onCodeChanged = viewModel::onCodeChanged,
-                    onSubmit = viewModel::verifyOtp,
-                    onBack = viewModel::backToPhone,
-                    isLoading = state.isLoading
-                )
+            val formModifier = if (isDesktop) {
+                Modifier.width(DESKTOP_FORM_WIDTH)
+            } else {
+                Modifier.fillMaxWidth()
             }
 
-            state.error?.let { error ->
-                Spacer(modifier = Modifier.height(16.dp))
+            Column(
+                modifier = formModifier,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
                 Text(
-                    text = error,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall
+                    text = "Мессенджер",
+                    style = MaterialTheme.typography.headlineMedium
                 )
+
+                Spacer(modifier = Modifier.height(32.dp))
+
+                when (state.step) {
+                    AuthStep.PHONE -> PhoneStep(
+                        phone = state.phone,
+                        serverAddress = state.serverAddress,
+                        onPhoneChanged = viewModel::onPhoneChanged,
+                        onServerAddressChanged = viewModel::onServerAddressChanged,
+                        onSubmit = { onRequestOtp(state.serverAddress.trim()) },
+                        isLoading = state.isLoading
+                    )
+                    AuthStep.CODE -> CodeStep(
+                        phone = state.phone,
+                        code = state.code,
+                        onCodeChanged = viewModel::onCodeChanged,
+                        onSubmit = viewModel::verifyOtp,
+                        onBack = viewModel::backToPhone,
+                        isLoading = state.isLoading
+                    )
+                }
+
+                state.error?.let { error ->
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = error,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
             }
         }
     }
@@ -74,7 +85,6 @@ private fun PhoneStep(
     onSubmit: () -> Unit,
     isLoading: Boolean
 ) {
-    // Инициализация "+7" если поле пустое
     LaunchedEffect(Unit) {
         if (phone.isBlank()) {
             onPhoneChanged("+7")
@@ -95,7 +105,6 @@ private fun PhoneStep(
     OutlinedTextField(
         value = phone,
         onValueChange = { newValue ->
-            // Гарантируем, что "+" всегда в начале
             val sanitized = when {
                 newValue.isEmpty() -> "+"
                 !newValue.startsWith("+") -> "+$newValue"

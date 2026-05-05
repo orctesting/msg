@@ -283,9 +283,57 @@ def send_push_to_device(self, message_id: str, device_id: str):
             logger.info("push_skipped", device_id=str(device.id), reason="no_token")
             return
 
+        # ── Формирование title/body для пуша ──
+        from app.db.models.chat import Chat
+        from app.db.models.user import User
+        from app.db.models.message_attachment_link import MessageAttachmentLink
+        from app.db.models.attachment import Attachment
+
+        chat = session.execute(
+            select(Chat).where(Chat.id == message.chat_id)
+        ).scalar_one_or_none()
+        chat_type = chat.type if chat else "group"
+        chat_name = chat.name if chat else ""
+
+        sender_name = ""
+        if message.sender_id is not None:
+            sender = session.execute(
+                select(User).where(User.id == message.sender_id)
+            ).scalar_one_or_none()
+            if sender:
+                sender_name = sender.display_name
+        else:
+            sender_name = "Admin"
+
+        # Тело: текст сообщения, либо описание вложения
+        body_text = (message.content or "").strip()
+        if not body_text:
+            att_res = session.execute(
+                select(Attachment)
+                .join(MessageAttachmentLink, MessageAttachmentLink.attachment_id == Attachment.id)
+                .where(MessageAttachmentLink.message_id == message.id)
+                .limit(1)
+            ).scalar_one_or_none()
+            if att_res is not None:
+                kind = (att_res.file_kind or "").lower()
+                body_text = {
+                    "image": "📷 Изображение",
+                    "video": "🎬 Видео",
+                    "audio": "🎵 Аудио",
+                }.get(kind, "📎 Вложение")
+            else:
+                body_text = "Сообщение"
+
+        if chat_type == "personal":
+            push_title = sender_name or "Сообщение"
+            push_body = body_text[:200]
+        else:
+            push_title = chat_name or "Чат"
+            push_body = f"{sender_name}: {body_text}"[:200] if sender_name else body_text[:200]
+
         payload = {
-            "title": "New message",
-            "body": message.content[:120],
+            "title": push_title,
+            "body": push_body,
             "chat_id": str(message.chat_id),
             "message_id": str(message.id),
         }

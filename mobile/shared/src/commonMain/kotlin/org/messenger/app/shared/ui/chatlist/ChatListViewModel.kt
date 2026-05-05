@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.datetime.Clock
 import org.messenger.app.shared.data.local.TokenStorage
 import org.messenger.app.shared.data.model.ChatDto
 import org.messenger.app.shared.data.model.WsMessageDeleted
@@ -50,7 +51,7 @@ class ChatListViewModel(
             _state.value = _state.value.copy(isLoading = true, error = null)
             try {
                 val chats = chatRepository.getChats()
-                _state.value = _state.value.copy(chats = chats, isLoading = false)
+                _state.value = _state.value.copy(chats = sortChats(chats), isLoading = false)
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     isLoading = false,
@@ -60,13 +61,26 @@ class ChatListViewModel(
         }
     }
 
+    private var lastResyncMs: Long = 0L
+    private val resyncCooldownMs: Long = 60_000L // 60 сек
+
     private fun observeWsConnection() {
         scope.launch {
             wsService.connected.collect { connected ->
-                if (connected) loadChats()
+                if (connected) {
+                    val now = nowMillis()
+                    if (now - lastResyncMs >= resyncCooldownMs) {
+                        lastResyncMs = now
+                        loadChats()
+                    }
+                }
             }
         }
     }
+
+    private fun nowMillis(): Long = try {
+        Clock.System.now().toEpochMilliseconds()
+    } catch (_: Throwable) { 0L }
 
     private fun observeWs() {
         scope.launch {
@@ -159,7 +173,7 @@ class ChatListViewModel(
             val chat = list[idx]
             val updatedLast = chat.lastMessage!!.copy(content = newContent)
             list[idx] = chat.copy(lastMessage = updatedLast)
-            _state.value = _state.value.copy(chats = list)
+            _state.value = _state.value.copy(chats = sortChats(list))
         }
     }
 
@@ -178,9 +192,7 @@ class ChatListViewModel(
                 lastMessage = newLast.message,
                 unreadCount = if (isOwn) chat.unreadCount else chat.unreadCount + 1
             )
-            val updated = current.removeAt(idx)
-            current.add(0, updated)
-            _state.value = _state.value.copy(chats = current)
+            _state.value = _state.value.copy(chats = sortChats(current))
         } else {
             loadChats()
         }
@@ -196,11 +208,21 @@ class ChatListViewModel(
         if (idx >= 0) {
             val chat = current[idx]
             current[idx] = chat.copy(lastMessage = newLast.message)
-            val updated = current.removeAt(idx)
-            current.add(0, updated)
-            _state.value = _state.value.copy(chats = current)
+            _state.value = _state.value.copy(chats = sortChats(current))
         } else {
             loadChats()
         }
+    }
+
+    private fun sortChats(input: List<ChatDto>): List<ChatDto> {
+        return input.sortedWith(
+            compareByDescending<ChatDto> { sortKey(it) }
+                .thenByDescending { it.createdAt ?: "" }
+        )
+    }
+
+    private fun sortKey(chat: ChatDto): String {
+        val lastTs = chat.lastMessage?.createdAt
+        return if (!lastTs.isNullOrBlank()) lastTs else (chat.createdAt ?: "")
     }
 }

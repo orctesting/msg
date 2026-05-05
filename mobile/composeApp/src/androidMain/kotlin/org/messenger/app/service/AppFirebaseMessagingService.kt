@@ -44,7 +44,6 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
 
         val data = remoteMessage.data
 
-        // ── action=dismiss: служебный сигнал скрытия уведомлений ──
         val action = data["action"]
         if (action == "dismiss") {
             val chatId = data["chat_id"] ?: return
@@ -56,35 +55,42 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             return
         }
 
-        // ── обычное уведомление о новом сообщении ──
         val chatId = data["chat_id"] ?: return
         val messageId = data["message_id"] ?: return
 
-        val title = remoteMessage.notification?.title
-            ?: data["title"]
-            ?: "Новое сообщение"
-        val body = remoteMessage.notification?.body
-            ?: data["body"]
-            ?: ""
+        val title = data["title"] ?: "Новое сообщение"
+        val body = data["body"] ?: ""
 
-        // Если приложение в foreground и этот чат открыт — не показываем
         if (AppLifecycleObserver.currentChatId == chatId) {
             return
         }
 
-        // Локальная фильтрация по notification_settings (на случай если бэк
-        // ещё не успел получить обновлённые настройки)
         if (!shouldShowByLocalSettings(chatId)) {
             return
         }
 
+        // title — это название чата (для group) или имя отправителя (для personal).
+        // body — это либо "Имя: текст" (group) либо просто "текст" (personal).
+        // Для группировки разбиваем "Имя: текст" → senderName + line.
+        val (senderName, lineText) = parseSenderFromBody(body, fallbackTitle = title)
+
         showOrUpdateGroupNotification(
             chatId = chatId,
-            chatName = title,
+            chatTitle = title,
             messageId = messageId,
-            senderNameOrTitle = title,
-            body = body,
+            senderName = senderName,
+            lineText = lineText,
+            rawBody = body,
         )
+    }
+
+    private fun parseSenderFromBody(body: String, fallbackTitle: String): Pair<String, String> {
+        // Если body имеет формат "Имя: текст" — разделяем.
+        val idx = body.indexOf(": ")
+        if (idx in 1..40) {
+            return body.substring(0, idx) to body.substring(idx + 2)
+        }
+        return fallbackTitle to body
     }
 
     private fun shouldShowByLocalSettings(chatId: String): Boolean {
@@ -93,28 +99,27 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             "all" -> true
             "none" -> false
             "whitelist" -> NotificationSettingsCache.getWhitelist(applicationContext).contains(chatId)
-            // personal_only локально не определить надёжно (чаты не кэшируем),
-            // полагаемся на серверный фильтр
             else -> true
         }
     }
 
     private fun showOrUpdateGroupNotification(
         chatId: String,
-        chatName: String,
+        chatTitle: String,
         messageId: String,
-        senderNameOrTitle: String,
-        body: String,
+        senderName: String,
+        lineText: String,
+        rawBody: String,
     ) {
-        // Сохраняем запись для группировки
+        // Сохраняем для группировки. senderName = отображаемое имя отправителя строки.
         NotificationGroupStore.addMessage(
             context = applicationContext,
             chatId = chatId,
-            chatName = chatName,
+            chatName = chatTitle,
             entry = NotificationGroupStore.Entry(
                 messageId = messageId,
-                senderName = senderNameOrTitle,
-                text = body,
+                senderName = senderName,
+                text = lineText,
                 timestamp = System.currentTimeMillis(),
             ),
         )
@@ -123,7 +128,7 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_CHAT_ID, chatId)
-            putExtra(EXTRA_CHAT_NAME, chatName)
+            putExtra(EXTRA_CHAT_NAME, chatTitle)
         }
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -132,31 +137,37 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Одиночное уведомление для конкретного сообщения
+        // Одиночное уведомление: заголовок = chatTitle, контент = rawBody
         val singleNotif = NotificationCompat.Builder(this, MessengerApplication.CHANNEL_CHAT_MESSAGES)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle(chatName)
-            .setContentText(body)
+            .setContentTitle(chatTitle)
+            .setContentText(rawBody)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .setGroup(groupKey)
             .build()
 
-        // Summary-уведомление с InboxStyle
+        // Summary: InboxStyle
         val entries = NotificationGroupStore.getEntries(applicationContext, chatId)
         val inboxStyle = NotificationCompat.InboxStyle()
-            .setBigContentTitle(chatName)
-        entries.takeLast(5).forEach { e ->
-            val display = if (e.text.isBlank()) e.senderName else "${e.senderName}: ${e.text}"
+            .setBigContentTitle(chatTitle)
+        entries.takeLast(7).forEach { e ->
+            // Если sender совпадает с chatTitle (personal chat), показываем только text;
+            // иначе "sender: text".
+            val display = when {
+                e.text.isBlank() -> e.senderName
+                e.senderName == chatTitle -> e.text
+                else -> "${e.senderName}: ${e.text}"
+            }
             inboxStyle.addLine(display)
         }
-        val summaryText = if (entries.size > 1) "${entries.size} новых сообщений" else body
+        val summaryText = if (entries.size > 1) "${entries.size} новых сообщений" else rawBody
         inboxStyle.setSummaryText(summaryText)
 
         val summaryNotif = NotificationCompat.Builder(this, MessengerApplication.CHANNEL_CHAT_MESSAGES)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle(chatName)
+            .setContentTitle(chatTitle)
             .setContentText(summaryText)
             .setStyle(inboxStyle)
             .setPriority(NotificationCompat.PRIORITY_HIGH)

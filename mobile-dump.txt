@@ -1,6 +1,6 @@
 ﻿======================================================================
 MOBILE PROJECT DUMP
-Generated: 2026-05-03 00:34:40
+Generated: 2026-05-05 01:14:07
 Root: D:\messenger_proj\source\mobile
 ======================================================================
 
@@ -214,7 +214,7 @@ plugins {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\build.gradle.kts
-SIZE: 3.2 KB
+SIZE: 3.3 KB
 ----------------------------------------------------------------------
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -3853,7 +3853,7 @@ fun StickyDateHeader(label: String) {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chat\ChatScreen.kt
-SIZE: 32.8 KB
+SIZE: 33.8 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chat
 
@@ -3930,13 +3930,19 @@ fun ChatScreen(
             bytes = picked.bytes,
         )
     }
-    val listState = rememberLazyListState()
+    val listState = remember(chatId) {
+        androidx.compose.foundation.lazy.LazyListState(
+            firstVisibleItemIndex = 0,
+            firstVisibleItemScrollOffset = 0,
+        )
+    }
     val coroutineScope = rememberCoroutineScope()
 
     var unreadCount by remember { mutableStateOf(0) }
     var firstUnreadMessageId by remember { mutableStateOf<String?>(null) }
     var lastKnownTopMessageId by remember { mutableStateOf<String?>(null) }
     var showMessageMenuFor by remember { mutableStateOf<MessageDto?>(null) }
+    var initialScrollDone by remember(chatId) { mutableStateOf(false) }
 
     val focusBounds = remember { mutableStateMapOf<String, androidx.compose.ui.geometry.Rect>() }
     var overlayRootCoords by remember {
@@ -3971,6 +3977,21 @@ fun ChatScreen(
             val msgId = key.removePrefix("msg_")
             val msg = state.messages.firstOrNull { it.id == msgId } ?: return@derivedStateOf null
             dayKeyFromIso(msg.createdAt)
+        }
+    }
+
+    // Р“Р°СЂР°РЅС‚РёСЂРѕРІР°РЅРЅС‹Р№ РїРµСЂРІРѕРЅР°С‡Р°Р»СЊРЅС‹Р№ СЃРєСЂРѕР»Р» Рє РЅРёР·Сѓ РїСЂРё РїРµСЂРІРѕРј РїРѕСЏРІР»РµРЅРёРё СЃРѕРѕР±С‰РµРЅРёР№
+    LaunchedEffect(chatId, state.messages.size > 0) {
+        if (!initialScrollDone && state.messages.isNotEmpty()) {
+            // Р¶РґС‘Рј РѕРґРёРЅ РєР°РґСЂ, С‡С‚РѕР±С‹ LazyColumn СѓСЃРїРµР» СЂР°Р·РјРµСЃС‚РёС‚СЊ items
+            kotlinx.coroutines.delay(16)
+            try {
+                listState.scrollToItem(0)
+            } catch (_: Exception) {}
+            initialScrollDone = true
+            // РїРѕРјРµС‡Р°РµРј РІРµСЂС…РЅРµРµ СЃРѕРѕР±С‰РµРЅРёРµ РєР°Рє РёР·РІРµСЃС‚РЅРѕРµ, С‡С‚РѕР±С‹ РѕСЃРЅРѕРІРЅРѕР№ СЌС„С„РµРєС‚
+            // РЅРµ РїРµСЂРµР·Р°РїСѓСЃРєР°Р» animateScrollToItem
+            lastKnownTopMessageId = state.messages.first().id
         }
     }
 
@@ -5996,7 +6017,7 @@ private fun ContactFormDialog(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\forward\ForwardTargetScreen.kt
-SIZE: 4.9 KB
+SIZE: 5 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.forward
 
@@ -10458,7 +10479,7 @@ include(":shared")
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\build.gradle.kts
-SIZE: 2.1 KB
+SIZE: 2.2 KB
 ----------------------------------------------------------------------
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 

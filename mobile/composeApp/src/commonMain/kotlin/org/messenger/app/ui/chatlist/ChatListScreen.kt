@@ -26,6 +26,7 @@ import org.messenger.app.shared.di.AppModule
 import org.messenger.app.shared.ui.chatlist.ChatListViewModel
 import org.messenger.app.util.mouseScrollGestures
 import org.messenger.app.util.PlatformVerticalScrollbar
+import org.messenger.app.ui.chatlist.formatChatListTime
 
 private enum class ChatsTab(val title: String) {
     ALL("Все"),
@@ -41,17 +42,11 @@ fun ChatListScreen(
     onOpenSettings: () -> Unit,
     onOpenProfile: () -> Unit,
 ) {
-    val viewModel = remember {
-        ChatListViewModel(
-            chatRepository = appModule.chatRepository,
-            wsService = appModule.wsService,
-            tokenStorage = appModule.tokenStorage,
-            activeChatIdProvider = { org.messenger.app.ActiveChatHolder.get() },
-        )
-    }
+    val viewModel = remember(appModule) { appModule.chatListViewModel }
     LaunchedEffect(Unit) {
         org.messenger.app.ChatListResyncBus.events.collect {
-            viewModel.loadChats()
+            // Lifecycle-resync: список обновится через WS-reconnect автоматически.
+            // Принудительная перезагрузка не нужна.
         }
     }
     val state by viewModel.state.collectAsState()
@@ -225,7 +220,7 @@ private fun ChatItem(
         supportingContent = {
             chat.lastMessage?.let { msg ->
                 Text(
-                    text = msg.content,
+                    text = msg.content.ifBlank { "Вложение" },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -250,8 +245,23 @@ private fun ChatItem(
             }
         },
         trailingContent = {
-            if (chat.unreadCount > 0) {
-                Badge { Text("${chat.unreadCount}") }
+            val ts = chat.lastMessage?.createdAt
+            if (!ts.isNullOrBlank() || chat.unreadCount > 0) {
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (!ts.isNullOrBlank()) {
+                        Text(
+                            text = formatChatListTime(ts),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (chat.unreadCount > 0) {
+                        Badge { Text("${chat.unreadCount}") }
+                    }
+                }
             }
         }
     )

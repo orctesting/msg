@@ -10,6 +10,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.withLock
 import kotlin.math.pow
+import org.messenger.app.shared.util.JwtUtil
 import org.messenger.app.shared.data.local.TokenStorage
 import org.messenger.app.shared.data.model.RefreshTokenBody
 import org.messenger.app.shared.data.model.RefreshTokenResponse
@@ -78,28 +79,40 @@ class WsService(
      */
     private suspend fun getValidToken(): String? {
         val current = tokenStorage.getAccessToken()
-        if (current != null) return current
-        return tryRefreshToken()
+
+        if (current != null && !JwtUtil.isExpiredOrExpiringSoon(current, leewaySeconds = 60)) {
+            return current
+        }
+
+        return refreshAccessToken(forceNetwork = false)
     }
 
-    private suspend fun tryRefreshToken(): String? {
+    private suspend fun refreshAccessToken(forceNetwork: Boolean = false): String? {
         return refreshMutex.withLock {
-            // Если другой поток уже обновил токен — используем его
             val existing = tokenStorage.getAccessToken()
-            if (existing != null) return@withLock existing
+
+            if (
+                !forceNetwork &&
+                existing != null &&
+                !JwtUtil.isExpiredOrExpiringSoon(existing, leewaySeconds = 60)
+            ) {
+                return@withLock existing
+            }
 
             val refresh = tokenStorage.getRefreshToken() ?: return@withLock null
+
             try {
                 val response = client.post("api/v1/auth/refresh") {
+                    attributes.put(io.ktor.client.plugins.auth.AuthCircuitBreaker, Unit)
                     contentType(ContentType.Application.Json)
                     setBody(RefreshTokenBody(refresh))
                 }
+
                 if (response.status == HttpStatusCode.OK) {
                     val tokens: RefreshTokenResponse = response.body()
                     tokenStorage.saveTokens(tokens.accessToken, tokens.refreshToken)
                     tokens.accessToken
                 } else {
-                    tokenStorage.clear()
                     null
                 }
             } catch (_: Exception) {
@@ -152,12 +165,19 @@ class WsService(
             }
         } catch (e: Exception) {
             _connected.value = false
-            // If connection was rejected (likely 403 due to expired token),
-            // try refreshing so next attempt has a fresh token
+
             val message = e.message ?: ""
-            if (message.contains("403") || message.contains("401")) {
-                tryRefreshToken()
+
+            if (
+                message.contains("403") ||
+                message.contains("401") ||
+                message.contains("4001") ||
+                message.contains("Unauthorized", ignoreCase = true) ||
+                message.contains("Forbidden", ignoreCase = true)
+            ) {
+                refreshAccessToken(forceNetwork = true)
             }
+
             throw e
         }
     }

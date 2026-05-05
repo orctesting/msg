@@ -27,14 +27,7 @@ fun ForwardTargetScreen(
     onPicked: (targetChatId: String) -> Unit,
 ) {
 
-    val viewModel = remember {
-        ChatListViewModel(
-            chatRepository = appModule.chatRepository,
-            wsService = appModule.wsService,
-            tokenStorage = appModule.tokenStorage,
-            activeChatIdProvider = { org.messenger.app.ActiveChatHolder.get() },
-        )
-    }
+    val viewModel = remember(appModule) { appModule.chatListViewModel }
     val state by viewModel.state.collectAsState()
 
     // Подтверждение
