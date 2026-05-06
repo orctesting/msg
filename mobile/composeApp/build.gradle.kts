@@ -1,5 +1,6 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -18,6 +19,20 @@ kotlin {
     }
 
     jvm()
+
+    listOf(
+        iosArm64(),
+        iosSimulatorArm64()
+    ).forEach { iosTarget ->
+        iosTarget.binaries.framework {
+            baseName = "ComposeApp"
+            isStatic = true
+            export(projects.shared)
+        }
+    }
+
+    @OptIn(ExperimentalKotlinGradlePluginApi::class)
+    applyDefaultHierarchyTemplate()
 
     sourceSets {
         androidMain.dependencies {
@@ -48,6 +63,12 @@ kotlin {
             implementation(libs.kotlinx.coroutinesSwing)
             implementation(libs.multiplatformSettings)
             implementation(libs.kotlinx.serialization.json)
+        }
+        iosMain.dependencies {
+            api(projects.shared)
+            implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlinx.serialization.json)
+            implementation(libs.multiplatformSettings)
         }
     }
 }

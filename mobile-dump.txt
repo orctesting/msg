@@ -1,6 +1,6 @@
 ﻿======================================================================
 MOBILE PROJECT DUMP
-Generated: 2026-05-06 00:00:36
+Generated: 2026-05-07 00:41:10
 Root: D:\messenger_proj\source\mobile
 ======================================================================
 
@@ -57,6 +57,17 @@ Root: D:\messenger_proj\source\mobile
                   org/
                     messenger/
                       app/
+              iosMain/
+                kotlin/
+                  org/
+                    messenger/
+                      app/
+                        notifications/
+                        ui/
+                          chat/
+                          chatlist/
+                          common/
+                        util/
               jvmMain/
                 kotlin/
                   org/
@@ -216,10 +227,11 @@ plugins {
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\build.gradle.kts
-SIZE: 3.3 KB
+SIZE: 3.9 KB
 ----------------------------------------------------------------------
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -238,6 +250,20 @@ kotlin {
     }
 
     jvm()
+
+    listOf(
+        iosArm64(),
+        iosSimulatorArm64()
+    ).forEach { iosTarget ->
+        iosTarget.binaries.framework {
+            baseName = "ComposeApp"
+            isStatic = true
+            export(projects.shared)
+        }
+    }
+
+    @OptIn(ExperimentalKotlinGradlePluginApi::class)
+    applyDefaultHierarchyTemplate()
 
     sourceSets {
         androidMain.dependencies {
@@ -268,6 +294,12 @@ kotlin {
             implementation(libs.kotlinx.coroutinesSwing)
             implementation(libs.multiplatformSettings)
             implementation(libs.kotlinx.serialization.json)
+        }
+        iosMain.dependencies {
+            api(projects.shared)
+            implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlinx.serialization.json)
+            implementation(libs.multiplatformSettings)
         }
     }
 }
@@ -4802,7 +4834,7 @@ private fun androidx.compose.ui.graphics.Color.takeOrDefault(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chatlist\ChatListScreen.kt
-SIZE: 10.8 KB
+SIZE: 12 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chatlist
 
@@ -4827,6 +4859,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.Color
+import org.messenger.app.shared.data.remote.WsService
 import org.messenger.app.shared.data.model.ChatDto
 import org.messenger.app.shared.di.AppModule
 import org.messenger.app.shared.ui.chatlist.ChatListViewModel
@@ -4867,7 +4903,17 @@ fun ChatListScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Р§Р°С‚С‹") },
+                title = {
+                    androidx.compose.foundation.layout.Row(
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        Text("Р§Р°С‚С‹")
+                        androidx.compose.foundation.layout.Spacer(
+                            modifier = androidx.compose.ui.Modifier.width(8.dp)
+                        )
+                        ConnectionDot(wsService = appModule.wsService)
+                    }
+                },
                 actions = {
                     IconButton(onClick = onOpenProfile) {
                         Icon(Icons.Default.AccountCircle, contentDescription = "РџСЂРѕС„РёР»СЊ")
@@ -5072,6 +5118,21 @@ private fun ChatItem(
         }
     )
     HorizontalDivider()
+}
+
+@Composable
+private fun ConnectionDot(wsService: WsService) {
+    val status by wsService.status.collectAsState()
+    val color = when (status) {
+        WsService.WsConnectionStatus.CONNECTED -> Color(0xFF2ECC71)
+        WsService.WsConnectionStatus.CONNECTING -> Color(0xFFF1C40F)
+        WsService.WsConnectionStatus.DISCONNECTED -> Color(0xFFE74C3C)
+    }
+    Box(
+        modifier = Modifier
+            .size(10.dp)
+            .background(color = color, shape = CircleShape)
+    )
 }
 
 ----------------------------------------------------------------------
@@ -8147,6 +8208,528 @@ class ComposeAppCommonTest {
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\AppPlatform.ios.kt
+SIZE: 1.1 KB
+----------------------------------------------------------------------
+package org.messenger.app
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import org.messenger.app.shared.di.AppModule
+
+actual fun updateCurrentChatId(chatId: String?) {
+    // РќР° iOS Р°РєС‚РёРІРЅС‹Р№ С‡Р°С‚ СѓР¶Рµ С‚СЂРµРєР°РµС‚СЃСЏ С‡РµСЂРµР· ActiveChatHolder РІ commonMain
+    // (РІС‹Р·С‹РІР°РµС‚СЃСЏ РёР· setActiveChatId РІ App.kt). Р”РѕРїРѕР»РЅРёС‚РµР»СЊРЅРѕ РЅРёС‡РµРіРѕ РЅРµ РЅСѓР¶РЅРѕ.
+}
+
+actual fun onLoginSuccessCallback(appModule: AppModule) {
+    val token = IosAppHolder.lastApnsToken ?: return
+    if (!appModule.tokenStorage.isLoggedIn()) return
+    CoroutineScope(Dispatchers.Default).launch {
+        try {
+            appModule.apiService.registerPushToken(token = token, type = "apns")
+        } catch (_: Exception) {}
+    }
+}
+
+actual fun syncAppModule(appModule: AppModule) {
+    IosAppHolder.appModule = appModule
+}
+
+actual fun observeDeepLinks(): Flow<Pair<String, String>>? {
+    return IosDeepLinkBus.events.map { (id, name) -> id to (name ?: "") }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\IosAppHolder.kt
+SIZE: 0.5 KB
+----------------------------------------------------------------------
+package org.messenger.app
+
+import org.messenger.app.shared.di.AppModule
+import kotlin.concurrent.Volatile
+
+/**
+ * Singleton-С…СЂР°РЅРёР»РёС‰Рµ С‚РµРєСѓС‰РµРіРѕ AppModule РґР»СЏ iOS, С‡С‚РѕР±С‹ Swift-СЃС‚РѕСЂРѕРЅР°
+ * (AppDelegate) Рё actual-С„СѓРЅРєС†РёРё (`syncAppModule`, `onLoginSuccessCallback`)
+ * РјРѕРіР»Рё РґРѕСЃС‚СѓС‡Р°С‚СЊСЃСЏ РґРѕ DI Р±РµР· РїРµСЂРµРґР°С‡Рё РїР°СЂР°РјРµС‚СЂРѕРІ.
+ */
+object IosAppHolder {
+    @Volatile
+    var appModule: AppModule? = null
+
+    @Volatile
+    var lastApnsToken: String? = null
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\IosDeepLinkBus.kt
+SIZE: 0.6 KB
+----------------------------------------------------------------------
+package org.messenger.app
+
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+
+/**
+ * РЁРёРЅР° deep-link СЃРѕР±С‹С‚РёР№ РѕС‚ С‚Р°РїР° РїРѕ push-СѓРІРµРґРѕРјР»РµРЅРёСЋ.
+ * `observeDeepLinks()` actual РїРѕРґРїРёСЃС‹РІР°РµС‚СЃСЏ РЅР° СЌС‚РѕС‚ Flow.
+ */
+object IosDeepLinkBus {
+    private val _events = MutableSharedFlow<Pair<String, String?>>(extraBufferCapacity = 4)
+    val events = _events.asSharedFlow()
+
+    fun emit(chatId: String, chatName: String?) {
+        _events.tryEmit(chatId to chatName)
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\IosPushBridge.kt
+SIZE: 2 KB
+----------------------------------------------------------------------
+package org.messenger.app
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import org.messenger.app.shared.di.AppModule
+
+/**
+ * РњРѕСЃС‚ РјРµР¶РґСѓ Swift (AppDelegate) Рё Kotlin.
+ * РћР±СЂР°С‰РµРЅРёРµ РёР· Swift: `IosPushBridge.shared.onApnsToken(tokenHex:)` Рё
+ * `IosPushBridge.shared.onOpenChat(chatId:)`.
+ */
+class IosPushBridge {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    /** Р’С‹Р·С‹РІР°РµС‚СЃСЏ РєРѕРіРґР° APNs РІС‹РґР°Р» device token (hex-СЃС‚СЂРѕРєР°). */
+    fun onApnsToken(tokenHex: String) {
+        IosAppHolder.lastApnsToken = tokenHex
+        val module = IosAppHolder.appModule ?: return
+        if (!module.tokenStorage.isLoggedIn()) return
+        scope.launch(Dispatchers.Default) {
+            try {
+                module.apiService.registerPushToken(token = tokenHex, type = "apns")
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Р’С‹Р·С‹РІР°РµС‚СЃСЏ РїСЂРё С‚Р°РїРµ РїРѕ push-СѓРІРµРґРѕРјР»РµРЅРёСЋ.
+     * Swift РїРµСЂРµРґР°С‘С‚ chatId РєР°Рє Int64 вЂ” РїСЂРёРІРѕРґРёРј Рє СЃС‚СЂРѕРєРµ (Р±СЌРє С…СЂР°РЅРёС‚ UUID,
+     * РЅРѕ РєРѕРЅС‚СЂР°РєС‚ РјРµР¶РґСѓ AppDelegate.swift Рё РЅР°РјРё С„РёРєСЃРёСЂРѕРІР°РЅ: РїСЂРѕР±СЂР°СЃС‹РІР°РµРј РєР°Рє РµСЃС‚СЊ).
+     */
+    fun onOpenChat(chatId: Long) {
+        // Swift РїРµСЂРµРґР°С‘С‚ numeric chatId; РЅР° СЃРµСЂРІРµСЂРµ id вЂ” UUID-СЃС‚СЂРѕРєР°.
+        // РќР° СЃР°РјРѕРј РґРµР»Рµ AppDelegate РґРѕР»Р¶РµРЅ РїРµСЂРµРґР°РІР°С‚СЊ СЃС‚СЂРѕРєСѓ. РџРµСЂРµРїРёС€РµРј РЅРёР¶Рµ.
+        val asString = chatId.toString()
+        IosDeepLinkBus.emit(asString, null)
+    }
+
+    /** РџРµСЂРµРіСЂСѓР·РєР° РґР»СЏ СЃР»СѓС‡Р°СЏ, РєРѕРіРґР° Swift СЃРјРѕР¶РµС‚ РїСЂРёСЃР»Р°С‚СЊ СЃС‚СЂРѕРєРѕРІС‹Р№ id. */
+    fun onOpenChatString(chatId: String, chatName: String?) {
+        IosDeepLinkBus.emit(chatId, chatName)
+    }
+
+    companion object {
+        val shared = IosPushBridge()
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\MainViewController.kt
+SIZE: 0.3 KB
+----------------------------------------------------------------------
+package org.messenger.app
+
+import androidx.compose.runtime.remember
+import androidx.compose.ui.window.ComposeUIViewController
+import org.messenger.app.shared.di.AppModule
+
+fun MainViewController() = ComposeUIViewController {
+    val appModule = remember { AppModule().also { IosAppHolder.appModule = it } }
+    App(appModule = appModule)
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\notifications\PlatformNotifications.ios.kt
+SIZE: 0.8 KB
+----------------------------------------------------------------------
+package org.messenger.app.notifications
+
+import com.russhwolf.settings.Settings
+
+private const val TOAST_PLACEMENT_KEY = "ios_toast_placement"
+
+actual fun reloadDesktopNotificationSettings() {
+    // РќР° iOS push-СѓРІРµРґРѕРјР»РµРЅРёСЏ РїРѕРєР°Р·С‹РІР°РµС‚ APNs/UNUserNotificationCenter Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё вЂ”
+    // РЅРёС‡РµРіРѕ РїРµСЂРµС‡РёС‚С‹РІР°С‚СЊ РЅРµ РЅСѓР¶РЅРѕ. No-op.
+}
+
+internal actual fun loadInitialPlacement(): String {
+    return try {
+        Settings().getStringOrNull(TOAST_PLACEMENT_KEY) ?: "system_overlay"
+    } catch (_: Exception) {
+        "system_overlay"
+    }
+}
+
+internal actual fun savePlacement(value: String) {
+    try {
+        Settings().putString(TOAST_PLACEMENT_KEY, value)
+    } catch (_: Exception) {}
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\PlatformFlags.ios.kt
+SIZE: 0.1 KB
+----------------------------------------------------------------------
+package org.messenger.app
+
+actual val isDesktop: Boolean = false
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\PlatformName.ios.kt
+SIZE: 0.2 KB
+----------------------------------------------------------------------
+package org.messenger.app
+
+import platform.UIKit.UIDevice
+
+actual fun getPlatformName(): String =
+    UIDevice.currentDevice.systemName() + " " + UIDevice.currentDevice.systemVersion
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\ui\chat\Time.ios.kt
+SIZE: 0.2 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.chat
+
+import platform.Foundation.NSDate
+import platform.Foundation.timeIntervalSince1970
+
+actual fun currentTimeMillis(): Long =
+    (NSDate().timeIntervalSince1970 * 1000.0).toLong()
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\ui\chatlist\ChatListTime.ios.kt
+SIZE: 0.2 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.chatlist
+
+import platform.Foundation.NSDate
+import platform.Foundation.timeIntervalSince1970
+
+actual fun currentChatListTimeMillis(): Long =
+    (NSDate().timeIntervalSince1970 * 1000.0).toLong()
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\ui\common\CachedAsyncImage.ios.kt
+SIZE: 1 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui.common
+
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.usePinned
+import org.jetbrains.skia.Image
+import platform.Foundation.NSData
+import platform.Foundation.create
+import platform.posix.memcpy
+
+@OptIn(ExperimentalForeignApi::class)
+actual fun decodeImageBitmap(bytes: ByteArray): ImageBitmap? {
+    return try {
+        Image.makeFromEncoded(bytes).toComposeImageBitmap()
+    } catch (_: Throwable) {
+        null
+    }
+}
+
+// NSData <-> ByteArray helpers РјРѕРіСѓС‚ РїСЂРёРіРѕРґРёС‚СЊСЃСЏ РІ РґСЂСѓРіРёС… РјРµСЃС‚Р°С… iosMain;
+// РѕСЃС‚Р°РІР»РµРЅС‹ РєР°Рє private РґР»СЏ Р±СѓРґСѓС‰РµРіРѕ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёСЏ.
+@OptIn(ExperimentalForeignApi::class)
+private fun ByteArray.toNSData(): NSData = usePinned {
+    NSData.create(bytes = it.addressOf(0), length = size.toULong())
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\ui\MainScreen.ios.kt
+SIZE: 0.6 KB
+----------------------------------------------------------------------
+package org.messenger.app.ui
+
+import androidx.compose.runtime.Composable
+import org.messenger.app.shared.di.AppModule
+
+@Composable
+actual fun PlatformMainScreen(
+    appModule: AppModule,
+    initialChatId: String?,
+    initialChatName: String?,
+    onLogout: () -> Unit,
+    onOpenForwardPicker: (sourceChatId: String, sourceChatName: String, messageIds: List<String>) -> Unit,
+    forwardResultChatId: String?,
+    onForwardResultConsumed: () -> Unit,
+) {
+    // РќР° iOS РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ MobileNavigation РёР· App.kt вЂ” СЌС‚РѕС‚ actual РЅСѓР¶РµРЅ С‚РѕР»СЊРєРѕ РґР»СЏ РєРѕРјРїРёР»СЏС†РёРё.
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\util\BackHandler.ios.kt
+SIZE: 0.3 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.runtime.Composable
+
+@Composable
+actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {
+    // РќР° iOS СЃРёСЃС‚РµРјРЅРѕРіРѕ back-Р¶РµСЃС‚Р° РЅРµС‚, РЅР°РІРёРіР°С†РёСЏ С‡РµСЂРµР· UI-РєРЅРѕРїРєРё.
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\util\ContextMenu.ios.kt
+SIZE: 2 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+actual fun PlatformContextMenu(
+    itemsProvider: () -> List<ContextMenuItem>,
+    modifier: Modifier,
+    content: @Composable () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var items by remember { mutableStateOf<List<ContextMenuItem>>(emptyList()) }
+
+    Box(
+        modifier = modifier.combinedClickable(
+            onClick = {},
+            onLongClick = {
+                items = itemsProvider()
+                if (items.isNotEmpty()) expanded = true
+            },
+        )
+    ) {
+        content()
+        if (expanded) {
+            DropdownMenu(expanded = true, onDismissRequest = { expanded = false }) {
+                items.forEach { item ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                item.label,
+                                color = if (item.isDestructive) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.onSurface,
+                            )
+                        },
+                        leadingIcon = item.icon?.let {
+                            { Icon(it, contentDescription = null) }
+                        },
+                        onClick = {
+                            expanded = false
+                            item.onClick()
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\util\FileDrop.ios.kt
+SIZE: 0.4 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+
+@Composable
+actual fun Modifier.fileDropTarget(
+    enabled: Boolean,
+    onDragStateChange: (Boolean) -> Unit,
+    onFilesDropped: (List<DroppedFile>) -> Unit,
+): Modifier = this // РЅР° iOS drag&drop С„Р°Р№Р»РѕРІ РЅРµ РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\util\FilePicker.ios.kt
+SIZE: 3.9 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import kotlinx.cinterop.BetaInteropApi
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.reinterpret
+import platform.Foundation.NSData
+import platform.Foundation.NSURL
+import platform.Foundation.dataWithContentsOfURL
+import platform.UIKit.UIApplication
+import platform.UIKit.UIDocumentPickerDelegateProtocol
+import platform.UIKit.UIDocumentPickerViewController
+import platform.UIKit.UIModalPresentationFormSheet
+import platform.UniformTypeIdentifiers.UTType
+import platform.UniformTypeIdentifiers.UTTypeData
+import platform.UniformTypeIdentifiers.UTTypeImage
+import platform.UniformTypeIdentifiers.UTTypeMovie
+import platform.darwin.NSObject
+
+@OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
+private class IosFilePickerDelegate(
+    private val onPicked: (PickedFile) -> Unit
+) : NSObject(), UIDocumentPickerDelegateProtocol {
+
+    override fun documentPicker(
+        controller: UIDocumentPickerViewController,
+        didPickDocumentsAtURLs: List<*>
+    ) {
+        val url = didPickDocumentsAtURLs.firstOrNull() as? NSURL
+        if (url == null) { cleanup(); return }
+        val accessed = url.startAccessingSecurityScopedResource()
+        try {
+            val data: NSData? = NSData.dataWithContentsOfURL(url)
+            val name = url.lastPathComponent ?: "file"
+            val mime = guessMime(name)
+            if (data == null) {
+                onPicked(PickedFile(name, mime, ByteArray(0)))
+                return
+            }
+            val length = data.length.toInt()
+            val out = ByteArray(length)
+            val raw = data.bytes
+            if (raw != null && length > 0) {
+                val bytePtr = raw.reinterpret<ByteVar>()
+                for (i in 0 until length) out[i] = bytePtr[i]
+            }
+            onPicked(PickedFile(name, mime, out))
+        } finally {
+            if (accessed) url.stopAccessingSecurityScopedResource()
+            cleanup()
+        }
+    }
+
+    override fun documentPickerWasCancelled(controller: UIDocumentPickerViewController) {
+        cleanup()
+    }
+
+    private fun cleanup() {
+        currentDelegate = null
+    }
+
+    companion object {
+        var currentDelegate: IosFilePickerDelegate? = null
+    }
+}
+
+private fun guessMime(name: String): String {
+    val ext = name.substringAfterLast('.', "").lowercase()
+    return when (ext) {
+        "jpg", "jpeg" -> "image/jpeg"
+        "png" -> "image/png"
+        "gif" -> "image/gif"
+        "webp" -> "image/webp"
+        "mp4" -> "video/mp4"
+        "mov" -> "video/quicktime"
+        "pdf" -> "application/pdf"
+        "txt" -> "text/plain"
+        else -> "application/octet-stream"
+    }
+}
+
+@Composable
+actual fun rememberFilePicker(
+    onPicked: (PickedFile) -> Unit,
+): FilePickerLauncher = remember {
+    object : FilePickerLauncher {
+        override fun launch(mimeFilter: String) {
+            val types: List<UTType> = when {
+                mimeFilter.startsWith("image/") -> listOf(UTTypeImage)
+                mimeFilter.startsWith("video/") -> listOf(UTTypeMovie)
+                else -> listOf(UTTypeData)
+            }
+            val picker = UIDocumentPickerViewController(forOpeningContentTypes = types)
+            val delegate = IosFilePickerDelegate(onPicked)
+            IosFilePickerDelegate.currentDelegate = delegate
+            picker.delegate = delegate
+            picker.modalPresentationStyle = UIModalPresentationFormSheet
+
+            val root = UIApplication.sharedApplication.keyWindow?.rootViewController
+            var top = root
+            while (top?.presentedViewController != null) top = top.presentedViewController
+            top?.presentViewController(picker, animated = true, completion = null)
+        }
+    }
+}
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\util\MouseDragScroll.ios.kt
+SIZE: 0.3 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.ui.Modifier
+
+actual fun Modifier.mouseScrollGestures(
+    listState: LazyListState,
+    selectionCallbacks: MouseSelectionCallbacks?,
+): Modifier = this // РјРѕР±РёР»СЊРЅС‹Р№ вЂ” РѕР±С‹С‡РЅС‹Р№ touch-СЃРєСЂРѕР»Р»
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\util\PointerEvents.ios.kt
+SIZE: 0.1 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.ui.Modifier
+
+actual fun Modifier.onRightClick(onClick: () -> Unit): Modifier = this
+
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\composeApp\src\iosMain\kotlin\org\messenger\app\util\Scrollbar.ios.kt
+SIZE: 0.4 KB
+----------------------------------------------------------------------
+package org.messenger.app.util
+
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+
+@Composable
+actual fun PlatformVerticalScrollbar(
+    state: LazyListState,
+    modifier: Modifier,
+    reverseLayout: Boolean
+) {
+    // РќР° iOS СЃРёСЃС‚РµРјРЅС‹Р№ СЃРєСЂРѕР»Р»Р±Р°СЂ РІСЃС‚СЂРѕРµРЅ РІ LazyColumn вЂ” РЅРёС‡РµРіРѕ РЅРµ СЂРµРЅРґРµСЂРёРј.
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\AppPlatform.jvm.kt
 SIZE: 0.9 KB
 ----------------------------------------------------------------------
@@ -8182,17 +8765,14 @@ actual fun observeDeepLinks(): Flow<Pair<String, String>>? = null
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\DesktopLifecycle.kt
-SIZE: 2.5 KB
+SIZE: 2.6 KB
 ----------------------------------------------------------------------
 package org.messenger.app
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import org.messenger.app.notifications.DesktopNotificationManager
 import org.messenger.app.shared.di.AppModule
 
@@ -8200,7 +8780,6 @@ class DesktopLifecycle(
     @Volatile private var appModule: AppModule
 ) {
     private val internalScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private var disconnectJob: Job? = null
     private var wsScope: CoroutineScope? = null
 
     @Volatile
@@ -8209,26 +8788,24 @@ class DesktopLifecycle(
     fun onAppStart(parentScope: CoroutineScope) {
         startWs(parentScope)
         startNotificationManager()
+        ChatListResyncBus.requestResync()
     }
 
     fun onWindowRestored(parentScope: CoroutineScope) {
-        disconnectJob?.cancel()
-        disconnectJob = null
+        // РћРєРЅРѕ РІРµСЂРЅСѓР»Рё: WS СѓР¶Рµ СЂР°Р±РѕС‚Р°РµС‚; СЃС‚СЂР°С…СѓРµРјСЃСЏ РЅР° СЃР»СѓС‡Р°Р№ РµСЃР»Рё РїРѕ СЃРµС‚Рё СЂРІР°Р»РѕСЃСЊ,
+        // Рё РїСЂРѕСЃРёРј СЃРїРёСЃРѕРє С‡Р°С‚РѕРІ СЃРґРµР»Р°С‚СЊ resync (no-op РµСЃР»Рё cooldown РµС‰С‘ Р°РєС‚РёРІРµРЅ).
         if (wsScope == null) {
             startWs(parentScope)
         }
+        ChatListResyncBus.requestResync()
     }
 
     fun onWindowMinimized() {
-        disconnectJob?.cancel()
-        disconnectJob = internalScope.launch {
-            delay(30_000)
-            stopWs()
-        }
+        // РЎРІРѕСЂР°С‡РёРІР°РЅРёРµ Р±РѕР»СЊС€Рµ РЅРµ РѕС‚РєР»СЋС‡Р°РµС‚ WS.
+        // РћРїС†РёРѕРЅР°Р»СЊРЅРѕ РІ Р±СѓРґСѓС‰РµРј: РїРѕСЃР»Р°С‚СЊ presence=away.
     }
 
     fun onAppStop() {
-        disconnectJob?.cancel()
         stopWs()
         internalScope.cancel()
     }
@@ -10454,6 +11031,86 @@ SIZE: 13 KB
 }
 
 ----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\iosApp\iosApp\AppDelegate.swift
+SIZE: 2.8 KB
+----------------------------------------------------------------------
+import UIKit
+import UserNotifications
+import ComposeApp
+
+final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        requestNotificationPermission(application: application)
+
+        // Р•СЃР»Рё РїСЂРёР»РѕР¶РµРЅРёРµ Р·Р°РїСѓС‰РµРЅРѕ С‚Р°РїРѕРј РїРѕ СѓРІРµРґРѕРјР»РµРЅРёСЋ
+        if let notif = launchOptions?[.remoteNotification] as? [AnyHashable: Any] {
+            handleNotificationPayload(notif)
+        }
+        return true
+    }
+
+    private func requestNotificationPermission(application: UIApplication) {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+            guard granted else { return }
+            DispatchQueue.main.async {
+                application.registerForRemoteNotifications()
+            }
+        }
+    }
+
+    // APNS С‚РѕРєРµРЅ РїРѕР»СѓС‡РµРЅ
+    func application(
+        _ application: UIApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        let tokenHex = deviceToken.map { String(format: "%02x", $0) }.joined()
+        IosPushBridge.shared.onApnsToken(tokenHex: tokenHex)
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        print("APNS register failed: \(error)")
+    }
+
+    // Foreground: РїРѕРєР°Р·С‹РІР°С‚СЊ Р±Р°РЅРЅРµСЂ
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound, .badge])
+    }
+
+    // РўР°Рї РїРѕ СѓРІРµРґРѕРјР»РµРЅРёСЋ
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        handleNotificationPayload(response.notification.request.content.userInfo)
+        completionHandler()
+    }
+
+    private func handleNotificationPayload(_ userInfo: [AnyHashable: Any]) {
+        // РЎРµСЂРІРµСЂ С€Р»С‘С‚ chat_id Рё chat_name РєР°Рє СЃС‚СЂРѕРєРё РІ data-payload
+        let chatId = (userInfo["chat_id"] as? String)
+            ?? (userInfo["chatId"] as? String)
+        let chatName = (userInfo["chat_name"] as? String)
+            ?? (userInfo["chatName"] as? String)
+
+        guard let id = chatId else { return }
+        IosPushBridge.shared.onOpenChatString(chatId: id, chatName: chatName)
+    }
+}
+
+----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\iosApp\iosApp\Assets.xcassets\AccentColor.colorset\Contents.json
 SIZE: 0.1 KB
 ----------------------------------------------------------------------
@@ -10525,46 +11182,64 @@ SIZE: 0.1 KB
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\iosApp\iosApp\ContentView.swift
-SIZE: 0.9 KB
+SIZE: 0.4 KB
 ----------------------------------------------------------------------
 import SwiftUI
-import Shared
+import UIKit
+import ComposeApp
 
 struct ContentView: View {
-    @State private var showContent = false
     var body: some View {
-        VStack {
-            Button("Click me!") {
-                withAnimation {
-                    showContent = !showContent
-                }
-            }
-
-            if showContent {
-                VStack(spacing: 16) {
-                    Image(systemName: "swift")
-                        .font(.system(size: 200))
-                        .foregroundColor(.accentColor)
-                    Text("SwiftUI: \(Greeting().greet())")
-                }
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding()
+        ComposeView()
+            .ignoresSafeArea(.all)
     }
 }
 
-struct ContentView_Previews: PreviewProvider {
-    static var previews: some View {
-        ContentView()
+private struct ComposeView: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> UIViewController {
+        MainViewControllerKt.MainViewController()
     }
+    func updateUIViewController(_ vc: UIViewController, context: Context) {}
 }
 
+----------------------------------------------------------------------
+FILE: D:\messenger_proj\source\mobile\iosApp\iosApp\GoogleService-Info.plist
+SIZE: 0.9 KB
+----------------------------------------------------------------------
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>API_KEY</key>
+	<string>AIzaSyBeQe_B3PaEgOu93qZlGl_FQVNCKIsCf7g</string>
+	<key>GCM_SENDER_ID</key>
+	<string>902433603504</string>
+	<key>PLIST_VERSION</key>
+	<string>1</string>
+	<key>BUNDLE_ID</key>
+	<string>org.messenger.app</string>
+	<key>PROJECT_ID</key>
+	<string>oreshnik-f1d0c</string>
+	<key>STORAGE_BUCKET</key>
+	<string>oreshnik-f1d0c.firebasestorage.app</string>
+	<key>IS_ADS_ENABLED</key>
+	<false></false>
+	<key>IS_ANALYTICS_ENABLED</key>
+	<false></false>
+	<key>IS_APPINVITE_ENABLED</key>
+	<true></true>
+	<key>IS_GCM_ENABLED</key>
+	<true></true>
+	<key>IS_SIGNIN_ENABLED</key>
+	<true></true>
+	<key>GOOGLE_APP_ID</key>
+	<string>1:902433603504:ios:215642d23160c4d0032075</string>
+</dict>
+</plist>
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\iosApp\iosApp\Info.plist
-SIZE: 0.2 KB
+SIZE: 0.7 KB
 ----------------------------------------------------------------------
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -10572,21 +11247,39 @@ SIZE: 0.2 KB
 <dict>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<key>UIBackgroundModes</key>
+    <array>
+        <string>remote-notification</string>
+    </array>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>РќСѓР¶РЅРѕ РґР»СЏ РѕС‚РїСЂР°РІРєРё С„РѕС‚Рѕ РІ С‡Р°С‚</string>
+    <key>NSCameraUsageDescription</key>
+    <string>РќСѓР¶РЅРѕ РґР»СЏ СЃСЉС‘РјРєРё С„РѕС‚Рѕ РІ С‡Р°С‚</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
 </dict>
 </plist>
 
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\iosApp\iosApp\iOSApp.swift
-SIZE: 0.1 KB
+SIZE: 0.3 KB
 ----------------------------------------------------------------------
 import SwiftUI
+import ComposeApp
+import UserNotifications
 
 @main
 struct iOSApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .ignoresSafeArea(.keyboard)
         }
     }
 }
@@ -12134,7 +12827,7 @@ fun createHttpClient(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\remote\WsService.kt
-SIZE: 6.2 KB
+SIZE: 6.7 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.remote
 
@@ -12167,6 +12860,10 @@ class WsService(
     val events: SharedFlow<WsEvent> = _events.asSharedFlow()
 
     private val _connected = MutableStateFlow(false)
+    enum class WsConnectionStatus { CONNECTED, CONNECTING, DISCONNECTED }
+
+    private val _status = MutableStateFlow(WsConnectionStatus.DISCONNECTED)
+    val status: StateFlow<WsConnectionStatus> = _status.asStateFlow()
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
     private var job: Job? = null
@@ -12184,6 +12881,7 @@ class WsService(
         job = scope.launch {
             while (isActive) {
                 try {
+                    _status.value = WsConnectionStatus.CONNECTING
                     openSession()
                     reconnectAttempt = 0
                 } catch (e: CancellationException) {
@@ -12193,6 +12891,7 @@ class WsService(
                 }
                 val delayMs = calculateReconnectDelay()
                 reconnectAttempt++
+                _status.value = WsConnectionStatus.CONNECTING
                 delay(delayMs)
             }
         }
@@ -12203,6 +12902,7 @@ class WsService(
         job = null
         reconnectAttempt = 0
         _connected.value = false
+        _status.value = WsConnectionStatus.DISCONNECTED
     }
 
     private fun calculateReconnectDelay(): Long {
@@ -12269,6 +12969,7 @@ class WsService(
         try {
             client.webSocket(urlString) {
                 _connected.value = true
+                _status.value = WsConnectionStatus.CONNECTED
                 reconnectAttempt = 0
 
                 val pingJob = launch {
@@ -12299,6 +13000,7 @@ class WsService(
                 } finally {
                     pingJob.cancel()
                     _connected.value = false
+                    _status.value = WsConnectionStatus.CONNECTING
                 }
             }
         } catch (e: Exception) {
@@ -13020,7 +13722,7 @@ class AuthViewModel(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\chat\ChatViewModel.kt
-SIZE: 21.7 KB
+SIZE: 24.1 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.ui.chat
 
@@ -13090,6 +13792,8 @@ class ChatViewModel(
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     private var loadRetryCount = 0
+    private var lastWsResyncMs: Long = 0L
+    private var wsWasConnected: Boolean = false
     private val maxLoadRetries = 3
     private var localIdCounter = 0L
 
@@ -13097,6 +13801,7 @@ class ChatViewModel(
         loadChatInfo()
         loadMessages()
         observeWs()
+        observeWsReconnect()
     }
 
     fun loadChatInfo() {
@@ -13595,6 +14300,57 @@ class ChatViewModel(
                 }
             }
         } catch (_: Exception) {}
+    }
+
+    private fun observeWsReconnect() {
+        scope.launch {
+            wsService.connected.collect { connected ->
+                if (connected) {
+                    if (wsWasConnected) {
+                        val now = nowMsSafe()
+                        if (now - lastWsResyncMs >= 10_000L && _state.value.messages.isNotEmpty()) {
+                            lastWsResyncMs = now
+                            resyncRecentMessages()
+                        }
+                    }
+                    wsWasConnected = true
+                }
+            }
+        }
+    }
+
+    private fun nowMsSafe(): Long = try {
+        kotlinx.datetime.Clock.System.now().toEpochMilliseconds()
+    } catch (_: Throwable) { 0L }
+
+    private fun resyncRecentMessages() {
+        scope.launch {
+            try {
+                // page.messages РїСЂРёС…РѕРґРёС‚ РІ "newest-first" РІРёРґРµ (РєР°Рє loadMessages РµРіРѕ РїРѕР»СѓС‡Р°РµС‚).
+                val page = chatRepository.getMessages(chatId, before = null, limit = 50)
+                val freshDesc = page.messages.reversed()
+                // freshDesc С‚РµРїРµСЂСЊ newest-first вЂ” СЃРѕРІРїР°РґР°РµС‚ СЃ РїРѕСЂСЏРґРєРѕРј РІ state.messages
+                _state.update { st ->
+                    if (st.messages.isEmpty()) return@update st
+                    val existingIds = st.messages.map { it.id }.toHashSet()
+                    val newOnes = freshDesc.filterNot { existingIds.contains(it.id) }
+                    if (newOnes.isEmpty()) {
+                        st.copy(
+                            readByOthersUpTo = page.readByOthersUpTo ?: st.readByOthersUpTo
+                        )
+                    } else {
+                        // РњРµСЂРґР¶РёРј: РЅРѕРІС‹Рµ СЃРІРµСЂС…Сѓ, РїРѕС‚РѕРј СЃСѓС‰РµСЃС‚РІСѓСЋС‰РёРµ, СѓРґР°Р»СЏРµРј РґСѓР±Р»Рё РїРѕ id (РЅР° РІСЃСЏРєРёР№)
+                        val merged = (newOnes + st.messages).distinctBy { it.id }
+                        st.copy(
+                            messages = merged,
+                            readByOthersUpTo = page.readByOthersUpTo ?: st.readByOthersUpTo,
+                        )
+                    }
+                }
+                // РћР±РЅРѕРІРёРј pinned/peer info РЅР° РІСЃСЏРєРёР№ СЃР»СѓС‡Р°Р№
+                loadChatInfo()
+            } catch (_: Exception) {}
+        }
     }
 }
 
@@ -14764,6 +15520,6 @@ SIZE: 0.2 KB
 }
 
 ======================================================================
-Total files dumped: 175
+Total files dumped: 196
 ======================================================================
 

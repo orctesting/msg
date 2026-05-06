@@ -8,6 +8,7 @@ venv/
 .env
 .ini
 duckdns.ini
+.plist
 
 # IDE
 .idea/

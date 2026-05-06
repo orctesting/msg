@@ -9908,7 +9908,7 @@ FILE: mobile-dump.txt
 ================================================================================
 ======================================================================
 MOBILE PROJECT DUMP
-Generated: 2026-05-06 00:00:36
+Generated: 2026-05-06 22:50:42
 Root: D:\messenger_proj\source\mobile
 ======================================================================
 
@@ -14710,7 +14710,7 @@ private fun androidx.compose.ui.graphics.Color.takeOrDefault(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\commonMain\kotlin\org\messenger\app\ui\chatlist\ChatListScreen.kt
-SIZE: 10.8 KB
+SIZE: 12 KB
 ----------------------------------------------------------------------
 package org.messenger.app.ui.chatlist
 
@@ -14735,6 +14735,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.Color
+import org.messenger.app.shared.data.remote.WsService
 import org.messenger.app.shared.data.model.ChatDto
 import org.messenger.app.shared.di.AppModule
 import org.messenger.app.shared.ui.chatlist.ChatListViewModel
@@ -14775,7 +14779,17 @@ fun ChatListScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Р§Р°С‚С‹") },
+                title = {
+                    androidx.compose.foundation.layout.Row(
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        Text("Р§Р°С‚С‹")
+                        androidx.compose.foundation.layout.Spacer(
+                            modifier = androidx.compose.ui.Modifier.width(8.dp)
+                        )
+                        ConnectionDot(wsService = appModule.wsService)
+                    }
+                },
                 actions = {
                     IconButton(onClick = onOpenProfile) {
                         Icon(Icons.Default.AccountCircle, contentDescription = "РџСЂРѕС„РёР»СЊ")
@@ -14980,6 +14994,21 @@ private fun ChatItem(
         }
     )
     HorizontalDivider()
+}
+
+@Composable
+private fun ConnectionDot(wsService: WsService) {
+    val status by wsService.status.collectAsState()
+    val color = when (status) {
+        WsService.WsConnectionStatus.CONNECTED -> Color(0xFF2ECC71)
+        WsService.WsConnectionStatus.CONNECTING -> Color(0xFFF1C40F)
+        WsService.WsConnectionStatus.DISCONNECTED -> Color(0xFFE74C3C)
+    }
+    Box(
+        modifier = Modifier
+            .size(10.dp)
+            .background(color = color, shape = CircleShape)
+    )
 }
 
 ----------------------------------------------------------------------
@@ -18090,17 +18119,14 @@ actual fun observeDeepLinks(): Flow<Pair<String, String>>? = null
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\composeApp\src\jvmMain\kotlin\org\messenger\app\DesktopLifecycle.kt
-SIZE: 2.5 KB
+SIZE: 2.6 KB
 ----------------------------------------------------------------------
 package org.messenger.app
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import org.messenger.app.notifications.DesktopNotificationManager
 import org.messenger.app.shared.di.AppModule
 
@@ -18108,7 +18134,6 @@ class DesktopLifecycle(
     @Volatile private var appModule: AppModule
 ) {
     private val internalScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private var disconnectJob: Job? = null
     private var wsScope: CoroutineScope? = null
 
     @Volatile
@@ -18117,26 +18142,24 @@ class DesktopLifecycle(
     fun onAppStart(parentScope: CoroutineScope) {
         startWs(parentScope)
         startNotificationManager()
+        ChatListResyncBus.requestResync()
     }
 
     fun onWindowRestored(parentScope: CoroutineScope) {
-        disconnectJob?.cancel()
-        disconnectJob = null
+        // РћРєРЅРѕ РІРµСЂРЅСѓР»Рё: WS СѓР¶Рµ СЂР°Р±РѕС‚Р°РµС‚; СЃС‚СЂР°С…СѓРµРјСЃСЏ РЅР° СЃР»СѓС‡Р°Р№ РµСЃР»Рё РїРѕ СЃРµС‚Рё СЂРІР°Р»РѕСЃСЊ,
+        // Рё РїСЂРѕСЃРёРј СЃРїРёСЃРѕРє С‡Р°С‚РѕРІ СЃРґРµР»Р°С‚СЊ resync (no-op РµСЃР»Рё cooldown РµС‰С‘ Р°РєС‚РёРІРµРЅ).
         if (wsScope == null) {
             startWs(parentScope)
         }
+        ChatListResyncBus.requestResync()
     }
 
     fun onWindowMinimized() {
-        disconnectJob?.cancel()
-        disconnectJob = internalScope.launch {
-            delay(30_000)
-            stopWs()
-        }
+        // РЎРІРѕСЂР°С‡РёРІР°РЅРёРµ Р±РѕР»СЊС€Рµ РЅРµ РѕС‚РєР»СЋС‡Р°РµС‚ WS.
+        // РћРїС†РёРѕРЅР°Р»СЊРЅРѕ РІ Р±СѓРґСѓС‰РµРј: РїРѕСЃР»Р°С‚СЊ presence=away.
     }
 
     fun onAppStop() {
-        disconnectJob?.cancel()
         stopWs()
         internalScope.cancel()
     }
@@ -22042,7 +22065,7 @@ fun createHttpClient(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\data\remote\WsService.kt
-SIZE: 6.2 KB
+SIZE: 6.7 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.data.remote
 
@@ -22075,6 +22098,10 @@ class WsService(
     val events: SharedFlow<WsEvent> = _events.asSharedFlow()
 
     private val _connected = MutableStateFlow(false)
+    enum class WsConnectionStatus { CONNECTED, CONNECTING, DISCONNECTED }
+
+    private val _status = MutableStateFlow(WsConnectionStatus.DISCONNECTED)
+    val status: StateFlow<WsConnectionStatus> = _status.asStateFlow()
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
     private var job: Job? = null
@@ -22092,6 +22119,7 @@ class WsService(
         job = scope.launch {
             while (isActive) {
                 try {
+                    _status.value = WsConnectionStatus.CONNECTING
                     openSession()
                     reconnectAttempt = 0
                 } catch (e: CancellationException) {
@@ -22101,6 +22129,7 @@ class WsService(
                 }
                 val delayMs = calculateReconnectDelay()
                 reconnectAttempt++
+                _status.value = WsConnectionStatus.CONNECTING
                 delay(delayMs)
             }
         }
@@ -22111,6 +22140,7 @@ class WsService(
         job = null
         reconnectAttempt = 0
         _connected.value = false
+        _status.value = WsConnectionStatus.DISCONNECTED
     }
 
     private fun calculateReconnectDelay(): Long {
@@ -22177,6 +22207,7 @@ class WsService(
         try {
             client.webSocket(urlString) {
                 _connected.value = true
+                _status.value = WsConnectionStatus.CONNECTED
                 reconnectAttempt = 0
 
                 val pingJob = launch {
@@ -22207,6 +22238,7 @@ class WsService(
                 } finally {
                     pingJob.cancel()
                     _connected.value = false
+                    _status.value = WsConnectionStatus.CONNECTING
                 }
             }
         } catch (e: Exception) {
@@ -22928,7 +22960,7 @@ class AuthViewModel(
 
 ----------------------------------------------------------------------
 FILE: D:\messenger_proj\source\mobile\shared\src\commonMain\kotlin\org\messenger\app\shared\ui\chat\ChatViewModel.kt
-SIZE: 21.7 KB
+SIZE: 24.1 KB
 ----------------------------------------------------------------------
 package org.messenger.app.shared.ui.chat
 
@@ -22998,6 +23030,8 @@ class ChatViewModel(
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     private var loadRetryCount = 0
+    private var lastWsResyncMs: Long = 0L
+    private var wsWasConnected: Boolean = false
     private val maxLoadRetries = 3
     private var localIdCounter = 0L
 
@@ -23005,6 +23039,7 @@ class ChatViewModel(
         loadChatInfo()
         loadMessages()
         observeWs()
+        observeWsReconnect()
     }
 
     fun loadChatInfo() {
@@ -23503,6 +23538,57 @@ class ChatViewModel(
                 }
             }
         } catch (_: Exception) {}
+    }
+
+    private fun observeWsReconnect() {
+        scope.launch {
+            wsService.connected.collect { connected ->
+                if (connected) {
+                    if (wsWasConnected) {
+                        val now = nowMsSafe()
+                        if (now - lastWsResyncMs >= 10_000L && _state.value.messages.isNotEmpty()) {
+                            lastWsResyncMs = now
+                            resyncRecentMessages()
+                        }
+                    }
+                    wsWasConnected = true
+                }
+            }
+        }
+    }
+
+    private fun nowMsSafe(): Long = try {
+        kotlinx.datetime.Clock.System.now().toEpochMilliseconds()
+    } catch (_: Throwable) { 0L }
+
+    private fun resyncRecentMessages() {
+        scope.launch {
+            try {
+                // page.messages РїСЂРёС…РѕРґРёС‚ РІ "newest-first" РІРёРґРµ (РєР°Рє loadMessages РµРіРѕ РїРѕР»СѓС‡Р°РµС‚).
+                val page = chatRepository.getMessages(chatId, before = null, limit = 50)
+                val freshDesc = page.messages.reversed()
+                // freshDesc С‚РµРїРµСЂСЊ newest-first вЂ” СЃРѕРІРїР°РґР°РµС‚ СЃ РїРѕСЂСЏРґРєРѕРј РІ state.messages
+                _state.update { st ->
+                    if (st.messages.isEmpty()) return@update st
+                    val existingIds = st.messages.map { it.id }.toHashSet()
+                    val newOnes = freshDesc.filterNot { existingIds.contains(it.id) }
+                    if (newOnes.isEmpty()) {
+                        st.copy(
+                            readByOthersUpTo = page.readByOthersUpTo ?: st.readByOthersUpTo
+                        )
+                    } else {
+                        // РњРµСЂРґР¶РёРј: РЅРѕРІС‹Рµ СЃРІРµСЂС…Сѓ, РїРѕС‚РѕРј СЃСѓС‰РµСЃС‚РІСѓСЋС‰РёРµ, СѓРґР°Р»СЏРµРј РґСѓР±Р»Рё РїРѕ id (РЅР° РІСЃСЏРєРёР№)
+                        val merged = (newOnes + st.messages).distinctBy { it.id }
+                        st.copy(
+                            messages = merged,
+                            readByOthersUpTo = page.readByOthersUpTo ?: st.readByOthersUpTo,
+                        )
+                    }
+                }
+                // РћР±РЅРѕРІРёРј pinned/peer info РЅР° РІСЃСЏРєРёР№ СЃР»СѓС‡Р°Р№
+                loadChatInfo()
+            } catch (_: Exception) {}
+        }
     }
 }
 
