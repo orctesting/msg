@@ -1,0 +1,15 @@
+mkdir -p ./AllMedia
+
+find "$HOME" \
+  -path "$PWD/AllMedia" -prune -o \
+  -type f \( \
+    -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.heic" \
+    -o -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" \
+  \) -exec cp -n "{}" ./AllMedia/ \;
+
+
+find "$HOME" \
+  -type f \( \
+    -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.heic" -o \
+    -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" \
+  \) | wc -l
