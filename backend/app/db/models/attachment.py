@@ -63,5 +63,5 @@ class Attachment(Base):
     message = relationship(
         "Message",
         foreign_keys=[message_id],
-        back_populates="attachments",
+        viewonly=True,
     )

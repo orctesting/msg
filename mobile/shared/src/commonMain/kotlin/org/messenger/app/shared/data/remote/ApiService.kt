@@ -5,7 +5,11 @@ import io.ktor.client.call.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import io.ktor.client.plugins.auth.*
 import org.messenger.app.shared.data.model.*
+import org.messenger.app.shared.data.model.NotificationSettingsListDto
+import org.messenger.app.shared.data.model.NotificationSettingsItemDto
+import org.messenger.app.shared.data.model.UpdateNotificationSettingsBody
 
 class ApiException(val statusCode: Int, val errorBody: String) :
     Exception("HTTP $statusCode: $errorBody")
@@ -70,6 +74,7 @@ class ApiService(private val client: HttpClient) {
         idempotencyKey: String,
         replyToMessageId: String? = null,
         forwardedFromMessageId: String? = null,
+        attachmentIds: List<String> = emptyList(),
     ): MessageDto =
         requestAndParse {
             client.post("api/v1/chats/$chatId/messages") {
@@ -79,6 +84,7 @@ class ApiService(private val client: HttpClient) {
                         idempotencyKey = idempotencyKey,
                         replyToMessageId = replyToMessageId,
                         forwardedFromMessageId = forwardedFromMessageId,
+                        attachmentIds = attachmentIds,
                     )
                 )
             }
@@ -237,6 +243,97 @@ class ApiService(private val client: HttpClient) {
         requestAndParse {
             client.post("api/v1/admin/chats") {
                 setBody(CreateGroupChatBody(name = name, type = "group", memberIds = memberIds))
+            }
+        }
+
+    // ── Attachments ──
+    suspend fun presignUpload(body: PresignUploadBody): PresignUploadResponse =
+        requestAndParse {
+            client.post("api/v1/attachments/presign-upload") { setBody(body) }
+        }
+
+    suspend fun uploadToS3(url: String, data: ByteArray, contentType: String) {
+        val response = client.put(url) {
+            // Удаляем Authorization (presigned URL уже подписан)
+            headers.remove(HttpHeaders.Authorization)
+            // Помечаем как refresh-запрос, чтобы Auth-плагин не подставлял токен
+            attributes.put(io.ktor.client.plugins.auth.AuthCircuitBreaker, Unit)
+            contentType(ContentType.parse(contentType))
+            setBody(data)
+        }
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
+
+    suspend fun completeAttachment(attachmentId: String): AttachmentDto =
+        requestAndParse {
+            client.post("api/v1/attachments/$attachmentId/complete")
+        }
+
+    suspend fun getAttachment(attachmentId: String): AttachmentDto =
+        requestAndParse {
+            client.get("api/v1/attachments/$attachmentId")
+        }
+
+    suspend fun getAttachmentDownloadUrl(attachmentId: String): DownloadUrlResponse =
+        requestAndParse {
+            client.get("api/v1/attachments/$attachmentId/download-url")
+        }
+
+    suspend fun deleteAttachment(attachmentId: String) {
+        val response = client.delete("api/v1/attachments/$attachmentId")
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
+
+    // ── Profile (me) ──
+    suspend fun getMe(): MeDto =
+        requestAndParse { client.get("api/v1/me") }
+
+    suspend fun getPublicUser(userId: String): PublicUserDto =
+        requestAndParse { client.get("api/v1/users/$userId") }
+
+    suspend fun updateMe(body: UpdateMeBody): MeDto =
+        requestAndParse {
+            client.patch("api/v1/me") { setBody(body) }
+        }
+
+    suspend fun listMyAvatars(): AvatarListResponse =
+        requestAndParse { client.get("api/v1/me/avatars") }
+
+    suspend fun createAvatar(body: CreateAvatarBody): AvatarDto =
+        requestAndParse {
+            client.post("api/v1/me/avatars") { setBody(body) }
+        }
+
+    suspend fun setPrimaryAvatar(avatarId: String): MeDto =
+        requestAndParse {
+            client.post("api/v1/me/avatars/set-primary") {
+                setBody(SetPrimaryAvatarBody(avatarId))
+            }
+        }
+
+    suspend fun deleteAvatar(avatarId: String) {
+        val response = client.delete("api/v1/me/avatars/$avatarId")
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+    }
+
+    // ── Notification settings ──
+    suspend fun getNotificationSettings(): NotificationSettingsListDto =
+        requestAndParse { client.get("api/v1/me/notification-settings") }
+
+    suspend fun updateNotificationSettings(
+        platform: String,
+        mode: String,
+        chatIds: List<String>,
+    ): NotificationSettingsItemDto =
+        requestAndParse {
+            client.put("api/v1/me/notification-settings/$platform") {
+                setBody(UpdateNotificationSettingsBody(mode = mode, chatIds = chatIds))
             }
         }
 }

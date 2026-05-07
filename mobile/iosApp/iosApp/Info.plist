@@ -4,5 +4,18 @@
 <dict>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<key>UIBackgroundModes</key>
+    <array>
+        <string>remote-notification</string>
+    </array>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Нужно для отправки фото в чат</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Нужно для съёмки фото в чат</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
 </dict>
 </plist>

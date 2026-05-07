@@ -8,6 +8,12 @@ from sqlalchemy.orm import joinedload
 from app.db.models.push_log import PushLog
 from app.db.models.attachment import Attachment
 from app.services import s3_service
+from app.services.notifications_service import (
+    publish_dismiss_to_user,
+    publish_dismiss_to_chat,
+    enqueue_fcm_dismiss_for_user,
+    enqueue_fcm_dismiss_for_chat_recipients
+)
 import structlog
 
 from app.db.session import get_async_session
@@ -32,6 +38,10 @@ from app.api.schemas.message import (
 from app.api.schemas.base import OkResponse
 from app.services.ws_manager import ws_manager
 from app.utils.idempotency import acquire_message_idempotency
+from fastapi import APIRouter, Depends, Query, Request
+from app.utils.public_url import derive_s3_public_base
+from app.db.models.message_attachment_link import MessageAttachmentLink
+from app.services.attachment_cleanup import cleanup_attachments_for_messages, soft_delete_attachment_if_orphan
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/chats", tags=["messages"])
@@ -150,7 +160,7 @@ async def _load_message_full(session: AsyncSession, message_id: uuid.UUID) -> Me
     return result.scalars().unique().one_or_none()
     
     
-async def _build_attachments_out(message: Message) -> list:
+async def _build_attachments_out(message: Message, public_base: str | None = None) -> list:
     from app.api.schemas.attachment import AttachmentOut
     result = []
     atts = list(message.attachments or [])
@@ -160,32 +170,27 @@ async def _build_attachments_out(message: Message) -> list:
         if att.status in ("uploaded", "ready"):
             try:
                 download_url = await s3_service.generate_presigned_download_url(
-                    att.storage_key, filename=att.original_filename
+                    att.storage_key,
+                    filename=att.original_filename,
+                    public_base_override=public_base,
                 )
             except Exception as e:
                 logger.error("msg_att_presign_error", error=str(e))
             if att.thumbnail_key:
                 try:
                     thumb_url = await s3_service.generate_presigned_download_url(
-                        att.thumbnail_key
+                        att.thumbnail_key,
+                        public_base_override=public_base,
                     )
                 except Exception:
                     pass
         result.append(
             AttachmentOut(
-                id=att.id,
-                original_filename=att.original_filename,
-                mime_type=att.mime_type,
-                size_bytes=att.size_bytes,
-                file_kind=att.file_kind,
-                width=att.width,
-                height=att.height,
-                duration_ms=att.duration_ms,
-                has_thumbnail=att.thumbnail_key is not None,
-                status=att.status,
-                created_at=att.created_at,
-                download_url=download_url,
-                thumbnail_url=thumb_url,
+                id=att.id, original_filename=att.original_filename, mime_type=att.mime_type,
+                size_bytes=att.size_bytes, file_kind=att.file_kind, width=att.width,
+                height=att.height, duration_ms=att.duration_ms,
+                has_thumbnail=att.thumbnail_key is not None, status=att.status,
+                created_at=att.created_at, download_url=download_url, thumbnail_url=thumb_url,
             )
         )
     return result
@@ -194,6 +199,7 @@ async def _build_attachments_out(message: Message) -> list:
 @router.get("/{chat_id}/messages", response_model=MessageListOut)
 async def get_messages(
     chat_id: uuid.UUID,
+    request: Request,
     before: uuid.UUID | None = Query(None),
     limit: int = Query(50, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -245,7 +251,7 @@ async def get_messages(
 
     messages_out = []
     for m in messages:
-        atts_out = await _build_attachments_out(m)
+        atts_out = await _build_attachments_out(m, public_base=derive_s3_public_base(request))
         messages_out.append(_message_to_out(m, atts_out))
 
     return MessageListOut(
@@ -258,6 +264,7 @@ async def get_messages(
 @router.post("/{chat_id}/messages", response_model=MessageOut, status_code=201)
 async def send_message(
     chat_id: uuid.UUID,
+    request: Request,
     body: MessageSendIn,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
@@ -325,8 +332,14 @@ async def send_message(
         for a in atts:
             if a.uploader_user_id != current_user.id:
                 raise ForbiddenException("Attachment belongs to another user")
-            if a.message_id is not None:
-                raise ConflictException("Attachment already linked to another message")
+            # Проверяем нет ли уже привязки к другому сообщению через links
+            existing_link = await session.execute(
+                select(MessageAttachmentLink).where(
+                    MessageAttachmentLink.attachment_id == a.id
+                ).limit(1)
+            )
+            if existing_link.scalar_one_or_none() is not None:
+                raise ConflictException("Attachment already linked to a message")
             if a.status not in ("uploaded", "ready"):
                 raise ConflictException(f"Attachment {a.id} is not ready")
         validated_attachments = atts
@@ -350,11 +363,12 @@ async def send_message(
 
     need_thumb_ids: list[uuid.UUID] = []
     for a in validated_attachments:
-        a.message_id = message.id
+        # Создаём связь через links вместо прямой записи message_id
+        session.add(MessageAttachmentLink(message_id=message.id, attachment_id=a.id))
+        a.message_id = message.id  # primary owner для backward-compat
         a.chat_id = chat_id
         if a.status == "uploaded":
             a.status = "ready"
-        # Если превью ещё не было сгенерировано для image — перегенерим
         if a.file_kind == "image" and a.thumbnail_key is None:
             need_thumb_ids.append(a.id)
 
@@ -371,7 +385,7 @@ async def send_message(
     await _ensure_personal_chat_visible(session, chat_id)
 
     full = await _load_message_full(session, message.id)
-    atts_out = await _build_attachments_out(full)
+    atts_out = await _build_attachments_out(full, public_base=derive_s3_public_base(request))
     message_out = _message_to_out(full, atts_out)
 
     try:
@@ -382,6 +396,22 @@ async def send_message(
         )
     except Exception as e:
         logger.error("ws_publish_error", error=str(e))
+
+    # Уведомляем ДРУГИЕ устройства самого отправителя (через user-канал),
+    # чтобы у них обновился lastMessage в списке чатов без инкремента unread.
+    try:
+        await ws_manager.publish_to_user(
+            user_id=current_user.id,
+            event={
+                "type": "new_message_self",
+                "data": {
+                    "chat_id": str(chat_id),
+                    "message": message_out.model_dump(mode="json"),
+                },
+            },
+        )
+    except Exception as e:
+        logger.error("ws_publish_self_error", error=str(e))
 
     try:
         members_result = await session.execute(
@@ -403,6 +433,7 @@ async def send_message(
 @router.patch("/{chat_id}/messages/{message_id}", response_model=MessageOut)
 async def edit_message(
     chat_id: uuid.UUID,
+    request: Request,
     message_id: uuid.UUID,
     body: MessageEditIn,
     current_user: User = Depends(get_current_user),
@@ -411,7 +442,7 @@ async def edit_message(
     await _check_membership(session, chat_id, current_user.id)
 
     msg = await _load_message_full(session, message_id)
-    atts_out = await _build_attachments_out(msg)
+    atts_out = await _build_attachments_out(msg, public_base=derive_s3_public_base(request))
     out = _message_to_out(msg, atts_out)
     if msg is None or msg.chat_id != chat_id:
         raise NotFoundException("Message not found")
@@ -497,7 +528,10 @@ async def delete_message(
         chat.pinned_by_user_id = None
         chat.pinned_at = None
 
-    # Вручную удаляем зависимости, чтобы SQLAlchemy не пытался их "осиротить"
+    # Cleanup attachments через links + soft-delete осиротевших
+    await cleanup_attachments_for_messages(session, [msg.id])
+
+    # Вручную удаляем зависимости
     await session.execute(delete(MessageRead).where(MessageRead.message_id == msg.id))
     await session.execute(delete(PushLog).where(PushLog.message_id == msg.id))
     await session.flush()
@@ -518,6 +552,30 @@ async def delete_message(
         )
     except Exception as e:
         logger.error("ws_delete_publish_error", error=str(e))
+        
+    # Скрыть уведомления у всех получателей удалённого сообщения
+    try:
+        await publish_dismiss_to_chat(
+            chat_id=chat_id,
+            message_ids=[message_id],
+            reason="deleted",
+        )
+    except Exception as e:
+        logger.error("dismiss_chat_ws_error", error=str(e))
+
+    try:
+        members_res = await session.execute(
+            select(ChatMember.user_id).where(ChatMember.chat_id == chat_id)
+        )
+        recipient_ids = [row[0] for row in members_res.all()]
+        enqueue_fcm_dismiss_for_chat_recipients(
+            recipient_user_ids=recipient_ids,
+            chat_id=chat_id,
+            message_ids=[message_id],
+            reason="deleted",
+        )
+    except Exception as e:
+        logger.error("dismiss_fcm_chat_enqueue_error", error=str(e))
 
     return OkResponse(detail="Deleted")
 
@@ -575,7 +633,9 @@ async def bulk_delete_messages(
     if not deleted_ids:
         raise ForbiddenException("Nothing you can delete")
 
-    # Вручную удаляем зависимости перед удалением сообщений
+    # Cleanup attachments через links + soft-delete осиротевших
+    await cleanup_attachments_for_messages(session, deleted_ids)
+
     await session.execute(delete(MessageRead).where(MessageRead.message_id.in_(deleted_ids)))
     await session.execute(delete(PushLog).where(PushLog.message_id.in_(deleted_ids)))
     await session.flush()
@@ -596,6 +656,29 @@ async def bulk_delete_messages(
         )
     except Exception as e:
         logger.error("ws_bulk_delete_publish_error", error=str(e))
+        
+    try:
+        await publish_dismiss_to_chat(
+            chat_id=chat_id,
+            message_ids=deleted_ids,
+            reason="deleted",
+        )
+    except Exception as e:
+        logger.error("dismiss_chat_bulk_ws_error", error=str(e))
+
+    try:
+        members_res = await session.execute(
+            select(ChatMember.user_id).where(ChatMember.chat_id == chat_id)
+        )
+        recipient_ids = [row[0] for row in members_res.all()]
+        enqueue_fcm_dismiss_for_chat_recipients(
+            recipient_user_ids=recipient_ids,
+            chat_id=chat_id,
+            message_ids=deleted_ids,
+            reason="deleted",
+        )
+    except Exception as e:
+        logger.error("dismiss_fcm_chat_bulk_enqueue_error", error=str(e))
 
     return OkResponse(detail=f"Deleted {len(deleted_ids)}")
 
@@ -603,6 +686,7 @@ async def bulk_delete_messages(
 @router.post("/forward", response_model=MessageOut, status_code=201)
 async def forward_message(
     body: ForwardMessageIn,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -611,7 +695,7 @@ async def forward_message(
 
     src_res = await session.execute(
         select(Message)
-        .options(joinedload(Message.sender))
+        .options(joinedload(Message.sender), joinedload(Message.attachments))
         .where(Message.id == body.message_id, Message.chat_id == body.source_chat_id)
     )
     src = src_res.scalars().unique().one_or_none()
@@ -646,12 +730,18 @@ async def forward_message(
         forwarded_from_sender_name=src.sender.display_name if src.sender else "Admin",
     )
     session.add(new_msg)
+    await session.flush()
+
+    # Копируем links на те же attachments — без копирования файлов в S3
+    for att in (src.attachments or []):
+        session.add(MessageAttachmentLink(message_id=new_msg.id, attachment_id=att.id))
+
     await session.commit()
-    
+
     await _ensure_personal_chat_visible(session, body.target_chat_id)
 
     full = await _load_message_full(session, new_msg.id)
-    atts_out = await _build_attachments_out(full)
+    atts_out = await _build_attachments_out(full, public_base=derive_s3_public_base(request))
     out = _message_to_out(full, atts_out)
 
     try:
@@ -662,6 +752,20 @@ async def forward_message(
         )
     except Exception as e:
         logger.error("ws_forward_publish_error", error=str(e))
+
+    try:
+        await ws_manager.publish_to_user(
+            user_id=current_user.id,
+            event={
+                "type": "new_message_self",
+                "data": {
+                    "chat_id": str(body.target_chat_id),
+                    "message": out.model_dump(mode="json"),
+                },
+            },
+        )
+    except Exception as e:
+        logger.error("ws_forward_publish_self_error", error=str(e))
 
     try:
         members_result = await session.execute(
@@ -713,19 +817,21 @@ async def mark_messages_read(
     )
     unread_message_ids = [row[0] for row in unread_messages_result.all()]
 
-    if not unread_message_ids:
-        return
-
-    for msg_id in unread_message_ids:
-        session.add(
-            MessageRead(
-                message_id=msg_id,
-                user_id=current_user.id,
+    # Даже если новых "прочитанных" нет — всё равно нужно отослать read_self,
+    # чтобы другие устройства этого пользователя узнали о факте открытия чата
+    # (например, если они показывают unread > 0 из-за рассинхрона).
+    if unread_message_ids:
+        for msg_id in unread_message_ids:
+            session.add(
+                MessageRead(
+                    message_id=msg_id,
+                    user_id=current_user.id,
+                )
             )
-        )
+        await session.commit()
 
-    await session.commit()
-
+    # 1. Шлём message_read ВСЕМ участникам чата (включая отправителей —
+    # для отображения галочек), но НЕ другим устройствам читателя.
     try:
         await ws_manager.publish_event(
             chat_id=chat_id,
@@ -741,3 +847,41 @@ async def mark_messages_read(
         )
     except Exception as e:
         logger.error("ws_read_receipt_error", error=str(e))
+
+    # 2. Отдельно — в user-канал читателя: сообщает ВСЕМ его устройствам
+    # (включая то, с которого он не читал) о факте прочтения.
+    try:
+        await ws_manager.publish_to_user(
+            user_id=current_user.id,
+            event={
+                "type": "message_read_self",
+                "data": {
+                    "chat_id": str(chat_id),
+                    "last_read_message_id": str(body.last_read_message_id),
+                },
+            },
+        )
+    except Exception as e:
+        logger.error("ws_read_self_publish_error", error=str(e))
+
+    # 3. Скрыть уведомления у других устройств этого же пользователя (FCM dismiss)
+    if unread_message_ids:
+        try:
+            await publish_dismiss_to_user(
+                user_id=current_user.id,
+                chat_id=chat_id,
+                message_ids=unread_message_ids,
+                reason="read",
+            )
+        except Exception as e:
+            logger.error("dismiss_ws_publish_error", error=str(e))
+
+        try:
+            enqueue_fcm_dismiss_for_user(
+                user_id=current_user.id,
+                chat_id=chat_id,
+                message_ids=unread_message_ids,
+                reason="read",
+            )
+        except Exception as e:
+            logger.error("dismiss_fcm_enqueue_error", error=str(e))

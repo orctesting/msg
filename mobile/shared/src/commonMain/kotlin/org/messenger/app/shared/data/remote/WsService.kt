@@ -10,6 +10,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.withLock
 import kotlin.math.pow
+import org.messenger.app.shared.util.JwtUtil
 import org.messenger.app.shared.data.local.TokenStorage
 import org.messenger.app.shared.data.model.RefreshTokenBody
 import org.messenger.app.shared.data.model.RefreshTokenResponse
@@ -20,10 +21,18 @@ class WsService(
     private val tokenStorage: TokenStorage,
     private val wsBaseUrl: String
 ) {
-    private val _events = MutableSharedFlow<WsEvent>(extraBufferCapacity = 64)
+    private val _events = MutableSharedFlow<WsEvent>(
+        replay = 0,
+        extraBufferCapacity = 256,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
     val events: SharedFlow<WsEvent> = _events.asSharedFlow()
 
     private val _connected = MutableStateFlow(false)
+    enum class WsConnectionStatus { CONNECTED, CONNECTING, DISCONNECTED }
+
+    private val _status = MutableStateFlow(WsConnectionStatus.DISCONNECTED)
+    val status: StateFlow<WsConnectionStatus> = _status.asStateFlow()
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
     private var job: Job? = null
@@ -41,6 +50,7 @@ class WsService(
         job = scope.launch {
             while (isActive) {
                 try {
+                    _status.value = WsConnectionStatus.CONNECTING
                     openSession()
                     reconnectAttempt = 0
                 } catch (e: CancellationException) {
@@ -50,6 +60,7 @@ class WsService(
                 }
                 val delayMs = calculateReconnectDelay()
                 reconnectAttempt++
+                _status.value = WsConnectionStatus.CONNECTING
                 delay(delayMs)
             }
         }
@@ -60,6 +71,7 @@ class WsService(
         job = null
         reconnectAttempt = 0
         _connected.value = false
+        _status.value = WsConnectionStatus.DISCONNECTED
     }
 
     private fun calculateReconnectDelay(): Long {
@@ -74,28 +86,40 @@ class WsService(
      */
     private suspend fun getValidToken(): String? {
         val current = tokenStorage.getAccessToken()
-        if (current != null) return current
-        return tryRefreshToken()
+
+        if (current != null && !JwtUtil.isExpiredOrExpiringSoon(current, leewaySeconds = 60)) {
+            return current
+        }
+
+        return refreshAccessToken(forceNetwork = false)
     }
 
-    private suspend fun tryRefreshToken(): String? {
+    private suspend fun refreshAccessToken(forceNetwork: Boolean = false): String? {
         return refreshMutex.withLock {
-            // Если другой поток уже обновил токен — используем его
             val existing = tokenStorage.getAccessToken()
-            if (existing != null) return@withLock existing
+
+            if (
+                !forceNetwork &&
+                existing != null &&
+                !JwtUtil.isExpiredOrExpiringSoon(existing, leewaySeconds = 60)
+            ) {
+                return@withLock existing
+            }
 
             val refresh = tokenStorage.getRefreshToken() ?: return@withLock null
+
             try {
                 val response = client.post("api/v1/auth/refresh") {
+                    attributes.put(io.ktor.client.plugins.auth.AuthCircuitBreaker, Unit)
                     contentType(ContentType.Application.Json)
                     setBody(RefreshTokenBody(refresh))
                 }
+
                 if (response.status == HttpStatusCode.OK) {
                     val tokens: RefreshTokenResponse = response.body()
                     tokenStorage.saveTokens(tokens.accessToken, tokens.refreshToken)
                     tokens.accessToken
                 } else {
-                    tokenStorage.clear()
                     null
                 }
             } catch (_: Exception) {
@@ -114,6 +138,7 @@ class WsService(
         try {
             client.webSocket(urlString) {
                 _connected.value = true
+                _status.value = WsConnectionStatus.CONNECTED
                 reconnectAttempt = 0
 
                 val pingJob = launch {
@@ -144,16 +169,24 @@ class WsService(
                 } finally {
                     pingJob.cancel()
                     _connected.value = false
+                    _status.value = WsConnectionStatus.CONNECTING
                 }
             }
         } catch (e: Exception) {
             _connected.value = false
-            // If connection was rejected (likely 403 due to expired token),
-            // try refreshing so next attempt has a fresh token
+
             val message = e.message ?: ""
-            if (message.contains("403") || message.contains("401")) {
-                tryRefreshToken()
+
+            if (
+                message.contains("403") ||
+                message.contains("401") ||
+                message.contains("4001") ||
+                message.contains("Unauthorized", ignoreCase = true) ||
+                message.contains("Forbidden", ignoreCase = true)
+            ) {
+                refreshAccessToken(forceNetwork = true)
             }
+
             throw e
         }
     }

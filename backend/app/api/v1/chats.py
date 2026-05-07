@@ -182,16 +182,30 @@ async def get_chats(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
 ):
+    # Подзапрос: max(created_at) последнего сообщения по каждому чату
+    last_msg_subq = (
+        select(
+            Message.chat_id.label("chat_id"),
+            func.max(Message.created_at).label("last_at"),
+        )
+        .group_by(Message.chat_id)
+        .subquery()
+    )
+
     result = await session.execute(
-        select(Chat, ChatMember.is_visible)
+        select(Chat, ChatMember.is_visible, last_msg_subq.c.last_at)
         .join(ChatMember, ChatMember.chat_id == Chat.id)
+        .outerjoin(last_msg_subq, last_msg_subq.c.chat_id == Chat.id)
         .where(ChatMember.user_id == current_user.id)
-        .order_by(desc(Chat.created_at))
+        .order_by(
+            desc(func.coalesce(last_msg_subq.c.last_at, Chat.created_at)),
+            desc(Chat.created_at),
+        )
     )
     rows = result.all()
 
     response_items: list[ChatOut] = []
-    for chat, is_visible in rows:
+    for chat, is_visible, _last_at in rows:
         if chat.type == "personal" and not is_visible:
             continue
         response_items.append(await _build_chat_out(session, chat, current_user))

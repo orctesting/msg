@@ -1,3 +1,6 @@
 package org.messenger.app
 
-actual fun getPlatformName(): String = "ios"
+import platform.UIKit.UIDevice
+
+actual fun getPlatformName(): String =
+    UIDevice.currentDevice.systemName() + " " + UIDevice.currentDevice.systemVersion

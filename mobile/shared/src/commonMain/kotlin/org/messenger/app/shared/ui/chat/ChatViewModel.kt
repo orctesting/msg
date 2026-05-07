@@ -13,8 +13,20 @@ import org.messenger.app.shared.data.model.*
 import org.messenger.app.shared.data.remote.ApiException
 import org.messenger.app.shared.data.remote.WsService
 import org.messenger.app.shared.data.remote.appJson
+import org.messenger.app.shared.domain.repository.AttachmentsRepository
 import org.messenger.app.shared.domain.repository.ChatRepository
 import org.messenger.app.shared.domain.repository.ContactsRepository
+
+data class UploadingAttachment(
+    val localId: String,
+    val filename: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val isUploading: Boolean = true,
+    val error: String? = null,
+    val attachment: AttachmentDto? = null,
+    val previewBytes: ByteArray? = null,
+)
 
 data class ChatUiState(
     val chatId: String = "",
@@ -31,6 +43,7 @@ data class ChatUiState(
     val editingMessage: MessageDto? = null,
     val selectionMode: Boolean = false,
     val selectedIds: Set<String> = emptySet(),
+    val uploadingAttachments: List<UploadingAttachment> = emptyList(),
     val isLoading: Boolean = false,
     val isSending: Boolean = false,
     val hasMore: Boolean = true,
@@ -45,6 +58,7 @@ class ChatViewModel(
     private val currentUserId: String? = null,
     private val currentUserRole: String? = null,
     private val contactsRepository: ContactsRepository? = null,
+    private val attachmentsRepository: AttachmentsRepository? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -52,12 +66,16 @@ class ChatViewModel(
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     private var loadRetryCount = 0
+    private var lastWsResyncMs: Long = 0L
+    private var wsWasConnected: Boolean = false
     private val maxLoadRetries = 3
+    private var localIdCounter = 0L
 
     init {
         loadChatInfo()
         loadMessages()
         observeWs()
+        observeWsReconnect()
     }
 
     fun loadChatInfo() {
@@ -101,10 +119,7 @@ class ChatViewModel(
                     )
                 }
                 loadRetryCount = 0
-
-                page.messages.lastOrNull()?.let { msg ->
-                    try { chatRepository.markRead(chatId, msg.id) } catch (_: Exception) {}
-                }
+                // НЕ делаем авто-markRead здесь — UI сам решит.
             } catch (e: ApiException) {
                 if (e.statusCode == 401 || e.statusCode == 403) {
                     _state.update {
@@ -188,13 +203,86 @@ class ChatViewModel(
         return isOwn || isAdmin
     }
 
+    // ── Attachments upload ──
+
+    fun uploadAttachment(filename: String, mimeType: String, bytes: ByteArray) {
+        val repo = attachmentsRepository ?: run {
+            _state.update { it.copy(error = "Загрузка файлов недоступна") }
+            return
+        }
+        val localId = "local-${++localIdCounter}"
+        val previewBytes = if (mimeType.startsWith("image/", ignoreCase = true) && bytes.size <= 10 * 1024 * 1024) {
+            bytes
+        } else null
+
+        val placeholder = UploadingAttachment(
+            localId = localId,
+            filename = filename,
+            mimeType = mimeType,
+            sizeBytes = bytes.size.toLong(),
+            previewBytes = previewBytes,
+        )
+        _state.update { it.copy(uploadingAttachments = it.uploadingAttachments + placeholder) }
+
+        scope.launch {
+            try {
+                val att = repo.uploadFile(
+                    filename = filename,
+                    mimeType = mimeType,
+                    data = bytes,
+                    chatId = chatId,
+                )
+                _state.update { st ->
+                    st.copy(
+                        uploadingAttachments = st.uploadingAttachments.map {
+                            if (it.localId == localId)
+                                it.copy(isUploading = false, attachment = att)
+                            else it
+                        }
+                    )
+                }
+            } catch (e: Exception) {
+                _state.update { st ->
+                    st.copy(
+                        uploadingAttachments = st.uploadingAttachments.map {
+                            if (it.localId == localId)
+                                it.copy(isUploading = false, error = e.message ?: "Ошибка загрузки")
+                            else it
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    fun removeUploadingAttachment(localId: String) {
+        scope.launch {
+            val item = _state.value.uploadingAttachments.firstOrNull { it.localId == localId }
+            // Если успели загрузить — пытаемся удалить с сервера
+            item?.attachment?.let { att ->
+                try { attachmentsRepository?.delete(att.id) } catch (_: Exception) {}
+            }
+            _state.update { st ->
+                st.copy(uploadingAttachments = st.uploadingAttachments.filterNot { it.localId == localId })
+            }
+        }
+    }
+
     fun send() {
         val s = _state.value
         val text = s.draft.trim()
-        if (text.isBlank()) return
+        val readyAttachments = s.uploadingAttachments.mapNotNull { it.attachment }
+        val hasUploadingInProgress = s.uploadingAttachments.any { it.isUploading }
+
+        if (hasUploadingInProgress) {
+            _state.update { it.copy(error = "Дождитесь окончания загрузки файлов") }
+            return
+        }
+        if (text.isBlank() && readyAttachments.isEmpty()) return
 
         val editing = s.editingMessage
         if (editing != null) {
+            // edit не поддерживает вложения
             scope.launch {
                 _state.update { it.copy(isSending = true) }
                 try {
@@ -224,6 +312,7 @@ class ChatViewModel(
                     chatId = chatId,
                     content = text,
                     replyToMessageId = replyId,
+                    attachmentIds = readyAttachments.map { it.id },
                 )
                 val current = _state.value.messages
                 if (current.none { it.id == msg.id }) {
@@ -232,11 +321,19 @@ class ChatViewModel(
                             messages = listOf(msg) + it.messages,
                             draft = "",
                             replyTo = null,
+                            uploadingAttachments = emptyList(),
                             isSending = false,
                         )
                     }
                 } else {
-                    _state.update { it.copy(draft = "", replyTo = null, isSending = false) }
+                    _state.update {
+                        it.copy(
+                            draft = "",
+                            replyTo = null,
+                            uploadingAttachments = emptyList(),
+                            isSending = false,
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 _state.update {
@@ -333,7 +430,6 @@ class ChatViewModel(
         }
     }
 
-    // ── Peer contact actions ──
     fun dismissPeerContact() {
         val peerId = _state.value.peerUser?.id ?: return
         val repo = contactsRepository ?: return
@@ -353,6 +449,20 @@ class ChatViewModel(
         _state.update { it.copy(error = null) }
     }
 
+    /**
+     * Отмечает чат прочитанным до указанного сообщения (или до последнего,
+     * если id = null). Вызывается из UI только когда пользователь реально
+     * видит низ чата.
+     */
+    fun markReadExplicit(messageId: String? = null) {
+        scope.launch {
+            val targetId = messageId ?: _state.value.messages.firstOrNull()?.id ?: return@launch
+            try {
+                chatRepository.markRead(chatId, targetId)
+            } catch (_: Exception) {}
+        }
+    }
+
     private fun observeWs() {
         scope.launch {
             wsService.events.collect { event ->
@@ -363,6 +473,7 @@ class ChatViewModel(
                     "message_pinned" -> handlePinned(event.data)
                     "message_unpinned" -> handleUnpinned(event.data)
                     "message_read" -> handleRead(event.data)
+                    "attachment_ready" -> handleAttachmentReady(event.data)
                 }
             }
         }
@@ -375,7 +486,8 @@ class ChatViewModel(
             val current = _state.value.messages
             if (current.none { it.id == payload.message.id }) {
                 _state.update { it.copy(messages = listOf(payload.message) + it.messages) }
-                try { chatRepository.markRead(chatId, payload.message.id) } catch (_: Exception) {}
+                // НЕ делаем авто-markRead здесь — его делает UI-слой
+                // (ChatScreen) только когда пользователь реально у низа списка.
             }
         } catch (_: Exception) {}
     }
@@ -437,5 +549,81 @@ class ChatViewModel(
             if (payload.userId == currentUserId) return
             _state.update { it.copy(readByOthersUpTo = payload.lastReadMessageId) }
         } catch (_: Exception) {}
+    }
+
+    private fun handleAttachmentReady(data: kotlinx.serialization.json.JsonElement) {
+        try {
+            val payload = appJson.decodeFromJsonElement<WsAttachmentReady>(data)
+            if (payload.chatId != chatId) return
+            // Перезагрузим вложение, чтобы получить thumbnail_url
+            scope.launch {
+                val updated = try {
+                    attachmentsRepository?.getAttachment(payload.attachmentId)
+                } catch (_: Exception) { null } ?: return@launch
+
+                _state.update { st ->
+                    val newMessages = st.messages.map { msg ->
+                        if (msg.id != payload.messageId) msg
+                        else msg.copy(
+                            attachments = msg.attachments.map {
+                                if (it.id == updated.id) updated else it
+                            }
+                        )
+                    }
+                    st.copy(messages = newMessages)
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun observeWsReconnect() {
+        scope.launch {
+            wsService.connected.collect { connected ->
+                if (connected) {
+                    if (wsWasConnected) {
+                        val now = nowMsSafe()
+                        if (now - lastWsResyncMs >= 10_000L && _state.value.messages.isNotEmpty()) {
+                            lastWsResyncMs = now
+                            resyncRecentMessages()
+                        }
+                    }
+                    wsWasConnected = true
+                }
+            }
+        }
+    }
+
+    private fun nowMsSafe(): Long = try {
+        kotlinx.datetime.Clock.System.now().toEpochMilliseconds()
+    } catch (_: Throwable) { 0L }
+
+    private fun resyncRecentMessages() {
+        scope.launch {
+            try {
+                // page.messages приходит в "newest-first" виде (как loadMessages его получает).
+                val page = chatRepository.getMessages(chatId, before = null, limit = 50)
+                val freshDesc = page.messages.reversed()
+                // freshDesc теперь newest-first — совпадает с порядком в state.messages
+                _state.update { st ->
+                    if (st.messages.isEmpty()) return@update st
+                    val existingIds = st.messages.map { it.id }.toHashSet()
+                    val newOnes = freshDesc.filterNot { existingIds.contains(it.id) }
+                    if (newOnes.isEmpty()) {
+                        st.copy(
+                            readByOthersUpTo = page.readByOthersUpTo ?: st.readByOthersUpTo
+                        )
+                    } else {
+                        // Мерджим: новые сверху, потом существующие, удаляем дубли по id (на всякий)
+                        val merged = (newOnes + st.messages).distinctBy { it.id }
+                        st.copy(
+                            messages = merged,
+                            readByOthersUpTo = page.readByOthersUpTo ?: st.readByOthersUpTo,
+                        )
+                    }
+                }
+                // Обновим pinned/peer info на всякий случай
+                loadChatInfo()
+            } catch (_: Exception) {}
+        }
     }
 }

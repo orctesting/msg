@@ -30,7 +30,6 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
                     Log.d(TAG, "FCM token registered on backend")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to register FCM token", e)
-                    // Сохраняем для повторной попытки при следующем запуске
                     PendingTokenStore.savePendingToken(applicationContext, token)
                 }
             }
@@ -43,37 +42,94 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
         super.onMessageReceived(remoteMessage)
         Log.d(TAG, "FCM message received: ${remoteMessage.data}")
 
-        val chatId = remoteMessage.data["chat_id"] ?: return
-        val messageId = remoteMessage.data["message_id"] ?: return
-        val senderId = remoteMessage.data["sender_id"]
+        val data = remoteMessage.data
 
-        val title = remoteMessage.notification?.title
-            ?: remoteMessage.data["title"]
-            ?: "Новое сообщение"
-        val body = remoteMessage.notification?.body
-            ?: remoteMessage.data["body"]
-            ?: ""
+        val action = data["action"]
+        if (action == "dismiss") {
+            val chatId = data["chat_id"] ?: return
+            val ids = (data["message_ids"] ?: "")
+                .split(",")
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+            NotificationDismisser.dismiss(applicationContext, chatId, ids)
+            return
+        }
 
-        // Если приложение в foreground и этот чат открыт — не показываем
+        val chatId = data["chat_id"] ?: return
+        val messageId = data["message_id"] ?: return
+
+        val title = data["title"] ?: "Новое сообщение"
+        val body = data["body"] ?: ""
+
         if (AppLifecycleObserver.currentChatId == chatId) {
             return
         }
 
-        showNotification(chatId, messageId, title, body)
+        if (!shouldShowByLocalSettings(chatId)) {
+            return
+        }
+
+        // title — это название чата (для group) или имя отправителя (для personal).
+        // body — это либо "Имя: текст" (group) либо просто "текст" (personal).
+        // Для группировки разбиваем "Имя: текст" → senderName + line.
+        val (senderName, lineText) = parseSenderFromBody(body, fallbackTitle = title)
+
+        showOrUpdateGroupNotification(
+            chatId = chatId,
+            chatTitle = title,
+            messageId = messageId,
+            senderName = senderName,
+            lineText = lineText,
+            rawBody = body,
+        )
     }
 
-    private fun showNotification(
+    private fun parseSenderFromBody(body: String, fallbackTitle: String): Pair<String, String> {
+        // Если body имеет формат "Имя: текст" — разделяем.
+        val idx = body.indexOf(": ")
+        if (idx in 1..40) {
+            return body.substring(0, idx) to body.substring(idx + 2)
+        }
+        return fallbackTitle to body
+    }
+
+    private fun shouldShowByLocalSettings(chatId: String): Boolean {
+        val mode = NotificationSettingsCache.getMode(applicationContext)
+        return when (mode) {
+            "all" -> true
+            "none" -> false
+            "whitelist" -> NotificationSettingsCache.getWhitelist(applicationContext).contains(chatId)
+            else -> true
+        }
+    }
+
+    private fun showOrUpdateGroupNotification(
         chatId: String,
+        chatTitle: String,
         messageId: String,
-        title: String,
-        body: String
+        senderName: String,
+        lineText: String,
+        rawBody: String,
     ) {
+        // Сохраняем для группировки. senderName = отображаемое имя отправителя строки.
+        NotificationGroupStore.addMessage(
+            context = applicationContext,
+            chatId = chatId,
+            chatName = chatTitle,
+            entry = NotificationGroupStore.Entry(
+                messageId = messageId,
+                senderName = senderName,
+                text = lineText,
+                timestamp = System.currentTimeMillis(),
+            ),
+        )
+
+        val groupKey = GROUP_CHAT_PREFIX + chatId
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_CHAT_ID, chatId)
-            putExtra(EXTRA_CHAT_NAME, title)
+            putExtra(EXTRA_CHAT_NAME, chatTitle)
         }
-
         val pendingIntent = PendingIntent.getActivity(
             this,
             chatId.hashCode(),
@@ -81,19 +137,50 @@ class AppFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(this, MessengerApplication.CHANNEL_CHAT_MESSAGES)
+        // Одиночное уведомление: заголовок = chatTitle, контент = rawBody
+        val singleNotif = NotificationCompat.Builder(this, MessengerApplication.CHANNEL_CHAT_MESSAGES)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle(title)
-            .setContentText(body)
+            .setContentTitle(chatTitle)
+            .setContentText(rawBody)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
-            .setGroup(GROUP_CHAT_PREFIX + chatId)
+            .setGroup(groupKey)
+            .build()
+
+        // Summary: InboxStyle
+        val entries = NotificationGroupStore.getEntries(applicationContext, chatId)
+        val inboxStyle = NotificationCompat.InboxStyle()
+            .setBigContentTitle(chatTitle)
+        entries.takeLast(7).forEach { e ->
+            // Если sender совпадает с chatTitle (personal chat), показываем только text;
+            // иначе "sender: text".
+            val display = when {
+                e.text.isBlank() -> e.senderName
+                e.senderName == chatTitle -> e.text
+                else -> "${e.senderName}: ${e.text}"
+            }
+            inboxStyle.addLine(display)
+        }
+        val summaryText = if (entries.size > 1) "${entries.size} новых сообщений" else rawBody
+        inboxStyle.setSummaryText(summaryText)
+
+        val summaryNotif = NotificationCompat.Builder(this, MessengerApplication.CHANNEL_CHAT_MESSAGES)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentTitle(chatTitle)
+            .setContentText(summaryText)
+            .setStyle(inboxStyle)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .setGroup(groupKey)
+            .setGroupSummary(true)
             .build()
 
         try {
-            NotificationManagerCompat.from(this)
-                .notify(messageId.hashCode(), notification)
+            val nm = NotificationManagerCompat.from(this)
+            nm.notify(messageId.hashCode(), singleNotif)
+            nm.notify(NotificationDismisser.summaryIdFor(chatId), summaryNotif)
         } catch (e: SecurityException) {
             Log.w(TAG, "No notification permission", e)
         }

@@ -26,6 +26,10 @@ sealed class Screen {
     data object ChatList : Screen()
     data object Settings : Screen()
     data object Contacts : Screen()
+    data object Profile : Screen()
+    data object Avatars : Screen()
+    data object Notifications : Screen()
+    data class PeerProfile(val userId: String) : Screen()
     data class Chat(val chatId: String, val chatName: String) : Screen()
     data class ForwardPicker(
         val sourceChatId: String,
@@ -54,6 +58,8 @@ fun App(
             }
         )
     }
+
+    var forwardResultChatId by remember { mutableStateOf<String?>(null) }
 
     // Скоуп для пересылок (forward) — живёт на уровне App, не привязан к ChatScreen
     val forwardScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.Main) }
@@ -140,96 +146,20 @@ fun App(
                     }
                 }
 
-                is Screen.ChatList -> {
-                    // На списке чатов системная "назад" не перехватывается —
-                    // пусть Android сворачивает приложение как обычно
-                    ChatListScreen(
-                        appModule = currentAppModule,
-                        onChatClick = { chatId, chatName ->
-                            currentScreen = Screen.Chat(chatId, chatName)
-                        },
-                        onOpenSettings = { currentScreen = Screen.Settings }
-                    )
-                }
-
-                is Screen.Settings -> {
-                    // "Назад" из настроек → список чатов
-                    PlatformBackHandler(enabled = true) {
-                        currentScreen = Screen.ChatList
-                    }
-
-                    SettingsScreen(
-                        appModule = currentAppModule,
-                        onBack = { currentScreen = Screen.ChatList },
-                        onOpenContacts = { currentScreen = Screen.Contacts },
-                        onLogout = {
-                            currentAppModule.tokenStorage.clear()
-                            currentAppModule.wsService.disconnect()
-                            currentScreen = Screen.Auth
-                        }
-                    )
-                }
-
-                is Screen.Contacts -> {
-                    PlatformBackHandler(enabled = true) {
-                        currentScreen = Screen.Settings
-                    }
-                    ContactsScreen(
-                        appModule = currentAppModule,
-                        onBack = { currentScreen = Screen.Settings },
-                        onContactClick = { contact ->
-                            // Создать / открыть личный чат с контактом
-                            forwardScope.launch {
-                                try {
-                                    val chat = currentAppModule.chatRepository
-                                        .createPersonalChat(contactId = contact.id)
-                                    currentScreen = Screen.Chat(chat.id, chat.name ?: contact.displayName)
-                                } catch (_: Exception) {
-                                    // silently ignore; пользователь увидит через state ошибки если расширим
-                                }
-                            }
-                        }
-                    )
-                }
-
-                is Screen.Chat -> {
-                    updateCurrentChatId(screen.chatId)
-                    // BackHandler внутри самого ChatScreen уже обрабатывает:
-                    // - закрытие actions sheet
-                    // - выход из selection mode
-                    // - отмену edit / reply
-                    // - и в последнюю очередь — вызов onBack(), который здесь ведёт в ChatList
-                    ChatScreen(
-                        chatId = screen.chatId,
-                        chatName = screen.chatName,
-                        appModule = currentAppModule,
-                        onBack = {
-                            updateCurrentChatId(null)
-                            currentScreen = Screen.ChatList
-                        },
-                        onPickForwardTarget = { sourceChatId, messageIds ->
-                            currentScreen = Screen.ForwardPicker(
-                                sourceChatId = sourceChatId,
-                                sourceChatName = screen.chatName,
-                                messageIds = messageIds,
-                            )
-                        }
-                    )
-                }
-
                 is Screen.ForwardPicker -> {
-                    updateCurrentChatId(null)
-                    // BackHandler внутри ForwardTargetScreen сам обрабатывает диалог подтверждения
-                    // и отмену выбора, возвращаясь в исходный чат
+                    setActiveChatId(null)
                     ForwardTargetScreen(
                         appModule = currentAppModule,
                         sourceChatId = screen.sourceChatId,
                         messageIds = screen.messageIds,
                         onCancel = {
-                            currentScreen = Screen.Chat(screen.sourceChatId, screen.sourceChatName)
+                            currentScreen = if (isDesktop) {
+                                Screen.ChatList
+                            } else {
+                                Screen.Chat(screen.sourceChatId, screen.sourceChatName)
+                            }
                         },
                         onPicked = { targetChatId ->
-                            // Форвардим все выбранные сообщения по одному
                             forwardScope.launch {
                                 screen.messageIds.forEach { msgId ->
                                     try {
@@ -238,15 +168,47 @@ fun App(
                                             messageId = msgId,
                                             targetChatId = targetChatId,
                                         )
-                                    } catch (_: Exception) {
-                                        // ошибки форварда глотаем, пользователь увидит отсутствие сообщения
-                                    }
+                                    } catch (_: Exception) {}
                                 }
                             }
-                            // Открываем целевой чат (имя подтянется из loadChatInfo внутри ChatScreen)
-                            currentScreen = Screen.Chat(targetChatId, "")
+                            if (isDesktop) {
+                                forwardResultChatId = targetChatId
+                                currentScreen = Screen.ChatList
+                            } else {
+                                currentScreen = Screen.Chat(targetChatId, "")
+                            }
                         }
                     )
+                }
+
+                else -> {
+                    if (isDesktop) {
+                        // Desktop: единый split-pane экран после авторизации
+                        val initialChatScreen = screen as? Screen.Chat
+                        org.messenger.app.ui.PlatformMainScreen(
+                            appModule = currentAppModule,
+                            initialChatId = initialChatScreen?.chatId,
+                            initialChatName = initialChatScreen?.chatName,
+                            onLogout = {
+                                currentAppModule.tokenStorage.clear()
+                                currentAppModule.wsService.disconnect()
+                                currentScreen = Screen.Auth
+                            },
+                            onOpenForwardPicker = { srcId, srcName, ids ->
+                                currentScreen = Screen.ForwardPicker(srcId, srcName, ids)
+                            },
+                            forwardResultChatId = forwardResultChatId,
+                            onForwardResultConsumed = { forwardResultChatId = null },
+                        )
+                    } else {
+                        // Mobile: оригинальная стековая навигация
+                        MobileNavigation(
+                            screen = screen,
+                            currentAppModule = currentAppModule,
+                            forwardScope = forwardScope,
+                            onScreenChange = { currentScreen = it },
+                        )
+                    }
                 }
             }
         }
@@ -255,9 +217,124 @@ fun App(
 
 private var pendingPhoneForOtp: String? = null
 private var pendingServerAddress: String? = null
-
 expect fun updateCurrentChatId(chatId: String?)
 expect fun onLoginSuccessCallback(appModule: AppModule)
 expect fun syncAppModule(appModule: AppModule)
+fun setActiveChatId(chatId: String?) {
+    ActiveChatHolder.set(chatId)
+    updateCurrentChatId(chatId)
+}
 
 expect fun observeDeepLinks(): kotlinx.coroutines.flow.Flow<Pair<String, String>>?
+
+@Composable
+private fun MobileNavigation(
+    screen: Screen,
+    currentAppModule: AppModule,
+    forwardScope: CoroutineScope,
+    onScreenChange: (Screen) -> Unit,
+) {
+    when (screen) {
+        is Screen.ChatList -> {
+            ChatListScreen(
+                appModule = currentAppModule,
+                onChatClick = { chatId, chatName ->
+                    onScreenChange(Screen.Chat(chatId, chatName))
+                },
+                onOpenSettings = { onScreenChange(Screen.Settings) },
+                onOpenProfile = { onScreenChange(Screen.Profile) },
+            )
+        }
+        is Screen.Settings -> {
+            PlatformBackHandler(enabled = true) { onScreenChange(Screen.ChatList) }
+            SettingsScreen(
+                appModule = currentAppModule,
+                onBack = { onScreenChange(Screen.ChatList) },
+                onOpenContacts = { onScreenChange(Screen.Contacts) },
+                onOpenProfile = { onScreenChange(Screen.Profile) },
+                onOpenNotifications = { onScreenChange(Screen.Notifications) },
+                onLogout = {
+                    currentAppModule.tokenStorage.clear()
+                    currentAppModule.wsService.disconnect()
+                    onScreenChange(Screen.Auth)
+                }
+            )
+        }
+        is Screen.Notifications -> {
+            PlatformBackHandler(enabled = true) { onScreenChange(Screen.Settings) }
+            org.messenger.app.ui.settings.NotificationSettingsScreen(
+                appModule = currentAppModule,
+                onBack = { onScreenChange(Screen.Settings) },
+            )
+        }
+        is Screen.Contacts -> {
+            PlatformBackHandler(enabled = true) { onScreenChange(Screen.Settings) }
+            ContactsScreen(
+                appModule = currentAppModule,
+                onBack = { onScreenChange(Screen.Settings) },
+                onContactClick = { contact ->
+                    forwardScope.launch {
+                        try {
+                            val chat = currentAppModule.chatRepository
+                                .createPersonalChat(contactId = contact.id)
+                            onScreenChange(Screen.Chat(chat.id, chat.name ?: contact.displayName))
+                        } catch (_: Exception) {}
+                    }
+                }
+            )
+        }
+        is Screen.Profile -> {
+            PlatformBackHandler(enabled = true) { onScreenChange(Screen.Settings) }
+            org.messenger.app.ui.profile.ProfileScreen(
+                appModule = currentAppModule,
+                onBack = { onScreenChange(Screen.Settings) },
+                onOpenAvatars = { onScreenChange(Screen.Avatars) },
+            )
+        }
+        is Screen.Avatars -> {
+            PlatformBackHandler(enabled = true) { onScreenChange(Screen.Profile) }
+            org.messenger.app.ui.profile.AvatarsScreen(
+                appModule = currentAppModule,
+                onBack = { onScreenChange(Screen.Profile) },
+            )
+        }
+        is Screen.PeerProfile -> {
+            PlatformBackHandler(enabled = true) { onScreenChange(Screen.ChatList) }
+            org.messenger.app.ui.profile.PeerProfileScreen(
+                appModule = currentAppModule,
+                userId = screen.userId,
+                onBack = { onScreenChange(Screen.ChatList) },
+            )
+        }
+        is Screen.Chat -> {
+            setActiveChatId(screen.chatId)
+            PlatformBackHandler(enabled = true) {
+                setActiveChatId(null)
+                onScreenChange(Screen.ChatList)
+            }
+            ChatScreen(
+                chatId = screen.chatId,
+                chatName = screen.chatName,
+                appModule = currentAppModule,
+                onBack = {
+                    setActiveChatId(null)
+                    onScreenChange(Screen.ChatList)
+                },
+                onPickForwardTarget = { sourceChatId, messageIds ->
+                    onScreenChange(
+                        Screen.ForwardPicker(
+                            sourceChatId = sourceChatId,
+                            sourceChatName = screen.chatName,
+                            messageIds = messageIds,
+                        )
+                    )
+                },
+                onOpenPeerProfile = { userId ->
+                    onScreenChange(Screen.PeerProfile(userId))
+                },
+            )
+        }
+        // Auth и ForwardPicker обрабатываются выше, до вызова MobileNavigation
+        is Screen.Auth, is Screen.ForwardPicker -> Unit
+    }
+}

@@ -11,6 +11,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Notifications
 import org.messenger.app.shared.di.AppModule
 
 const val APP_NAME = "Messenger Oreshnik"
@@ -22,6 +24,8 @@ fun SettingsScreen(
     appModule: AppModule,
     onBack: () -> Unit,
     onOpenContacts: () -> Unit,
+    onOpenProfile: () -> Unit,
+    onOpenNotifications: () -> Unit,
     onLogout: () -> Unit
 ) {
     val phone = appModule.tokenStorage.getUserPhone()
@@ -64,10 +68,34 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 ListItem(
+                    modifier = Modifier.clickable(onClick = onOpenProfile),
+                    headlineContent = { Text("Профиль") },
+                    leadingContent = {
+                        Icon(
+                            androidx.compose.material.icons.Icons.Default.Person,
+                            contentDescription = null,
+                        )
+                    }
+                )
+                HorizontalDivider()
+
+                ListItem(
                     modifier = Modifier.clickable(onClick = onOpenContacts),
                     headlineContent = { Text("Контакты") },
                     leadingContent = {
                         Icon(Icons.Default.Contacts, contentDescription = null)
+                    }
+                )
+                HorizontalDivider()
+
+                ListItem(
+                    modifier = Modifier.clickable(onClick = onOpenNotifications),
+                    headlineContent = { Text("Уведомления") },
+                    leadingContent = {
+                        Icon(
+                            androidx.compose.material.icons.Icons.Default.Notifications,
+                            contentDescription = null,
+                        )
                     }
                 )
                 HorizontalDivider()

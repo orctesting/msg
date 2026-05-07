@@ -19,9 +19,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.Color
+import org.messenger.app.shared.data.remote.WsService
 import org.messenger.app.shared.data.model.ChatDto
 import org.messenger.app.shared.di.AppModule
 import org.messenger.app.shared.ui.chatlist.ChatListViewModel
+import org.messenger.app.util.mouseScrollGestures
+import org.messenger.app.util.PlatformVerticalScrollbar
+import org.messenger.app.ui.chatlist.formatChatListTime
 
 private enum class ChatsTab(val title: String) {
     ALL("Все"),
@@ -35,12 +44,14 @@ fun ChatListScreen(
     appModule: AppModule,
     onChatClick: (chatId: String, chatName: String) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenProfile: () -> Unit,
 ) {
-    val viewModel = remember {
-        ChatListViewModel(
-            chatRepository = appModule.chatRepository,
-            wsService = appModule.wsService
-        )
+    val viewModel = remember(appModule) { appModule.chatListViewModel }
+    LaunchedEffect(Unit) {
+        org.messenger.app.ChatListResyncBus.events.collect {
+            // Lifecycle-resync: список обновится через WS-reconnect автоматически.
+            // Принудительная перезагрузка не нужна.
+        }
     }
     val state by viewModel.state.collectAsState()
 
@@ -54,8 +65,21 @@ fun ChatListScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Чаты") },
+                title = {
+                    androidx.compose.foundation.layout.Row(
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    ) {
+                        Text("Чаты")
+                        androidx.compose.foundation.layout.Spacer(
+                            modifier = androidx.compose.ui.Modifier.width(8.dp)
+                        )
+                        ConnectionDot(wsService = appModule.wsService)
+                    }
+                },
                 actions = {
+                    IconButton(onClick = onOpenProfile) {
+                        Icon(Icons.Default.AccountCircle, contentDescription = "Профиль")
+                    }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "Настройки")
                     }
@@ -129,14 +153,27 @@ fun ChatListScreen(
                         )
                     }
                     else -> {
-                        LazyColumn(modifier = Modifier.fillMaxSize()) {
-                            items(filtered, key = { it.id }) { chat ->
-                                ChatItem(
-                                    chat = chat,
-                                    showTypeIcon = selectedTab == ChatsTab.ALL,
-                                    onClick = { onChatClick(chat.id, chat.name ?: "Чат") }
-                                )
+                        val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .mouseScrollGestures(listState),
+                            ) {
+                                items(filtered, key = { it.id }) { chat ->
+                                    ChatItem(
+                                        chat = chat,
+                                        showTypeIcon = selectedTab == ChatsTab.ALL,
+                                        onClick = { onChatClick(chat.id, chat.name ?: "Чат") }
+                                    )
+                                }
                             }
+                            PlatformVerticalScrollbar(
+                                state = listState,
+                                modifier = Modifier.align(Alignment.CenterEnd),
+                                reverseLayout = false,
+                            )
                         }
                     }
                 }
@@ -197,7 +234,7 @@ private fun ChatItem(
         supportingContent = {
             chat.lastMessage?.let { msg ->
                 Text(
-                    text = msg.content,
+                    text = msg.content.ifBlank { "Вложение" },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -222,10 +259,40 @@ private fun ChatItem(
             }
         },
         trailingContent = {
-            if (chat.unreadCount > 0) {
-                Badge { Text("${chat.unreadCount}") }
+            val ts = chat.lastMessage?.createdAt
+            if (!ts.isNullOrBlank() || chat.unreadCount > 0) {
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (!ts.isNullOrBlank()) {
+                        Text(
+                            text = formatChatListTime(ts),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (chat.unreadCount > 0) {
+                        Badge { Text("${chat.unreadCount}") }
+                    }
+                }
             }
         }
     )
     HorizontalDivider()
+}
+
+@Composable
+private fun ConnectionDot(wsService: WsService) {
+    val status by wsService.status.collectAsState()
+    val color = when (status) {
+        WsService.WsConnectionStatus.CONNECTED -> Color(0xFF2ECC71)
+        WsService.WsConnectionStatus.CONNECTING -> Color(0xFFF1C40F)
+        WsService.WsConnectionStatus.DISCONNECTED -> Color(0xFFE74C3C)
+    }
+    Box(
+        modifier = Modifier
+            .size(10.dp)
+            .background(color = color, shape = CircleShape)
+    )
 }

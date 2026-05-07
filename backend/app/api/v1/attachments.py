@@ -24,6 +24,8 @@ from app.api.schemas.attachment import (
     AttachmentOut,
 )
 from app.api.schemas.base import OkResponse
+from fastapi import APIRouter, Depends, Request
+from app.utils.public_url import derive_s3_public_base
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/attachments", tags=["attachments"])
@@ -58,20 +60,24 @@ async def _assert_chat_membership(
 async def _build_attachment_out(
     att: Attachment,
     include_urls: bool = True,
+    public_base: str | None = None,
 ) -> AttachmentOut:
     download_url = None
     thumbnail_url = None
     if include_urls and att.status in ("uploaded", "ready"):
         try:
             download_url = await s3_service.generate_presigned_download_url(
-                att.storage_key, filename=att.original_filename
+                att.storage_key,
+                filename=att.original_filename,
+                public_base_override=public_base,
             )
         except Exception as e:
             logger.error("presign_download_error", error=str(e), attachment_id=str(att.id))
         if att.thumbnail_key:
             try:
                 thumbnail_url = await s3_service.generate_presigned_download_url(
-                    att.thumbnail_key
+                    att.thumbnail_key,
+                    public_base_override=public_base,
                 )
             except Exception:
                 pass
@@ -96,6 +102,7 @@ async def _build_attachment_out(
 @router.post("/presign-upload", response_model=PresignUploadOut)
 async def presign_upload(
     body: PresignUploadIn,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -132,6 +139,7 @@ async def presign_upload(
             storage_key=storage_key,
             content_type=body.mime_type,
             size_bytes=body.size_bytes,
+            public_base_override=derive_s3_public_base(request),
         )
     except Exception as e:
         logger.error("presign_upload_error", error=str(e))
@@ -148,6 +156,7 @@ async def presign_upload(
 @router.post("/{attachment_id}/complete", response_model=AttachmentOut)
 async def complete_upload(
     attachment_id: uuid.UUID,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -161,7 +170,7 @@ async def complete_upload(
         raise ForbiddenException("Not your attachment")
 
     if att.status in ("uploaded", "ready"):
-        return await _build_attachment_out(att)
+        return await _build_attachment_out(att, public_base=derive_s3_public_base(request))
 
     head = await s3_service.head_object(att.storage_key)
     if head is None:
@@ -190,12 +199,13 @@ async def complete_upload(
         await session.commit()
         await session.refresh(att)
 
-    return await _build_attachment_out(att)
+    return await _build_attachment_out(att, public_base=derive_s3_public_base(request))
 
 
 @router.get("/{attachment_id}", response_model=AttachmentOut)
 async def get_attachment(
     attachment_id: uuid.UUID,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -212,12 +222,13 @@ async def get_attachment(
             raise ForbiddenException("No access")
         await _assert_chat_membership(session, att.chat_id, current_user.id)
 
-    return await _build_attachment_out(att)
+    return await _build_attachment_out(att, public_base=derive_s3_public_base(request))
 
 
 @router.get("/{attachment_id}/download-url")
 async def get_download_url(
     attachment_id: uuid.UUID,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -237,12 +248,12 @@ async def get_download_url(
         raise ConflictException("Attachment is not ready")
 
     url = await s3_service.generate_presigned_download_url(
-        att.storage_key, filename=att.original_filename
+        att.storage_key, filename=att.original_filename, public_base_override=derive_s3_public_base(request)
     )
     thumb = None
     if att.thumbnail_key:
         try:
-            thumb = await s3_service.generate_presigned_download_url(att.thumbnail_key)
+            thumb = await s3_service.generate_presigned_download_url(att.thumbnail_key, public_base_override=derive_s3_public_base(request))
         except Exception:
             pass
     return {
@@ -266,16 +277,31 @@ async def delete_attachment(
         raise NotFoundException("Attachment not found")
     if att.uploader_user_id != current_user.id and current_user.role != "admin":
         raise ForbiddenException("Not your attachment")
-    if att.message_id is not None:
-        raise ConflictException("Attachment is linked to a message; delete the message instead")
 
+    # Проверяем, есть ли links на это вложение
+    from app.db.models.message_attachment_link import MessageAttachmentLink
+    from sqlalchemy import func
+    count_res = await session.execute(
+        select(func.count(MessageAttachmentLink.id)).where(
+            MessageAttachmentLink.attachment_id == attachment_id
+        )
+    )
+    if (count_res.scalar() or 0) > 0:
+        raise ConflictException("Attachment is linked to message(s); delete the message instead")
+
+    # Не привязано — soft-delete файл в S3
     try:
-        await s3_service.delete_object(att.storage_key)
+        from app.services import s3_service
+        new_key = await s3_service.move_to_deleted(att.storage_key)
+        if new_key:
+            att.storage_key = new_key
         if att.thumbnail_key:
-            await s3_service.delete_object(att.thumbnail_key)
+            new_thumb = await s3_service.move_to_deleted(att.thumbnail_key)
+            if new_thumb:
+                att.thumbnail_key = new_thumb
     except Exception as e:
-        logger.error("s3_delete_error", error=str(e))
+        logger.error("s3_soft_delete_error", error=str(e))
 
-    await session.delete(att)
+    att.status = "deleted"
     await session.commit()
     return OkResponse(detail="Deleted")

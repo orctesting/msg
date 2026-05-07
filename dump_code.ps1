@@ -1,6 +1,5 @@
 # Запуск: powershell -ExecutionPolicy Bypass -File dump_code.ps1
 # Результат: project_dump.txt в корне проекта
-
 $outFile = "project_dump.txt"
 $extensions = @("*.py", "*.yml", "*.yaml", "*.toml", "*.cfg", "*.ini", "*.txt", "*.conf", "*.mako", "*.env*", "*.sh", "Dockerfile*")
 $excludeDirs = @(".git", "__pycache__", ".venv", "venv", "node_modules", ".mypy_cache", ".pytest_cache", "*.egg-info", ".tox", "dist", "build", "htmlcov")
@@ -18,7 +17,7 @@ if ($gitFiles) {
             elseif ($_ -match 'Dockerfile') { $f -like "*Dockerfile*" }
             else { $false }
         }) -contains $true
-    }
+    } | Where-Object { $_ -ne $outFile } # Исключаем только целевой файл project_dump.txt
 } else {
     # git недоступен — ручная фильтрация
     $excludePattern = ($excludeDirs | ForEach-Object { [regex]::Escape($_) }) -join '|'
@@ -27,7 +26,11 @@ if ($gitFiles) {
         $found = Get-ChildItem -Path . -Filter $ext -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -notmatch $excludePattern }
         $files += $found | ForEach-Object {
-            $_.FullName.Substring((Get-Location).Path.Length + 1)
+            $relativePath = $_.FullName.Substring((Get-Location).Path.Length + 1)
+            # Исключаем ТОЛЬКО целевой файл project_dump.txt, остальные .txt оставляем
+            if ($relativePath -ne $outFile) {
+                $relativePath
+            }
         }
     }
 }
@@ -41,7 +44,7 @@ foreach ($file in ($files | Sort-Object)) {
     if (-not (Test-Path $file)) { continue }
     # Пропускаем бинарные и пустые
     $size = (Get-Item $file -ErrorAction SilentlyContinue).Length
-    if ($size -eq 0 -or $size -gt 500000) { continue }
+    if ($size -eq 0 -or $size -gt 1000000) { continue }
 
     Add-Content $outFile $separator -Encoding UTF8
     Add-Content $outFile "FILE: $file" -Encoding UTF8

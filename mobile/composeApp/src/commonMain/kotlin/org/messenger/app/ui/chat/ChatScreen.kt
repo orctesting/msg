@@ -5,20 +5,41 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.material.icons.automirrored.filled.Forward
+import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Forward
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.runtime.mutableStateMapOf
 import kotlinx.coroutines.launch
 import org.messenger.app.shared.data.model.MessageDto
 import org.messenger.app.shared.di.AppModule
 import org.messenger.app.shared.ui.chat.ChatViewModel
 import org.messenger.app.shared.util.copyToClipboard
+import org.messenger.app.util.MouseSelectionCallbacks
+import org.messenger.app.util.PlatformBackHandler
+import org.messenger.app.util.PlatformVerticalScrollbar
+import org.messenger.app.util.mouseScrollGestures
+
+private val SELECTION_COLUMN_WIDTH = 36.dp
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class)
 @Composable
@@ -28,6 +49,7 @@ fun ChatScreen(
     appModule: AppModule,
     onBack: () -> Unit,
     onPickForwardTarget: ((sourceChatId: String, messageIds: List<String>) -> Unit)? = null,
+    onOpenPeerProfile: ((userId: String) -> Unit)? = null,
 ) {
     val currentUserId = remember { appModule.tokenStorage.getUserId() }
     val currentUserRole = remember { null as String? }
@@ -40,22 +62,44 @@ fun ChatScreen(
             currentUserId = currentUserId,
             currentUserRole = currentUserRole,
             contactsRepository = appModule.contactsRepository,
+            attachmentsRepository = appModule.attachmentsRepository,
         )
     }
     val state by viewModel.state.collectAsState()
-    val listState = rememberLazyListState()
+    val filePicker = org.messenger.app.util.rememberFilePicker { picked ->
+        viewModel.uploadAttachment(
+            filename = picked.name,
+            mimeType = picked.mimeType,
+            bytes = picked.bytes,
+        )
+    }
+    val listState = remember(chatId) {
+        androidx.compose.foundation.lazy.LazyListState(
+            firstVisibleItemIndex = 0,
+            firstVisibleItemScrollOffset = 0,
+        )
+    }
     val coroutineScope = rememberCoroutineScope()
 
     var unreadCount by remember { mutableStateOf(0) }
     var firstUnreadMessageId by remember { mutableStateOf<String?>(null) }
     var lastKnownTopMessageId by remember { mutableStateOf<String?>(null) }
     var showMessageMenuFor by remember { mutableStateOf<MessageDto?>(null) }
+    var initialScrollDone by remember(chatId) { mutableStateOf(false) }
 
-    // Focus overlay state
     val focusBounds = remember { mutableStateMapOf<String, androidx.compose.ui.geometry.Rect>() }
     var overlayRootCoords by remember {
         mutableStateOf<androidx.compose.ui.layout.LayoutCoordinates?>(null)
     }
+
+    // Y-координаты сообщений (стабильная ссылка)
+    val messageRowYRanges = remember { mutableStateMapOf<String, ClosedFloatingPointRange<Float>>() }
+    var selectAnchorMessageId by remember { mutableStateOf<String?>(null) }
+
+    // Актуальные значения для лямбд (без пересоздания callbacks)
+    val currentMessages by rememberUpdatedState(state.messages)
+    val currentSelectedIds by rememberUpdatedState(state.selectedIds)
+    val currentSelectionMode by rememberUpdatedState(state.selectionMode)
 
     val isAtBottom by remember {
         derivedStateOf {
@@ -79,6 +123,21 @@ fun ChatScreen(
         }
     }
 
+    // Гарантированный первоначальный скролл к низу при первом появлении сообщений
+    LaunchedEffect(chatId, state.messages.size > 0) {
+        if (!initialScrollDone && state.messages.isNotEmpty()) {
+            // ждём один кадр, чтобы LazyColumn успел разместить items
+            kotlinx.coroutines.delay(16)
+            try {
+                listState.scrollToItem(0)
+            } catch (_: Exception) {}
+            initialScrollDone = true
+            // помечаем верхнее сообщение как известное, чтобы основной эффект
+            // не перезапускал animateScrollToItem
+            lastKnownTopMessageId = state.messages.first().id
+        }
+    }
+
     LaunchedEffect(state.messages.firstOrNull()?.id) {
         val topMsg = state.messages.firstOrNull() ?: return@LaunchedEffect
         if (topMsg.id == lastKnownTopMessageId) return@LaunchedEffect
@@ -88,6 +147,10 @@ fun ChatScreen(
             coroutineScope.launch { listState.animateScrollToItem(0) }
             unreadCount = 0
             firstUnreadMessageId = null
+            // Пользователь реально видит новое сообщение внизу — отмечаем прочитанным
+            if (!isOwn) {
+                viewModel.markReadExplicit(topMsg.id)
+            }
         } else {
             unreadCount += 1
             if (firstUnreadMessageId == null) firstUnreadMessageId = topMsg.id
@@ -99,10 +162,26 @@ fun ChatScreen(
         if (isAtBottom) {
             unreadCount = 0
             firstUnreadMessageId = null
+            // Пользователь доскроллил до низа — отмечаем прочитанным
+            val topMsg = state.messages.firstOrNull()
+            if (topMsg != null && topMsg.senderId != currentUserId) {
+                viewModel.markReadExplicit(topMsg.id)
+            }
         }
     }
 
-    org.messenger.app.util.PlatformBackHandler(
+    // При первом входе в чат (или обновлении сообщений) — markRead,
+    // если пользователь уже внизу (обычный кейс открытия чата).
+    LaunchedEffect(state.messages.size > 0) {
+        if (state.messages.isNotEmpty() && isAtBottom) {
+            val topMsg = state.messages.first()
+            if (topMsg.senderId != currentUserId) {
+                viewModel.markReadExplicit(topMsg.id)
+            }
+        }
+    }
+
+    PlatformBackHandler(
         enabled = true,
         onBack = {
             when {
@@ -126,6 +205,45 @@ fun ChatScreen(
         viewModel.exitSelectionMode()
     }
 
+    // Стабильные callbacks (создаются один раз)
+    val selectionCallbacks = remember {
+        MouseSelectionCallbacks(
+            onSelectStart = { y ->
+                val id = messageRowYRanges.entries.firstOrNull { (_, r) -> y in r }?.key
+                if (id != null) {
+                    selectAnchorMessageId = id
+                    if (!currentSelectionMode) {
+                        viewModel.enterSelectionMode(id)
+                    } else if (!currentSelectedIds.contains(id)) {
+                        viewModel.toggleSelection(id)
+                    }
+                }
+            },
+            onSelectUpdate = { y ->
+                val anchor = selectAnchorMessageId ?: return@MouseSelectionCallbacks
+                val current = messageRowYRanges.entries.firstOrNull { (_, r) -> y in r }?.key
+                    ?: return@MouseSelectionCallbacks
+                val msgs = currentMessages
+                val ai = msgs.indexOfFirst { it.id == anchor }
+                val ci = msgs.indexOfFirst { it.id == current }
+                if (ai < 0 || ci < 0) return@MouseSelectionCallbacks
+                val from = minOf(ai, ci)
+                val to = maxOf(ai, ci)
+                val rangeIds = msgs.subList(from, to + 1).map { it.id }.toSet()
+                val selected = currentSelectedIds
+                rangeIds.forEach { mid ->
+                    if (!selected.contains(mid)) viewModel.toggleSelection(mid)
+                }
+                selected.forEach { sid ->
+                    if (sid !in rangeIds) viewModel.toggleSelection(sid)
+                }
+            },
+            onSelectEnd = {
+                selectAnchorMessageId = null
+            },
+        )
+    }
+
     Scaffold(
         topBar = {
             if (state.selectionMode) {
@@ -143,7 +261,22 @@ fun ChatScreen(
                 )
             } else {
                 TopAppBar(
-                    title = { Text(chatName) },
+                    title = {
+                        val peer = state.peerUser
+                        val isPersonalClickable = state.chatType == "personal" &&
+                                peer != null &&
+                                onOpenPeerProfile != null
+                        if (isPersonalClickable) {
+                            Text(
+                                text = chatName,
+                                modifier = Modifier.clickable {
+                                    onOpenPeerProfile!!(peer!!.id)
+                                }
+                            )
+                        } else {
+                            Text(chatName)
+                        }
+                    },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
@@ -178,6 +311,7 @@ fun ChatScreen(
                     draft = state.draft,
                     replyTo = state.replyTo,
                     editing = state.editingMessage,
+                    uploadingAttachments = state.uploadingAttachments,
                     onDraftChanged = viewModel::onDraftChanged,
                     onCancelReply = { viewModel.setReplyTo(null) },
                     onCancelEdit = viewModel::cancelEdit,
@@ -185,7 +319,18 @@ fun ChatScreen(
                         viewModel.send()
                         coroutineScope.launch { listState.animateScrollToItem(0) }
                     },
-                    isSending = state.isSending
+                    onAttachClick = { filePicker.launch("*/*") },
+                    onRemoveAttachment = viewModel::removeUploadingAttachment,
+                    isSending = state.isSending,
+                    onFilesDropped = { files ->
+                        files.forEach { f ->
+                            viewModel.uploadAttachment(
+                                filename = f.name,
+                                mimeType = f.mimeType,
+                                bytes = f.bytes,
+                            )
+                        }
+                    },
                 )
             }
         }
@@ -200,6 +345,7 @@ fun ChatScreen(
             } else {
                 val messages = state.messages
                 val focusTargetId = state.editingMessage?.id ?: state.replyTo?.id
+                val selectionMode = state.selectionMode
 
                 Column(modifier = Modifier.fillMaxSize()) {
                     val peer = state.peerUser
@@ -237,9 +383,19 @@ fun ChatScreen(
                     ) {
                         LazyColumn(
                             state = listState,
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .mouseScrollGestures(
+                                    listState = listState,
+                                    selectionCallbacks = selectionCallbacks,
+                                ),
                             reverseLayout = true,
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                            contentPadding = PaddingValues(
+                                start = 16.dp,
+                                end = 16.dp,
+                                top = 8.dp,
+                                bottom = 8.dp,
+                            ),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             messages.forEachIndexed { index, message ->
@@ -250,45 +406,94 @@ fun ChatScreen(
 
                                 item(key = "msg_${message.id}") {
                                     val isFocused = message.id == focusTargetId
-                                    Box(
-                                        modifier = if (isFocused) {
-                                            Modifier.onGloballyPositioned { coords ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .onGloballyPositioned { coords ->
                                                 val root = overlayRootCoords
                                                 if (root != null && coords.isAttached) {
                                                     val pos = root.localPositionOf(
                                                         coords,
                                                         androidx.compose.ui.geometry.Offset.Zero
                                                     )
-                                                    focusBounds[message.id] = androidx.compose.ui.geometry.Rect(
-                                                        offset = pos,
-                                                        size = androidx.compose.ui.geometry.Size(
-                                                            coords.size.width.toFloat(),
-                                                            coords.size.height.toFloat()
+                                                    val top = pos.y
+                                                    val bottom = top + coords.size.height.toFloat()
+                                                    messageRowYRanges[message.id] = top..bottom
+                                                    if (isFocused) {
+                                                        focusBounds[message.id] = androidx.compose.ui.geometry.Rect(
+                                                            offset = pos,
+                                                            size = androidx.compose.ui.geometry.Size(
+                                                                coords.size.width.toFloat(),
+                                                                coords.size.height.toFloat()
+                                                            )
                                                         )
-                                                    )
+                                                    }
                                                 }
                                             }
-                                        } else Modifier
+                                            .then(
+                                                if (selectionMode) {
+                                                    Modifier.clickable { viewModel.toggleSelection(message.id) }
+                                                } else Modifier
+                                            ),
+                                        verticalAlignment = Alignment.CenterVertically,
                                     ) {
-                                        MessageBubble(
-                                            message = message,
-                                            isOwnMessage = isOwn,
-                                            isReadByOthers = isRead,
-                                            isSelected = isSelected,
-                                            selectionMode = state.selectionMode,
-                                            onClick = {
-                                                if (state.selectionMode) {
-                                                    viewModel.toggleSelection(message.id)
-                                                }
-                                            },
-                                            onLongClick = {
-                                                if (state.selectionMode) {
-                                                    viewModel.toggleSelection(message.id)
-                                                } else {
-                                                    showMessageMenuFor = message
-                                                }
-                                            },
-                                        )
+                                        Box(modifier = Modifier.weight(1f)) {
+                                            org.messenger.app.util.PlatformContextMenu(
+                                                itemsProvider = {
+                                                    buildMessageContextMenu(
+                                                        message = message,
+                                                        canEdit = viewModel.canEdit(message),
+                                                        canDelete = viewModel.canDelete(message),
+                                                        forwardAvailable = onPickForwardTarget != null,
+                                                        onReply = { viewModel.setReplyTo(message) },
+                                                        onCopy = {
+                                                            org.messenger.app.shared.util.copyToClipboard(message.content)
+                                                        },
+                                                        onEdit = { viewModel.startEdit(message) },
+                                                        onDelete = { viewModel.deleteMessage(message.id) },
+                                                        onForward = {
+                                                            onPickForwardTarget?.invoke(chatId, listOf(message.id))
+                                                        },
+                                                        onPin = { viewModel.pinMessage(message.id) },
+                                                        onSelect = { viewModel.enterSelectionMode(message.id) },
+                                                    )
+                                                },
+                                            ) {
+                                                MessageBubble(
+                                                    message = message,
+                                                    isOwnMessage = isOwn,
+                                                    isReadByOthers = isRead,
+                                                    isSelected = isSelected,
+                                                    selectionMode = selectionMode,
+                                                    attachmentsRepository = appModule.attachmentsRepository,
+                                                    onClick = {
+                                                        if (selectionMode) {
+                                                            viewModel.toggleSelection(message.id)
+                                                        }
+                                                    },
+                                                    onLongClick = {
+                                                        if (selectionMode) {
+                                                            viewModel.toggleSelection(message.id)
+                                                        } else {
+                                                            showMessageMenuFor = message
+                                                        }
+                                                    },
+                                                )
+                                            }
+                                        }
+                                        if (selectionMode) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .width(SELECTION_COLUMN_WIDTH)
+                                                    .padding(start = 6.dp, end = 6.dp),
+                                                contentAlignment = Alignment.Center,
+                                            ) {
+                                                SelectionMark(
+                                                    isSelected = isSelected,
+                                                    onClick = { viewModel.toggleSelection(message.id) },
+                                                )
+                                            }
+                                        }
                                     }
                                 }
 
@@ -317,6 +522,13 @@ fun ChatScreen(
                                 }
                             }
                         }
+
+                        // Скроллбар поверх правой кромки
+                        PlatformVerticalScrollbar(
+                            state = listState,
+                            modifier = Modifier.align(Alignment.CenterEnd),
+                            reverseLayout = true,
+                        )
 
                         stickyDateKey?.let { key ->
                             Box(
@@ -410,6 +622,37 @@ fun ChatScreen(
     }
 }
 
+@Composable
+private fun SelectionMark(
+    isSelected: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(22.dp)
+            .clip(CircleShape)
+            .then(
+                if (isSelected) Modifier.background(MaterialTheme.colorScheme.primary)
+                else Modifier.border(
+                    width = 1.5.dp,
+                    color = MaterialTheme.colorScheme.outline,
+                    shape = CircleShape,
+                )
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (isSelected) {
+            Icon(
+                Icons.Default.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+}
+
 private fun computeListIndexForMessage(
     messages: List<MessageDto>,
     targetMessageId: String,
@@ -426,4 +669,63 @@ private fun computeListIndexForMessage(
         if (showDateHeader) lazyIndex++
     }
     return -1
+}
+
+private fun buildMessageContextMenu(
+    message: org.messenger.app.shared.data.model.MessageDto,
+    canEdit: Boolean,
+    canDelete: Boolean,
+    forwardAvailable: Boolean,
+    onReply: () -> Unit,
+    onCopy: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onForward: () -> Unit,
+    onPin: () -> Unit,
+    onSelect: () -> Unit,
+): List<org.messenger.app.util.ContextMenuItem> {
+    val items = mutableListOf<org.messenger.app.util.ContextMenuItem>()
+    items += org.messenger.app.util.ContextMenuItem(
+        label = "Ответить",
+        icon = androidx.compose.material.icons.Icons.AutoMirrored.Filled.Reply,
+        onClick = onReply,
+    )
+    items += org.messenger.app.util.ContextMenuItem(
+        label = "Копировать",
+        icon = androidx.compose.material.icons.Icons.Default.ContentCopy,
+        onClick = onCopy,
+    )
+    if (forwardAvailable) {
+        items += org.messenger.app.util.ContextMenuItem(
+            label = "Переслать",
+            icon = androidx.compose.material.icons.Icons.Default.Forward,
+            onClick = onForward,
+        )
+    }
+    items += org.messenger.app.util.ContextMenuItem(
+        label = "Закрепить",
+        icon = androidx.compose.material.icons.Icons.Default.PushPin,
+        onClick = onPin,
+    )
+    if (canEdit) {
+        items += org.messenger.app.util.ContextMenuItem(
+            label = "Редактировать",
+            icon = androidx.compose.material.icons.Icons.Default.Edit,
+            onClick = onEdit,
+        )
+    }
+    if (canDelete) {
+        items += org.messenger.app.util.ContextMenuItem(
+            label = "Удалить",
+            icon = androidx.compose.material.icons.Icons.Default.Delete,
+            isDestructive = true,
+            onClick = onDelete,
+        )
+    }
+    items += org.messenger.app.util.ContextMenuItem(
+        label = "Выбрать",
+        icon = androidx.compose.material.icons.Icons.Default.Check,
+        onClick = onSelect,
+    )
+    return items
 }

@@ -20,6 +20,10 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -30,12 +34,40 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.layout.Layout
-import kotlinx.datetime.toLocalDateTime
+import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import org.messenger.app.shared.data.model.AttachmentDto
+import org.messenger.app.shared.ui.chat.UploadingAttachment
+import org.messenger.app.util.onRightClick
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.platform.LocalDensity
 import org.messenger.app.shared.data.model.MessageDto
 import org.messenger.app.shared.data.model.PinnedMessageDto
 import org.messenger.app.shared.data.model.ReplyPreviewDto
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.foundation.layout.BoxWithConstraints
+import org.messenger.app.util.fileDropTarget
+import org.messenger.app.util.DroppedFile
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -200,20 +232,40 @@ fun DateSeparator(label: String) {
     }
 }
 
+
 @Composable
 fun MessageInput(
     draft: String,
     replyTo: MessageDto?,
     editing: MessageDto?,
+    uploadingAttachments: List<UploadingAttachment>,
     onDraftChanged: (String) -> Unit,
     onCancelReply: () -> Unit,
     onCancelEdit: () -> Unit,
     onSend: () -> Unit,
+    onAttachClick: () -> Unit,
+    onRemoveAttachment: (String) -> Unit,
     isSending: Boolean,
+    onFilesDropped: ((List<org.messenger.app.util.DroppedFile>) -> Unit)? = null,
 ) {
+    var isDragOver by remember { mutableStateOf(false) }
+    val dropModifier = if (onFilesDropped != null) {
+        Modifier.fileDropTarget(
+            enabled = editing == null,
+            onDragStateChange = { isDragOver = it },
+            onFilesDropped = { files -> onFilesDropped(files) },
+        )
+    } else Modifier
+
     Surface(
         tonalElevation = 3.dp,
-        modifier = Modifier.fillMaxWidth().imePadding().navigationBarsPadding(),
+        color = if (isDragOver) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+        else MaterialTheme.colorScheme.surface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .imePadding()
+            .navigationBarsPadding()
+            .then(dropModifier),
     ) {
         Column {
             if (editing != null) {
@@ -232,23 +284,86 @@ fun MessageInput(
                 )
             }
 
+            if (uploadingAttachments.isNotEmpty() && editing == null) {
+                UploadingAttachmentsRow(
+                    items = uploadingAttachments,
+                    onRemove = onRemoveAttachment,
+                )
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                if (editing == null) {
+                    IconButton(onClick = onAttachClick) {
+                        Icon(Icons.Default.AttachFile, contentDescription = "Прикрепить файл")
+                    }
+                }
+
+                var textFieldValue by remember(editing?.id) {
+                    mutableStateOf(TextFieldValue(draft, TextRange(draft.length)))
+                }
+// синхронизация: если draft изменился извне (например, очистка после отправки), обновляем
+                LaunchedEffect(draft) {
+                    if (textFieldValue.text != draft) {
+                        textFieldValue = TextFieldValue(draft, TextRange(draft.length))
+                    }
+                }
+
                 OutlinedTextField(
-                    value = draft,
-                    onValueChange = onDraftChanged,
-                    modifier = Modifier.weight(1f),
+                    value = textFieldValue,
+                    onValueChange = { newValue ->
+                        textFieldValue = newValue
+                        if (newValue.text != draft) {
+                            onDraftChanged(newValue.text)
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown
+                                && keyEvent.key == Key.Enter
+                                && !keyEvent.isShiftPressed
+                            ) {
+                                val hasReady = uploadingAttachments.any { !it.isUploading && it.attachment != null }
+                                val anyUploading = uploadingAttachments.any { it.isUploading }
+                                if (!isSending && !anyUploading &&
+                                    (draft.isNotBlank() || hasReady || editing != null)
+                                ) {
+                                    onSend()
+                                    return@onPreviewKeyEvent true
+                                }
+                                false
+                            } else if (keyEvent.type == KeyEventType.KeyDown
+                                && keyEvent.key == Key.Enter
+                                && keyEvent.isShiftPressed
+                            ) {
+                                // Shift+Enter: вставляем перенос в позицию курсора
+                                val sel = textFieldValue.selection
+                                val text = textFieldValue.text
+                                val newText = text.substring(0, sel.start) + "\n" + text.substring(sel.end)
+                                val newCursor = sel.start + 1
+                                textFieldValue = TextFieldValue(newText, TextRange(newCursor))
+                                onDraftChanged(newText)
+                                true
+                            } else false
+                        },
                     placeholder = { Text("Сообщение...") },
-                    maxLines = 4,
+                    maxLines = 6,
+                    singleLine = false,
                 )
 
                 Spacer(modifier = Modifier.width(8.dp))
 
+                val hasReadyAttachments = uploadingAttachments.any { !it.isUploading && it.attachment != null }
+                val anyUploading = uploadingAttachments.any { it.isUploading }
+                val canSend = !isSending && !anyUploading &&
+                        (draft.isNotBlank() || hasReadyAttachments || editing != null)
+
                 IconButton(
                     onClick = onSend,
-                    enabled = !isSending && draft.isNotBlank(),
+                    enabled = canSend,
                 ) {
                     if (isSending) {
                         CircularProgressIndicator(
@@ -265,6 +380,259 @@ fun MessageInput(
             }
         }
     }
+}
+
+@Composable
+private fun UploadingAttachmentsRow(
+    items: List<UploadingAttachment>,
+    onRemove: (String) -> Unit,
+) {
+    LazyRow(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(items, key = { it.localId }) { item ->
+            UploadingAttachmentChip(item = item, onRemove = { onRemove(item.localId) })
+        }
+    }
+}
+
+@Composable
+private fun UploadingAttachmentChip(
+    item: UploadingAttachment,
+    onRemove: () -> Unit,
+) {
+    val kind = detectKindByMime(item.mimeType)
+    val isImage = kind == "image"
+
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 1.dp,
+        modifier = Modifier.widthIn(min = if (isImage) 80.dp else 140.dp, max = 220.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // Иконка или превью
+            val preview = item.previewBytes
+            if (isImage && preview != null) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(MaterialTheme.shapes.small),
+                ) {
+                    org.messenger.app.ui.common.LocalBytesImage(
+                        bytes = preview,
+                        cacheKey = item.localId,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    )
+                    if (item.isUploading) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.35f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = Color.White,
+                            )
+                        }
+                    }
+                }
+            } else {
+                Icon(
+                    imageVector = iconForKind(kind),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(28.dp),
+                )
+            }
+
+            Spacer(Modifier.width(8.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = item.filename,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val err = item.error
+                when {
+                    err != null -> {
+                        Text(
+                            text = err,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    item.isUploading -> {
+                        Text(
+                            text = "Загрузка...",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    else -> {
+                        Text(
+                            text = formatSize(item.sizeBytes),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.width(4.dp))
+            if (item.isUploading && !isImage) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                )
+            } else if (!item.isUploading) {
+                IconButton(
+                    onClick = onRemove,
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Удалить",
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AttachmentChip(
+    attachment: AttachmentDto,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
+    onClick: () -> Unit,
+) {
+    val kind = attachment.fileKind.lowercase()
+    if (kind == "image") {
+        ImageAttachmentPreview(
+            attachment = attachment,
+            attachmentsRepository = attachmentsRepository,
+            onClick = onClick,
+        )
+        return
+    }
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+        modifier = Modifier
+            .widthIn(min = 160.dp, max = 240.dp)
+            .clickable(onClick = onClick),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = iconForKind(kind),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(28.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = attachment.originalFilename,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = formatSize(attachment.sizeBytes),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImageAttachmentPreview(
+    attachment: AttachmentDto,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
+    onClick: () -> Unit,
+) {
+    val w = attachment.width ?: 1
+    val h = attachment.height ?: 1
+    val aspect = if (w > 0 && h > 0) w.toFloat() / h.toFloat() else 1f
+
+    var showViewer by remember { mutableStateOf(false) }
+
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+        modifier = Modifier
+            .widthIn(min = 180.dp, max = 260.dp)
+            .clickable { showViewer = true },
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(aspect.coerceIn(0.5f, 2.0f)),
+        ) {
+            org.messenger.app.ui.common.CachedAttachmentImage(
+                attachment = attachment,
+                attachmentsRepository = attachmentsRepository,
+                variant = org.messenger.app.ui.common.ImageVariant.THUMB,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+            )
+        }
+    }
+
+    if (showViewer) {
+        org.messenger.app.ui.common.ImageViewerDialog(
+            attachment = attachment,
+            attachmentsRepository = attachmentsRepository,
+            onDismiss = { showViewer = false },
+        )
+    }
+}
+
+private fun detectKindByMime(mime: String): String {
+    val m = mime.lowercase()
+    return when {
+        m.startsWith("image/") -> "image"
+        m.startsWith("video/") -> "video"
+        m.startsWith("audio/") -> "audio"
+        else -> "file"
+    }
+}
+
+private fun iconForKind(kind: String): androidx.compose.ui.graphics.vector.ImageVector =
+    when (kind.lowercase()) {
+        "image" -> Icons.Default.Image
+        "video" -> Icons.Default.Movie
+        "audio" -> Icons.Default.AudioFile
+        else -> Icons.Default.InsertDriveFile
+    }
+
+private fun formatSize(bytes: Long): String {
+    if (bytes < 1024) return "$bytes B"
+    val kb = bytes / 1024.0
+    if (kb < 1024) return "${"%.1f".format(kb)} KB"
+    val mb = kb / 1024.0
+    if (mb < 1024) return "${"%.1f".format(mb)} MB"
+    val gb = mb / 1024.0
+    return "${"%.1f".format(gb)} GB"
 }
 
 @Composable
@@ -315,6 +683,7 @@ fun MessageBubble(
     isReadByOthers: Boolean,
     isSelected: Boolean,
     selectionMode: Boolean,
+    attachmentsRepository: org.messenger.app.shared.domain.repository.AttachmentsRepository,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
@@ -328,7 +697,8 @@ fun MessageBubble(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 4.dp)
-                .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                .onRightClick(onLongClick),
             horizontalArrangement = Arrangement.Center,
         ) {
             Surface(
@@ -349,27 +719,133 @@ fun MessageBubble(
     }
 
     if (isSystem) {
+        val bubbleColor = when {
+            isSelected -> MaterialTheme.colorScheme.tertiaryContainer
+            isOwnMessage -> MaterialTheme.colorScheme.primaryContainer
+            isAdmin -> Color(0xFFFFCDD2)
+            else -> MaterialTheme.colorScheme.surfaceVariant
+        }
+
+        val nameColor = when {
+            isAdmin -> Color(0xFFD32F2F)
+            else -> MaterialTheme.colorScheme.primary
+        }
+
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                .onRightClick(onLongClick)
+                .padding(vertical = 2.dp),
+            horizontalArrangement = if (isOwnMessage) Arrangement.End else Arrangement.Start,
         ) {
+            // Spacer для отступа со "свободной" стороны, занимает 25% ширины
+            if (isOwnMessage) {
+                Spacer(modifier = Modifier.weight(0.25f))
+            }
             Surface(
                 shape = MaterialTheme.shapes.medium,
-                color = Color(0xFFFFF3E0),
-                modifier = Modifier.widthIn(max = 300.dp),
+                color = bubbleColor,
+                modifier = Modifier.weight(0.75f, fill = false),
             ) {
                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                    Text(
-                        text = message.content,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF795548),
-                    )
-                    Text(
-                        text = formatTimeFromIso(message.createdAt),
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                        color = Color(0xFF795548).copy(alpha = 0.6f),
+                    if (!isOwnMessage) {
+                        Text(
+                            text = when {
+                                isAdmin -> "Admin"
+                                !message.senderName.isNullOrBlank() -> message.senderName!!
+                                else -> "Пользователь"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = nameColor,
+                        )
+                    }
+
+                    message.forwardedFrom?.let { fwd ->
+                        Surface(
+                            color = Color.Transparent,
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        ) {
+                            Column {
+                                Text(
+                                    text = "Переслано от ${fwd.senderName ?: "пользователя"}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                if (fwd.isDeleted) {
+                                    Text(
+                                        text = "(оригинал удалён)",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    message.replyTo?.let { reply ->
+                        ReplyQuote(reply)
+                        Spacer(Modifier.height(4.dp))
+                    }
+
+                    if (message.attachments.isNotEmpty()) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.padding(bottom = if (message.content.isNotBlank()) 6.dp else 0.dp),
+                        ) {
+                            message.attachments.forEach { att ->
+                                AttachmentChip(
+                                    attachment = att,
+                                    attachmentsRepository = attachmentsRepository,
+                                    onClick = {
+                                        att.downloadUrl?.let { url ->
+                                            org.messenger.app.shared.util.openUrl(url)
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                    }
+
+                    if (message.content.isNotBlank()) {
+                        LinkifiedText(
+                            text = message.content,
+                            baseStyle = MaterialTheme.typography.bodyMedium,
+                            onUrlClick = { url -> org.messenger.app.shared.util.openUrl(url) },
+                        )
+                    }
+
+                    Row(
                         modifier = Modifier.align(Alignment.End),
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        if (message.editedAt != null) {
+                            Text(
+                                text = "изм.",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            )
+                            Spacer(Modifier.width(4.dp))
+                        }
+                        Text(
+                            text = formatTimeFromIso(message.createdAt),
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        )
+                        if (isOwnMessage) {
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                text = "✓✓",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                                color = if (isReadByOthers)
+                                    Color(0xFF2196F3)
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -392,13 +868,17 @@ fun MessageBubble(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .onRightClick(onLongClick)
             .padding(vertical = 2.dp),
         horizontalArrangement = if (isOwnMessage) Arrangement.End else Arrangement.Start,
     ) {
+        if (isOwnMessage) {
+            Spacer(modifier = Modifier.weight(0.25f))
+        }
         Surface(
             shape = MaterialTheme.shapes.medium,
             color = bubbleColor,
-            modifier = Modifier.widthIn(max = 280.dp),
+            modifier = Modifier.weight(0.75f, fill = false),
         ) {
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                 if (!isOwnMessage) {
@@ -441,11 +921,32 @@ fun MessageBubble(
                     Spacer(Modifier.height(4.dp))
                 }
 
-                LinkifiedText(
-                    text = message.content,
-                    baseStyle = MaterialTheme.typography.bodyMedium,
-                    onUrlClick = { url -> org.messenger.app.shared.util.openUrl(url) },
-                )
+                if (message.attachments.isNotEmpty()) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.padding(bottom = if (message.content.isNotBlank()) 6.dp else 0.dp),
+                    ) {
+                        message.attachments.forEach { att ->
+                            AttachmentChip(
+                                attachment = att,
+                                attachmentsRepository = attachmentsRepository,
+                                onClick = {
+                                    att.downloadUrl?.let { url ->
+                                        org.messenger.app.shared.util.openUrl(url)
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+
+                if (message.content.isNotBlank()) {
+                    LinkifiedText(
+                        text = message.content,
+                        baseStyle = MaterialTheme.typography.bodyMedium,
+                        onUrlClick = { url -> org.messenger.app.shared.util.openUrl(url) },
+                    )
+                }
 
                 Row(
                     modifier = Modifier.align(Alignment.End),
@@ -479,6 +980,9 @@ fun MessageBubble(
                 }
             }
         }
+        if (!isOwnMessage) {
+            Spacer(modifier = Modifier.weight(0.25f))
+        }
     }
 }
 
@@ -486,7 +990,6 @@ fun MessageBubble(
 private fun ReplyQuote(reply: ReplyPreviewDto) {
     Row(
         modifier = Modifier
-            .fillMaxWidth()
             .clip(RoundedCornerShape(6.dp))
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.4f))
             .padding(horizontal = 8.dp, vertical = 4.dp),
@@ -643,25 +1146,12 @@ private fun declOfNum(n: Int, one: String, few: String, many: String): String {
 
 internal fun formatTimeFromIso(iso: String): String {
     return try {
-        val normalized = if (
-            iso.endsWith("Z") ||
-            iso.contains("+") ||
-            iso.substringAfter("T", "").contains("-")
-        ) iso else "${iso}Z"
-        val instant = kotlinx.datetime.Instant.parse(normalized)
-        val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
-        val hh = local.hour.toString().padStart(2, '0')
-        val mm = local.minute.toString().padStart(2, '0')
-        "$hh:$mm"
-    } catch (_: Exception) {
-        try {
-            val timePart = if (iso.contains("T")) {
-                iso.substringAfter("T").substringBefore(".")
-                    .substringBefore("+").substringBefore("Z")
-            } else iso
-            timePart.take(5)
-        } catch (_: Exception) { "" }
-    }
+        val timePart = if (iso.contains("T")) {
+            iso.substringAfter("T").substringBefore(".")
+                .substringBefore("+").substringBefore("Z")
+        } else iso
+        timePart.take(5)
+    } catch (_: Exception) { "" }
 }
 
 internal fun isMessageReadByOthers(

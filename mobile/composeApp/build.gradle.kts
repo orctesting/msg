@@ -1,5 +1,6 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -19,6 +20,20 @@ kotlin {
 
     jvm()
 
+    listOf(
+        iosArm64(),
+        iosSimulatorArm64()
+    ).forEach { iosTarget ->
+        iosTarget.binaries.framework {
+            baseName = "ComposeApp"
+            isStatic = true
+            export(projects.shared)
+        }
+    }
+
+    @OptIn(ExperimentalKotlinGradlePluginApi::class)
+    applyDefaultHierarchyTemplate()
+
     sourceSets {
         androidMain.dependencies {
             implementation(libs.compose.uiToolingPreview)
@@ -26,6 +41,7 @@ kotlin {
             implementation(libs.androidx.lifecycle.process)
             implementation("com.google.firebase:firebase-messaging-ktx:24.1.0")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
+            implementation(libs.kotlinx.serialization.json)
         }
         commonMain.dependencies {
             implementation(libs.compose.runtime)
@@ -36,7 +52,6 @@ kotlin {
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.androidx.lifecycle.viewmodelCompose)
             implementation(libs.androidx.lifecycle.runtimeCompose)
-            implementation(libs.kotlinx.datetime)
             implementation("org.jetbrains.compose.material:material-icons-extended:1.7.3")
             implementation(projects.shared)
         }
@@ -46,6 +61,14 @@ kotlin {
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)
             implementation(libs.kotlinx.coroutinesSwing)
+            implementation(libs.multiplatformSettings)
+            implementation(libs.kotlinx.serialization.json)
+        }
+        iosMain.dependencies {
+            api(projects.shared)
+            implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlinx.serialization.json)
+            implementation(libs.multiplatformSettings)
         }
     }
 }
@@ -89,6 +112,14 @@ compose.desktop {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "org.messenger.app"
             packageVersion = "1.0.0"
+
+            modules(
+                "java.net.http",
+                "java.naming",
+                "java.sql",
+                "jdk.crypto.ec",
+                "jdk.unsupported"
+            )
         }
     }
 }

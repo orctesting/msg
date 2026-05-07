@@ -22,6 +22,7 @@ class ChatRepository(private val api: ApiService) {
         content: String,
         replyToMessageId: String? = null,
         forwardedFromMessageId: String? = null,
+        attachmentIds: List<String> = emptyList(),
     ): MessageDto =
         api.sendMessage(
             chatId = chatId,
@@ -29,6 +30,7 @@ class ChatRepository(private val api: ApiService) {
             idempotencyKey = Uuid.random().toString(),
             replyToMessageId = replyToMessageId,
             forwardedFromMessageId = forwardedFromMessageId,
+            attachmentIds = attachmentIds,
         )
 
     suspend fun editMessage(chatId: String, messageId: String, content: String): MessageDto =
