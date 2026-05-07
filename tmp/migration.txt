@@ -13,3 +13,7 @@ find "$HOME" \
     -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.heic" -o \
     -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" \
   \) | wc -l
+
+
+mkdir -p tmp/assets
+rsync -avh ~/Pictures/"Photos Library.photoslibrary"/originals/ tmp/assets/
