@@ -69,6 +69,8 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import kotlinx.datetime.toLocalDateTime
 import org.messenger.app.util.fileDropTarget
 import org.messenger.app.util.DroppedFile
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -324,6 +326,26 @@ fun MessageInput(
                         .weight(1f)
                         .onPreviewKeyEvent { keyEvent ->
                             if (keyEvent.type == KeyEventType.KeyDown
+                                && keyEvent.key == Key.V
+                                && (keyEvent.isCtrlPressed || keyEvent.isMetaPressed)
+                                && editing == null
+                                && onFilesDropped != null
+                            ) {
+                                val img = org.messenger.app.util.readImageFromClipboard()
+                                if (img != null) {
+                                    onFilesDropped(
+                                        listOf(
+                                            org.messenger.app.util.DroppedFile(
+                                                name = img.suggestedName,
+                                                mimeType = img.mimeType,
+                                                bytes = img.bytes,
+                                            )
+                                        )
+                                    )
+                                    return@onPreviewKeyEvent true
+                                }
+                                false
+                            } else if (keyEvent.type == KeyEventType.KeyDown
                                 && keyEvent.key == Key.Enter
                                 && !keyEvent.isShiftPressed
                             ) {
@@ -340,7 +362,6 @@ fun MessageInput(
                                 && keyEvent.key == Key.Enter
                                 && keyEvent.isShiftPressed
                             ) {
-                                // Shift+Enter: вставляем перенос в позицию курсора
                                 val sel = textFieldValue.selection
                                 val text = textFieldValue.text
                                 val newText = text.substring(0, sel.start) + "\n" + text.substring(sel.end)
