@@ -39,7 +39,7 @@ kotlin {
         commonMain.dependencies {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
-            implementation(libs.kotlinx.datetime)
+            api(libs.kotlinx.datetime)
             implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.content.negotiation)
             implementation(libs.ktor.serialization.kotlinx.json)
@@ -76,5 +76,12 @@ android {
     }
     defaultConfig {
         minSdk = libs.versions.android.minSdk.get().toInt()
+    }
+}
+
+configurations.all {
+    resolutionStrategy {
+        force("org.jetbrains.kotlinx:kotlinx-datetime:0.6.2")
+        force("org.jetbrains.kotlinx:kotlinx-datetime-jvm:0.6.2")
     }
 }

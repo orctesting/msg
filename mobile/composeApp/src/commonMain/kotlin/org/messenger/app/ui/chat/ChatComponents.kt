@@ -66,6 +66,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.layout.BoxWithConstraints
+import kotlinx.datetime.toLocalDateTime
 import org.messenger.app.util.fileDropTarget
 import org.messenger.app.util.DroppedFile
 
@@ -1146,12 +1147,24 @@ private fun declOfNum(n: Int, one: String, few: String, many: String): String {
 
 internal fun formatTimeFromIso(iso: String): String {
     return try {
-        val timePart = if (iso.contains("T")) {
-            iso.substringAfter("T").substringBefore(".")
-                .substringBefore("+").substringBefore("Z")
-        } else iso
-        timePart.take(5)
+        val instant = kotlinx.datetime.Instant.parse(normalizeIso(iso))
+        val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+        val h = local.hour.toString().padStart(2, '0')
+        val m = local.minute.toString().padStart(2, '0')
+        "$h:$m"
     } catch (_: Exception) { "" }
+}
+
+private fun normalizeIso(iso: String): String {
+    if (iso.isBlank()) return iso
+    if (iso.endsWith("Z") || iso.endsWith("z")) return iso
+    // ищем индикатор таймзоны после позиции даты (после 'T', т.е. с индекса 10+)
+    val tIdx = iso.indexOf('T')
+    val searchFrom = if (tIdx >= 0) tIdx else 10
+    val plus = iso.indexOf('+', startIndex = searchFrom)
+    val minus = iso.indexOf('-', startIndex = searchFrom)
+    val hasTz = plus >= 0 || minus >= 0
+    return if (hasTz) iso else "${iso}Z"
 }
 
 internal fun isMessageReadByOthers(

@@ -63,6 +63,7 @@ kotlin {
             implementation(libs.kotlinx.coroutinesSwing)
             implementation(libs.multiplatformSettings)
             implementation(libs.kotlinx.serialization.json)
+            implementation(libs.kotlinx.datetime)
         }
         iosMain.dependencies {
             api(projects.shared)
@@ -121,5 +122,12 @@ compose.desktop {
                 "jdk.unsupported"
             )
         }
+    }
+}
+
+configurations.all {
+    resolutionStrategy {
+        force("org.jetbrains.kotlinx:kotlinx-datetime:0.6.2")
+        force("org.jetbrains.kotlinx:kotlinx-datetime-jvm:0.6.2")
     }
 }

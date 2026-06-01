@@ -1,17 +1,27 @@
 package org.messenger.app.ui.chat
 
+import kotlinx.datetime.toLocalDateTime
+
 /**
  * Парсит ISO дату и возвращает "ключ дня" в формате "YYYY-MM-DD".
  * Простая работа со строкой без зависимостей от datetime-библиотек.
  */
 fun dayKeyFromIso(iso: String): String {
     return try {
-        // ISO формат: "2026-04-30T12:34:56.789Z" или "2026-04-30T12:34:56+03:00"
-        if (iso.length >= 10 && iso[4] == '-' && iso[7] == '-') {
-            iso.take(10)
-        } else {
-            iso.take(10)
+        if (iso.isBlank()) return iso
+        val normalized = run {
+            if (iso.endsWith("Z") || iso.endsWith("z")) iso
+            else {
+                val tIdx = iso.indexOf('T')
+                val searchFrom = if (tIdx >= 0) tIdx else 10
+                val plus = iso.indexOf('+', startIndex = searchFrom)
+                val minus = iso.indexOf('-', startIndex = searchFrom)
+                if (plus >= 0 || minus >= 0) iso else "${iso}Z"
+            }
         }
+        val instant = kotlinx.datetime.Instant.parse(normalized)
+        val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+        "${local.year.toString().padStart(4, '0')}-${local.monthNumber.toString().padStart(2, '0')}-${local.dayOfMonth.toString().padStart(2, '0')}"
     } catch (_: Exception) {
         iso.take(10)
     }
