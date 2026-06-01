@@ -3,7 +3,7 @@
 
 param(
     [string]$OutputFile = "mobile-dump.txt",
-    [string]$ProjectRoot = "."
+    [string]$ProjectRoot = "mobile"
 )
 
 $ProjectRoot = Resolve-Path $ProjectRoot

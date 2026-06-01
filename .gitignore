@@ -54,4 +54,5 @@ certbot/work/
 *.pfx
 *.p12
 *.jks
-*.keystore
+*.keystoremobile-dump.txt
+project_dump.txt
