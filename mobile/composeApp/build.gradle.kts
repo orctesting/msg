@@ -22,8 +22,11 @@ val versionProps = Properties().apply {
     }
 }
 
+val versionFile = rootProject.file("version.properties")
+
 val generateVersionFile by tasks.registering {
     val outputDir = layout.buildDirectory.dir("generated/version/kotlin")
+    inputs.file(versionFile)
     outputs.dir(outputDir)
     val vName = versionProps.getProperty("versionName")
     val vCode = versionProps.getProperty("versionCode")
@@ -46,6 +49,7 @@ val generateVersionFile by tasks.registering {
 
 val generateJvmVersionResource by tasks.registering {
     val outputDir = layout.buildDirectory.dir("generated/jvmVersionRes")
+    inputs.file(versionFile)
     outputs.dir(outputDir)
     val vName = versionProps.getProperty("versionName")
     val vCode = versionProps.getProperty("versionCode")

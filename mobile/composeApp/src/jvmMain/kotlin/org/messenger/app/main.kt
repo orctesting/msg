@@ -57,7 +57,7 @@ fun main() = application {
             lifecycle.onAppStop()
             exitApplication()
         },
-        title = "Messenger Oreshnik",
+        title = "Messenger Notificator",
         state = windowState,
         onPreviewKeyEvent = { keyEvent ->
             if (keyEvent.type == KeyEventType.KeyDown) {
