@@ -55,6 +55,10 @@ class AppModule(
         org.messenger.app.shared.domain.repository.NotificationsRepository(apiService)
     }
 
+    val updateRepository by lazy {
+        org.messenger.app.shared.domain.repository.UpdateRepository(apiService)
+    }
+
     val chatListViewModel by lazy {
         org.messenger.app.shared.ui.chatlist.ChatListViewModel(
             chatRepository = chatRepository,

@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     multifactor_api_url: str = "https://api.multifactor.ru/v1"
 
     fcm_service_account_json: str = ""
-    internal_api_key: str | None = None
+    internal_api_key: str | None = None    
+    releases_admin_api_key: str | None = None
 
     otp_request_cooldown_seconds: int = 10
     otp_max_requests_per_hour: int = 20

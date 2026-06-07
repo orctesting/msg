@@ -55,6 +55,7 @@ services:
       - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minio_secret_change_me}
       - S3_BUCKET=${MINIO_BUCKET:-attachments}
       - S3_REGION=us-east-1
+      - RELEASES_ADMIN_API_KEY=${RELEASES_ADMIN_API_KEY}
     depends_on:
       postgres:
         condition: service_healthy

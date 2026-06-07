@@ -78,135 +78,164 @@ fun App(
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
         ) {
-            when (val screen = currentScreen) {
-                is Screen.Auth -> {
-                    val viewModel = remember(appModuleRevision) {
-                        AuthViewModel(
-                            authRepository = currentAppModule.authRepository,
-                            deviceInfo = DeviceInfo(
-                                deviceId = "device-${getPlatformName()}",
-                                platform = getPlatformName()
-                            ),
-                            initialServerAddress = currentAppModule.tokenStorage.getServerUrl() ?: ""
-                        )
-                    }
-                    val state by viewModel.state.collectAsState()
-
-                    // Системная кнопка "назад": на шаге CODE возвращает к PHONE,
-                    // на шаге PHONE — не перехватывает (даёт системе свернуть приложение)
-                    PlatformBackHandler(
-                        enabled = state.step == AuthStep.CODE
-                    ) {
-                        viewModel.backToPhone()
-                    }
-
-                    LaunchedEffect(state.isAuthenticated) {
-                        if (state.isAuthenticated) {
-                            val addr = state.serverAddress.trim()
-                            if (addr.isNotBlank()) {
-                                currentAppModule.tokenStorage.saveServerUrl(addr)
-                            }
-                            currentScreen = Screen.ChatList
-                            onLoginSuccessCallback(currentAppModule)
+            androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxSize()) {
+                when (val screen = currentScreen) {
+                    is Screen.Auth -> {
+                        val viewModel = remember(appModuleRevision) {
+                            AuthViewModel(
+                                authRepository = currentAppModule.authRepository,
+                                deviceInfo = DeviceInfo(
+                                    deviceId = "device-${getPlatformName()}",
+                                    platform = getPlatformName()
+                                ),
+                                initialServerAddress = currentAppModule.tokenStorage.getServerUrl() ?: ""
+                            )
                         }
-                    }
+                        val state by viewModel.state.collectAsState()
 
-                    AuthScreen(
-                        viewModel = viewModel,
-                        onRequestOtp = { addr ->
-                            val newBase = AppModule.buildBaseUrl(addr)
-                            if (newBase != currentAppModule.baseUrl) {
-                                val keptPhone = viewModel.state.value.phone
-                                val newModule = AppModule(
-                                    baseUrl = newBase,
-                                    wsBaseUrl = AppModule.buildWsUrl(addr)
-                                )
-                                newModule.tokenStorage.saveServerUrl(addr)
-                                currentAppModule = newModule
-                                appModuleRevision++
-                                syncAppModule(newModule)
-                                pendingPhoneForOtp = keptPhone
-                                pendingServerAddress = addr
-                            } else {
-                                viewModel.requestOtp()
+                        // Системная кнопка "назад": на шаге CODE возвращает к PHONE,
+                        // на шаге PHONE — не перехватывает (даёт системе свернуть приложение)
+                        PlatformBackHandler(
+                            enabled = state.step == AuthStep.CODE
+                        ) {
+                            viewModel.backToPhone()
+                        }
+
+                        LaunchedEffect(state.isAuthenticated) {
+                            if (state.isAuthenticated) {
+                                val addr = state.serverAddress.trim()
+                                if (addr.isNotBlank()) {
+                                    currentAppModule.tokenStorage.saveServerUrl(addr)
+                                }
+                                currentScreen = Screen.ChatList
+                                onLoginSuccessCallback(currentAppModule)
                             }
                         }
-                    )
 
-                    LaunchedEffect(appModuleRevision) {
-                        val phone = pendingPhoneForOtp
-                        val addr = pendingServerAddress
-                        if (phone != null && addr != null && appModuleRevision > 0) {
-                            viewModel.onServerAddressChanged(addr)
-                            viewModel.onPhoneChanged(phone)
-                            viewModel.requestOtp()
-                            pendingPhoneForOtp = null
-                            pendingServerAddress = null
-                        }
-                    }
-                }
-
-                is Screen.ForwardPicker -> {
-                    setActiveChatId(null)
-                    ForwardTargetScreen(
-                        appModule = currentAppModule,
-                        sourceChatId = screen.sourceChatId,
-                        messageIds = screen.messageIds,
-                        onCancel = {
-                            currentScreen = if (isDesktop) {
-                                Screen.ChatList
-                            } else {
-                                Screen.Chat(screen.sourceChatId, screen.sourceChatName)
-                            }
-                        },
-                        onPicked = { targetChatId ->
-                            forwardScope.launch {
-                                screen.messageIds.forEach { msgId ->
-                                    try {
-                                        currentAppModule.chatRepository.forwardMessage(
-                                            sourceChatId = screen.sourceChatId,
-                                            messageId = msgId,
-                                            targetChatId = targetChatId,
-                                        )
-                                    } catch (_: Exception) {}
+                        AuthScreen(
+                            viewModel = viewModel,
+                            onRequestOtp = { addr ->
+                                val newBase = AppModule.buildBaseUrl(addr)
+                                if (newBase != currentAppModule.baseUrl) {
+                                    val keptPhone = viewModel.state.value.phone
+                                    val newModule = AppModule(
+                                        baseUrl = newBase,
+                                        wsBaseUrl = AppModule.buildWsUrl(addr)
+                                    )
+                                    newModule.tokenStorage.saveServerUrl(addr)
+                                    currentAppModule = newModule
+                                    appModuleRevision++
+                                    syncAppModule(newModule)
+                                    pendingPhoneForOtp = keptPhone
+                                    pendingServerAddress = addr
+                                } else {
+                                    viewModel.requestOtp()
                                 }
                             }
-                            if (isDesktop) {
-                                forwardResultChatId = targetChatId
-                                currentScreen = Screen.ChatList
-                            } else {
-                                currentScreen = Screen.Chat(targetChatId, "")
+                        )
+
+                        LaunchedEffect(appModuleRevision) {
+                            val phone = pendingPhoneForOtp
+                            val addr = pendingServerAddress
+                            if (phone != null && addr != null && appModuleRevision > 0) {
+                                viewModel.onServerAddressChanged(addr)
+                                viewModel.onPhoneChanged(phone)
+                                viewModel.requestOtp()
+                                pendingPhoneForOtp = null
+                                pendingServerAddress = null
                             }
                         }
-                    )
+                    }
+
+                    is Screen.ForwardPicker -> {
+                        setActiveChatId(null)
+                        ForwardTargetScreen(
+                            appModule = currentAppModule,
+                            sourceChatId = screen.sourceChatId,
+                            messageIds = screen.messageIds,
+                            onCancel = {
+                                currentScreen = if (isDesktop) {
+                                    Screen.ChatList
+                                } else {
+                                    Screen.Chat(screen.sourceChatId, screen.sourceChatName)
+                                }
+                            },
+                            onPicked = { targetChatId ->
+                                forwardScope.launch {
+                                    screen.messageIds.forEach { msgId ->
+                                        try {
+                                            currentAppModule.chatRepository.forwardMessage(
+                                                sourceChatId = screen.sourceChatId,
+                                                messageId = msgId,
+                                                targetChatId = targetChatId,
+                                            )
+                                        } catch (_: Exception) {}
+                                    }
+                                }
+                                if (isDesktop) {
+                                    forwardResultChatId = targetChatId
+                                    currentScreen = Screen.ChatList
+                                } else {
+                                    currentScreen = Screen.Chat(targetChatId, "")
+                                }
+                            }
+                        )
+                    }
+
+                    else -> {
+                        if (isDesktop) {
+                            // Desktop: единый split-pane экран после авторизации
+                            val initialChatScreen = screen as? Screen.Chat
+                            org.messenger.app.ui.PlatformMainScreen(
+                                appModule = currentAppModule,
+                                initialChatId = initialChatScreen?.chatId,
+                                initialChatName = initialChatScreen?.chatName,
+                                onLogout = {
+                                    currentAppModule.tokenStorage.clear()
+                                    currentAppModule.wsService.disconnect()
+                                    currentScreen = Screen.Auth
+                                },
+                                onOpenForwardPicker = { srcId, srcName, ids ->
+                                    currentScreen = Screen.ForwardPicker(srcId, srcName, ids)
+                                },
+                                forwardResultChatId = forwardResultChatId,
+                                onForwardResultConsumed = { forwardResultChatId = null },
+                            )
+                        } else {
+                            // Mobile: оригинальная стековая навигация
+                            MobileNavigation(
+                                screen = screen,
+                                currentAppModule = currentAppModule,
+                                forwardScope = forwardScope,
+                                onScreenChange = { currentScreen = it },
+                            )
+                        }
+                    }
                 }
 
-                else -> {
-                    if (isDesktop) {
-                        // Desktop: единый split-pane экран после авторизации
-                        val initialChatScreen = screen as? Screen.Chat
-                        org.messenger.app.ui.PlatformMainScreen(
-                            appModule = currentAppModule,
-                            initialChatId = initialChatScreen?.chatId,
-                            initialChatName = initialChatScreen?.chatName,
-                            onLogout = {
-                                currentAppModule.tokenStorage.clear()
-                                currentAppModule.wsService.disconnect()
-                                currentScreen = Screen.Auth
-                            },
-                            onOpenForwardPicker = { srcId, srcName, ids ->
-                                currentScreen = Screen.ForwardPicker(srcId, srcName, ids)
-                            },
-                            forwardResultChatId = forwardResultChatId,
-                            onForwardResultConsumed = { forwardResultChatId = null },
+                // ── Update overlay (только когда залогинен) ──
+                val isLoggedInNow = currentAppModule.tokenStorage.isLoggedIn()
+                if (isLoggedInNow) {
+                    val updateVm = remember(appModuleRevision) {
+                        org.messenger.app.updates.UpdateViewModel(
+                            org.messenger.app.updates.UpdateChecker(
+                                repository = currentAppModule.updateRepository,
+                                tokenStorage = currentAppModule.tokenStorage,
+                                isAdmin = currentAppModule.tokenStorage.getUserRole() == "admin",
+                            )
                         )
-                    } else {
-                        // Mobile: оригинальная стековая навигация
-                        MobileNavigation(
-                            screen = screen,
-                            currentAppModule = currentAppModule,
-                            forwardScope = forwardScope,
-                            onScreenChange = { currentScreen = it },
+                    }
+                    LaunchedEffect(updateVm) { updateVm.start() }
+                    val updateState by updateVm.state.collectAsState()
+                    val info = updateState.available
+                    if (updateState.showDialog && info != null) {
+                        org.messenger.app.updates.UpdateDialog(
+                            info = info,
+                            progress = updateState.progress,
+                            installing = updateState.installing,
+                            onUpdate = { updateVm.startUpdate() },
+                            onPostpone = { updateVm.postpone() },
+                            onDismissError = { updateVm.dismissError() },
                         )
                     }
                 }

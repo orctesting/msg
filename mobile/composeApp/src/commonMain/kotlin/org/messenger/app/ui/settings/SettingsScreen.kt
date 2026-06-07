@@ -15,8 +15,8 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Notifications
 import org.messenger.app.shared.di.AppModule
 
-const val APP_NAME = "Messenger Oreshnik"
-const val APP_VERSION = "1.0.0"
+const val APP_NAME = "Messenger Notificator"
+val APP_VERSION = org.messenger.app.generated.AppVersion.VERSION_NAME
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

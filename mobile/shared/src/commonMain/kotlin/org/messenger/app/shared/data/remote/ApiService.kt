@@ -336,4 +336,22 @@ class ApiService(private val client: HttpClient) {
                 setBody(UpdateNotificationSettingsBody(mode = mode, chatIds = chatIds))
             }
         }
+
+    // ── Releases ──
+    suspend fun getLatestRelease(
+        platform: String,
+        currentVersionCode: Int,
+        channel: String = "stable",
+    ): org.messenger.app.shared.data.model.UpdateInfo? {
+        val response = client.get("api/v1/releases/latest") {
+            parameter("platform", platform)
+            parameter("channel", channel)
+            parameter("current_version_code", currentVersionCode)
+        }
+        if (response.status.value == 204) return null
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status.value, response.bodyAsText())
+        }
+        return response.body()
+    }
 }

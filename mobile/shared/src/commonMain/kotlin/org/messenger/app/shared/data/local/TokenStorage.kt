@@ -12,6 +12,7 @@ class TokenStorage(private val settings: Settings = Settings()) {
         private const val KEY_USER_NAME = "user_display_name"
         private const val KEY_USER_ROLE = "user_role"
         private const val KEY_SERVER_URL = "server_url"
+        private const val KEY_UPDATE_LAST_CHECK = "update_last_check_ms"
     }
 
     fun saveTokens(accessToken: String, refreshToken: String) {
@@ -41,6 +42,9 @@ class TokenStorage(private val settings: Settings = Settings()) {
     }
 
     fun getServerUrl(): String? = settings.getStringOrNull(KEY_SERVER_URL)
+
+    fun getUpdateLastCheckMs(): Long = settings.getLong(KEY_UPDATE_LAST_CHECK, 0L)
+    fun setUpdateLastCheckMs(value: Long) { settings.putLong(KEY_UPDATE_LAST_CHECK, value) }
 
     fun isLoggedIn(): Boolean = getAccessToken() != null
 

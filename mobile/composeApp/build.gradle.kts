@@ -1,6 +1,8 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
+import java.util.Properties
+import java.security.MessageDigest
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -10,6 +12,65 @@ plugins {
     alias(libs.plugins.composeHotReload)
     id("com.google.gms.google-services")
 }
+
+val versionProps = Properties().apply {
+    val f = rootProject.file("version.properties")
+    if (f.exists()) f.reader().use { load(it) }
+    else {
+        setProperty("versionName", "1.0.0")
+        setProperty("versionCode", "1")
+    }
+}
+
+val generateVersionFile by tasks.registering {
+    val outputDir = layout.buildDirectory.dir("generated/version/kotlin")
+    outputs.dir(outputDir)
+    val vName = versionProps.getProperty("versionName")
+    val vCode = versionProps.getProperty("versionCode")
+    doLast {
+        val dir = outputDir.get().asFile
+        val pkgDir = dir.resolve("org/messenger/app/generated")
+        pkgDir.mkdirs()
+        pkgDir.resolve("AppVersion.kt").writeText(
+            """
+            package org.messenger.app.generated
+
+            object AppVersion {
+                const val VERSION_NAME = "$vName"
+                const val VERSION_CODE = $vCode
+            }
+            """.trimIndent()
+        )
+    }
+}
+
+val generateJvmVersionResource by tasks.registering {
+    val outputDir = layout.buildDirectory.dir("generated/jvmVersionRes")
+    outputs.dir(outputDir)
+    val vName = versionProps.getProperty("versionName")
+    val vCode = versionProps.getProperty("versionCode")
+    doLast {
+        val dir = outputDir.get().asFile
+        dir.mkdirs()
+        dir.resolve("version.properties").writeText(
+            """
+            VERSION_NAME=$vName
+            VERSION_CODE=$vCode
+            """.trimIndent()
+        )
+    }
+}
+
+kotlin {
+    sourceSets {
+        commonMain {
+            kotlin.srcDir(layout.buildDirectory.dir("generated/version/kotlin"))
+        }
+    }
+}
+
+tasks.matching { it.name.startsWith("compile") || it.name.contains("Kotlin") }
+    .configureEach { dependsOn(generateVersionFile) }
 
 kotlin {
     androidTarget {
@@ -58,6 +119,9 @@ kotlin {
         commonTest.dependencies {
             implementation(libs.kotlin.test)
         }
+        jvmMain {
+            resources.srcDir(layout.buildDirectory.dir("generated/jvmVersionRes"))
+        }
         jvmMain.dependencies {
             implementation(compose.desktop.currentOs)
             implementation(libs.kotlinx.coroutinesSwing)
@@ -82,8 +146,8 @@ android {
         applicationId = "org.messenger.app"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = versionProps.getProperty("versionCode").toInt()
+        versionName = versionProps.getProperty("versionName")
     }
     packaging {
         resources {
@@ -112,7 +176,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "org.messenger.app"
-            packageVersion = "1.0.0"
+            packageVersion = versionProps.getProperty("versionName")
 
             modules(
                 "java.net.http",
@@ -129,5 +193,49 @@ configurations.all {
     resolutionStrategy {
         force("org.jetbrains.kotlinx:kotlinx-datetime:0.6.2")
         force("org.jetbrains.kotlinx:kotlinx-datetime-jvm:0.6.2")
+    }
+}
+
+// в”Ђв”Ђ Bind jvm version.properties generation to processResources в”Ђв”Ђ
+tasks.matching { it.name == "jvmProcessResources" }
+    .configureEach { dependsOn(generateJvmVersionResource) }
+
+// в”Ђв”Ђ Portable zip РґР»СЏ Р°РІС‚Рѕ-РѕР±РЅРѕРІР»РµРЅРёСЏ (Р·Р°Р»РёРІР°РµС‚СЃСЏ РІ S3) в”Ђв”Ђ
+val packagePortableZip by tasks.registering(Zip::class) {
+    dependsOn("createDistributable")
+    val appName = "org.messenger.app" // == compose.desktop packageName
+    val distDir = layout.buildDirectory.dir("compose/binaries/main/app/$appName")
+    from(distDir)
+
+    val osTag = when {
+        org.gradle.internal.os.OperatingSystem.current().isWindows -> "win"
+        org.gradle.internal.os.OperatingSystem.current().isMacOsX -> "mac"
+        else -> "linux"
+    }
+    val vName = versionProps.getProperty("versionName")
+    archiveFileName.set("messenger-$vName-$osTag.zip")
+    destinationDirectory.set(layout.buildDirectory.dir("portable"))
+}
+
+// в”Ђв”Ђ Print sha256 + size РґР»СЏ РїСѓР±Р»РёРєР°С†РёРё СЂРµР»РёР·Р° в”Ђв”Ђ
+val printPortableChecksum by tasks.registering {
+    dependsOn(packagePortableZip)
+    val zipFileProvider = packagePortableZip.flatMap { it.archiveFile }
+    doLast {
+        val zip = zipFileProvider.get().asFile
+        val md = MessageDigest.getInstance("SHA-256")
+        zip.inputStream().use { ins ->
+            val buf = ByteArray(64 * 1024)
+            var r: Int
+            while (true) {
+                r = ins.read(buf)
+                if (r < 0) break
+                md.update(buf, 0, r)
+            }
+        }
+        val sha = md.digest().joinToString(separator = "") { b -> ((b.toInt() and 0xff) + 0x100).toString(16).substring(1) }
+        println("FILE=" + zip.name)
+        println("SIZE_BYTES=" + zip.length())
+        println("SHA256=" + sha)
     }
 }

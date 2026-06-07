@@ -16,6 +16,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.messenger.app.service.AppFirebaseMessagingService
 import org.messenger.app.service.FcmTokenManager
+import org.messenger.app.updates.AndroidVersionProvider
 
 class MainActivity : ComponentActivity() {
 
@@ -49,6 +50,12 @@ class MainActivity : ComponentActivity() {
                 deepLinkChatName = deepLinkChatName
             )
         }
+
+        AndroidVersionProvider.versionCode = packageManager
+            .getPackageInfo(packageName, 0).let {
+                if (android.os.Build.VERSION.SDK_INT >= 28) it.longVersionCode.toInt()
+                else @Suppress("DEPRECATION") it.versionCode
+            }
     }
 
     override fun onNewIntent(intent: Intent) {
